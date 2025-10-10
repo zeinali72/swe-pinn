@@ -68,8 +68,33 @@ class FourierPINN(nn.Module):
 
         return self.output_layer(x_features)
 
+class SirenLayer(nn.Module):
+    """A single layer of a SIREN model."""
+    features: int
+    config: FrozenDict
+    is_first: bool = False
+
+    @nn.compact
+    def __call__(self, x):
+        model_cfg = self.config["model"]
+        input_dim = x.shape[-1]
+
+        # Correct initialization for SIREN layers
+        w_std = (jnp.sqrt(6.0 / input_dim) / model_cfg["w0"]) if self.is_first else (jnp.sqrt(6.0 / input_dim) * model_cfg["w_init_factor"])
+        w_init = jax.nn.initializers.uniform(scale=w_std)
+
+        w = self.param('kernel', w_init, (input_dim, self.features))
+        b = self.param('bias', jax.nn.initializers.zeros, (self.features,))
+        # FIX: The lambda function now accepts two arguments (key, shape)
+        w0_init_fn = lambda key, shape, dtype=jnp.float32: jnp.full(shape, model_cfg["w0"], dtype=dtype)
+        w0 = self.param('w0', w0_init_fn, (1,)) if self.is_first else model_cfg["w0"]
+
+
+        y = x @ w + b
+        return jnp.sin(w0 * y)
+
 class SIREN(nn.Module):
-    """SIREN model."""
+    """SIREN model with trainable w0."""
     config: FrozenDict
 
     @nn.compact
@@ -80,17 +105,17 @@ class SIREN(nn.Module):
         x = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x)
 
         # Input layer
-        x = nn.Dense(features=model_cfg["width"])(x)
-        x = jnp.sin(x)
+        x = SirenLayer(features=model_cfg["width"], is_first=True, config=self.config)(x)
 
         # Hidden layers
         for _ in range(model_cfg["depth"] - 1):
-            x = nn.Dense(features=model_cfg["width"])(x)
-            x = jnp.sin(x)
+            x = SirenLayer(features=model_cfg["width"], is_first=False, config=self.config)(x)
 
         # Output layer
-        x = nn.Dense(features=model_cfg["output_dim"])(x)
-        return x
+        # The output layer of SIREN is typically linear
+        output_layer = nn.Dense(features=model_cfg["output_dim"])
+        return output_layer(x)
+
 
 def init_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
     """Initialize the PINN model and parameters."""
