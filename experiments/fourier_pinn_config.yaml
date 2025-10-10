@@ -56,8 +56,8 @@ plotting:
 
 device:
   dtype: "float32"               # Data type for JAX computations
-  early_stop_min_epochs: 1200000  # Minimum steps before early stopping
-  early_stop_patience: 400000    # Patience for early stopping (steps)
+  early_stop_min_epochs: 12000  # Minimum steps before early stopping
+  early_stop_patience: 4000    # Patience for early stopping (steps)
 
 numerics:
   eps: 1e-6                      # Small epsilon for numerical
