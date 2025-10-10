@@ -1,0 +1,53 @@
+# src/utils.py
+import os
+import pickle
+import datetime
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+from typing import Dict, Any
+
+from src.physics import h_exact
+
+# Metrics
+def nse(pred: jnp.ndarray, true: jnp.ndarray) -> float:
+    """Compute Nash-Sutcliffe Efficiency (NSE) metric."""
+    num = jnp.sum((true - pred)**2)
+    den = jnp.sum((true - jnp.mean(true))**2)
+    return 1 - num / den
+
+def rmse(pred: jnp.ndarray, true: jnp.ndarray) -> float:
+    """Compute Root Mean Square Error (RMSE)."""
+    return jnp.sqrt(jnp.mean((pred - true)**2))
+
+# Experiment Management
+def generate_trial_name(config_filename):
+    """Generate a unique trial name using the current date and config filename."""
+    now = datetime.datetime.now()
+    return f"{now.strftime('%Y-%m-%d_%H-%M')}_{config_filename}"
+
+def save_model(params: Dict[str, Any], save_dir: str, trial_name: str) -> None:
+    """Save model parameters to a pickle file."""
+    os.makedirs(save_dir, exist_ok=True)
+    model_path = os.path.join(save_dir, f"{trial_name}_params.pkl")
+    with open(model_path, "wb") as f:
+        pickle.dump(params, f)
+
+# Plotting
+def plot_h_vs_x(x_line: jnp.ndarray, h_pred_line: jnp.ndarray, t_const: float, y_const: float, 
+                filename: str = None) -> None:
+    """Plot predicted and exact water depth along the x-axis."""
+    h_exact_line = h_exact(x_line, jnp.full_like(x_line, t_const))
+    plt.figure(figsize=(10, 5))
+    plt.plot(x_line, h_exact_line, 'b-', label="Exact $h$", linewidth=2.5)
+    plt.plot(x_line, h_pred_line, 'r--', label="PINN $h$", linewidth=2)
+    plt.xlabel("x (m)", fontsize=12)
+    plt.ylabel("Depth $h$ (m)", fontsize=12)
+    plt.title(f"h vs x at y={y_const:.2f}, t={t_const:.2f}", fontsize=14)
+    plt.legend(fontsize=11)
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.ylim(bottom=0)
+    plt.tight_layout()
+    if filename:
+        plt.savefig(filename)
+        print(f"Plot saved as {filename}")
+    plt.close()

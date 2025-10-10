@@ -1,0 +1,17 @@
+numpy
+pandas
+
+# Data visualization
+matplotlib
+seaborn
+
+# Geospatial libraries
+geopandas
+shapely
+rasterio
+
+# Monitoring and logging
+aim
+
+# Optimisation libraries
+optuna
