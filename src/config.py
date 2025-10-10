@@ -18,7 +18,7 @@ def _convert_str_floats(obj):
     return obj
 
 # Path is relative to the project root
-CONFIG_PATH = "experiments/config_1.yaml"
+CONFIG_PATH = "experiments/fourier_mapping.yaml"
 
 with open(CONFIG_PATH, "r") as f:
     config = yaml.safe_load(f)
