@@ -13,6 +13,8 @@ model:
   kernel_init: "glorot_uniform"
   bias_init: 0.0
   ff_dims: 256    
+  fourier_scale: 10.0  # ADD THIS LINE
+
 
 domain:
   lx: 1200.0                     # Length of the domain in x-direction (m)

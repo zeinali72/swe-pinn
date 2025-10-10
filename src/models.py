@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax.core import FrozenDict
 from typing import Any, Dict, Tuple
-from src.config import DTYPE
+from src.config import DTYPE  # <-- THIS LINE IS NOW FIXED
 
 class Normalize(nn.Module):
     lx: float
@@ -19,7 +19,7 @@ class Normalize(nn.Module):
 
 class FourierFeatures(nn.Module):
     output_dims: int
-    scale: float = 10.0
+    scale: float
 
     @nn.compact
     def __call__(self, x):
@@ -37,7 +37,11 @@ class FourierPINN(nn.Module):
         domain_cfg = self.config["domain"]
 
         self.normalizer = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])
-        self.fourier_features = FourierFeatures(output_dims=model_cfg["ff_dims"])
+        
+        self.fourier_features = FourierFeatures(
+            output_dims=model_cfg["ff_dims"],
+            scale=model_cfg["fourier_scale"]
+        )
         
         dense_layers = []
         for _ in range(model_cfg["depth"]):

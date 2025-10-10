@@ -75,7 +75,6 @@ def main(config_path: str):
     aim_repo = Repo(path=central_aim_dir, init=True)
     aim_run = Run(repo=aim_repo, experiment=trial_name)
     
-    # --- FIX: Pass the original dictionary to Aim ---
     aim_run["hparams"] = cfg_dict
 
     lr = cfg["training"]["learning_rate"]
@@ -101,6 +100,7 @@ def main(config_path: str):
     best_nse: float = -jnp.inf
     best_epoch: int = 0
     best_params: Dict = None
+    best_nse_time: float = 0.0
     start_time = time.time()
     
     try:
@@ -156,10 +156,14 @@ def main(config_path: str):
                 rmse_val = float(rmse(h_pred_val, h_true_val))
 
             if nse_val > best_nse:
-                best_nse, best_epoch, best_params = nse_val, epoch, copy.deepcopy(params)
+                best_nse = nse_val
+                best_epoch = epoch
+                best_params = copy.deepcopy(params)
+                best_nse_time = time.time() - start_time
 
             if (epoch + 1) % 100 == 0:
-                print(f"Epoch {epoch+1:5d} | Loss: {avg_total_loss:.4e} | NSE: {nse_val:.4f} | RMSE: {rmse_val:.4f}")
+                total_time_lapsed = time.time() - start_time
+                print(f"Epoch {epoch+1:5d} | Loss: {avg_total_loss:.4e} | NSE: {nse_val:.4f} | RMSE: {rmse_val:.4f} | Total Time: {total_time_lapsed:.2f}s")
 
             aim_run.track(avg_total_loss, name='total_loss', step=epoch, context={'subset': 'train'})
             aim_run.track(avg_pde_loss, name='pde_loss', step=epoch, context={'subset': 'train'})
@@ -173,11 +177,14 @@ def main(config_path: str):
         print("\nTraining interrupted by user.")
     
     finally:
-        aim_run.close()
-        print(f"Training ended. Total time: {time.time() - start_time:.2f} seconds.")
+        total_training_time = time.time() - start_time
+        print(f"Training ended. Total time: {total_training_time:.2f} seconds.")
         if best_params is not None:
             save_model(best_params, model_dir, trial_name)
-            print(f"Best model from epoch {best_epoch+1} saved with NSE {best_nse:.6f}.")
+            print(f"Best model from epoch {best_epoch+1} saved with NSE {best_nse:.6f} (achieved at {best_nse_time:.2f}s).")
+            
+            # Log the single best NSE time value
+            aim_run["best_nse_time"] = best_nse_time
             
             print("Generating final validation plot...")
             x_val = jnp.linspace(0.0, cfg["domain"]["lx"], cfg["plotting"]["nx_val"])
@@ -198,6 +205,8 @@ def main(config_path: str):
             )
         else:
             print("Warning: No best model found or saved.")
+            
+        aim_run.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a PINN model.")
