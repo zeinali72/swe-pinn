@@ -6,14 +6,13 @@ training:
   seed: 42                       # Random seed for reproducibility
 
 model:
-  name: "FourierPINN"           # The name of the model class in src/models.py
+  name: "SIREN"           # The name of the model class in src/models.py
   width: 256
   depth: 4
   output_dim: 3
-  kernel_init: "glorot_uniform"
-  bias_init: 0.0
-  ff_dims: 512    
-  fourier_scale: 15.0
+  # SIREN specific parameters
+  w0: 1.0
+  w_init_factor: 1.0
 
 
 domain:

@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax.core import FrozenDict
 from typing import Any, Dict, Tuple
-from src.config import DTYPE  # <-- THIS LINE IS NOW FIXED
+from src.config import DTYPE
 
 class Normalize(nn.Module):
     lx: float
@@ -37,12 +37,12 @@ class FourierPINN(nn.Module):
         domain_cfg = self.config["domain"]
 
         self.normalizer = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])
-        
+
         self.fourier_features = FourierFeatures(
             output_dims=model_cfg["ff_dims"],
             scale=model_cfg["fourier_scale"]
         )
-        
+
         dense_layers = []
         for _ in range(model_cfg["depth"]):
             dense_layers.append(nn.Dense(
@@ -51,7 +51,7 @@ class FourierPINN(nn.Module):
                 bias_init=nn.initializers.constant(model_cfg["bias_init"])
             ))
         self.dense_layers = dense_layers
-        
+
         self.output_layer = nn.Dense(
             model_cfg["output_dim"],
             kernel_init=nn.initializers.glorot_uniform(),
@@ -62,11 +62,35 @@ class FourierPINN(nn.Module):
     def __call__(self, x: jnp.ndarray, train: bool = True) -> jnp.ndarray:
         x_norm = self.normalizer(x)
         x_features = self.fourier_features(x_norm)
-        
+
         for layer in self.dense_layers:
             x_features = nn.tanh(layer(x_features))
-        
+
         return self.output_layer(x_features)
+
+class SIREN(nn.Module):
+    """SIREN model."""
+    config: FrozenDict
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, train: bool = True) -> jnp.ndarray:
+        model_cfg = self.config["model"]
+        domain_cfg = self.config["domain"]
+
+        x = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x)
+
+        # Input layer
+        x = nn.Dense(features=model_cfg["width"])(x)
+        x = jnp.sin(x)
+
+        # Hidden layers
+        for _ in range(model_cfg["depth"] - 1):
+            x = nn.Dense(features=model_cfg["width"])(x)
+            x = jnp.sin(x)
+
+        # Output layer
+        x = nn.Dense(features=model_cfg["output_dim"])(x)
+        return x
 
 def init_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
     """Initialize the PINN model and parameters."""
