@@ -79,15 +79,21 @@ class SirenLayer(nn.Module):
         model_cfg = self.config["model"]
         input_dim = x.shape[-1]
 
-        # Correct initialization for SIREN layers
-        w_std = (jnp.sqrt(6.0 / input_dim) / model_cfg["w0"]) if self.is_first else (jnp.sqrt(6.0 / input_dim) * model_cfg["w_init_factor"])
-        w_init = jax.nn.initializers.uniform(scale=w_std)
+        if self.is_first:
+            w_std = 1.0 / input_dim
+        else:
+            w_std = jnp.sqrt(6.0 / input_dim) / model_cfg["w0"]
 
+        w_init = jax.nn.initializers.uniform(scale=w_std)
         w = self.param('kernel', w_init, (input_dim, self.features))
         b = self.param('bias', jax.nn.initializers.zeros, (self.features,))
-        # FIX: The lambda function now accepts two arguments (key, shape)
-        w0_init_fn = lambda key, shape, dtype=jnp.float32: jnp.full(shape, model_cfg["w0"], dtype=dtype)
-        w0 = self.param('w0', w0_init_fn, (1,)) if self.is_first else model_cfg["w0"]
+
+        # Make w0 trainable only in the first layer
+        if self.is_first:
+            w0_init_fn = lambda key, shape, dtype=jnp.float32: jnp.full(shape, model_cfg["w0"], dtype=dtype)
+            w0 = self.param('w0', w0_init_fn, (1,))
+        else:
+            w0 = model_cfg["w0"]
 
 
         y = x @ w + b
