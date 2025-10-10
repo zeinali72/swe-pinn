@@ -164,6 +164,7 @@ def main(config_path: str):
             aim_run.track(avg_total_loss, name='total_loss', step=epoch, context={'subset': 'train'})
             aim_run.track(avg_pde_loss, name='pde_loss', step=epoch, context={'subset': 'train'})
             aim_run.track(nse_val, name='nse', step=epoch, context={'subset': 'validation'})
+            aim_run.track(rmse_val, name='rmse', step=epoch, context={'subset': 'validation'})
 
             if epoch > cfg["device"]["early_stop_min_epochs"] and (epoch - best_epoch) > cfg["device"]["early_stop_patience"]:
                 print(f"Early stopping at epoch {epoch+1}.")
