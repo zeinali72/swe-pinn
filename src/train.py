@@ -5,6 +5,10 @@ import copy
 import argparse
 import importlib
 from typing import Any, Dict, Tuple
+import sys
+import threading
+import queue
+import shutil
 
 import jax
 import jax.numpy as jnp
@@ -19,6 +23,34 @@ from src.models import init_model
 from src.losses import compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss
 from src.utils import nse, rmse, generate_trial_name, save_model, plot_h_vs_x
 from src.physics import h_exact
+
+def ask_for_confirmation(timeout=60):
+    """Asks the user for confirmation with a timeout, defaulting to yes."""
+    q = queue.Queue()
+
+    def get_input():
+        try:
+            # Prompt is written to stderr to not interfere with stdout piping
+            sys.stderr.write(f"Save results? (y/n) [auto-yes in {timeout}s]: ")
+            sys.stderr.flush()
+            q.put(input().lower())
+        except EOFError:
+            # If the script is run non-interactively, default to 'y'
+            q.put('y')
+
+    input_thread = threading.Thread(target=get_input)
+    input_thread.daemon = True
+    input_thread.start()
+
+    try:
+        answer = q.get(timeout=timeout)
+        if answer == 'n':
+            return False
+        # Any other input, including 'y', defaults to yes
+        return True
+    except queue.Empty:
+        print("\nNo input received, proceeding to save automatically.")
+        return True
 
 def train_step(model: Any, params: Dict[str, Any], opt_state: Any,
                pde_batch: jnp.ndarray, ic_batch: jnp.ndarray,
@@ -65,20 +97,21 @@ def main(config_path: str):
 
     config_base = os.path.splitext(os.path.basename(cfg['CONFIG_PATH']))[0]
     trial_name = generate_trial_name(config_base)
-    
+
     results_dir = os.path.join("results", trial_name)
     model_dir = os.path.join("models", trial_name)
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
-    
-    central_aim_dir = "aim_repo" 
+
+    central_aim_dir = "aim_repo"
     aim_repo = Repo(path=central_aim_dir, init=True)
     aim_run = Run(repo=aim_repo, experiment=trial_name)
-    
+    run_hash = aim_run.hash # Get the hash to allow for deletion later
+
     aim_run["hparams"] = cfg_dict
 
     lr = cfg["training"]["learning_rate"]
-    lr_boundaries = {15000: 0.1, 30000: 0.1} 
+    lr_boundaries = {15000: 0.1, 30000: 0.1}
     lr_schedule = optax.piecewise_constant_schedule(
         init_value=lr,
         boundaries_and_scales=lr_boundaries
@@ -88,7 +121,7 @@ def main(config_path: str):
         optax.clip_by_global_norm(1.0),
         optax.adam(learning_rate=lr_schedule)
     )
-    
+
     opt_state = optimiser.init(params)
     weights_dict = {
         'pde': cfg["loss_weights"]["pde_weight"],
@@ -100,13 +133,12 @@ def main(config_path: str):
     best_nse: float = -jnp.inf
     best_epoch: int = 0
     best_params: Dict = None
-    best_nse_time: float = 0.0
     start_time = time.time()
-    
+
     try:
         for epoch in range(cfg["training"]["epochs"]):
             key, pde_key, ic_key, l_key, r_key, b_key, t_key = random.split(key, 7)
-            
+
             pde_points = sample_points(0., cfg["domain"]["lx"], 0., cfg["domain"]["ly"], 0., cfg["domain"]["t_final"], cfg["grid"]["nx"], cfg["grid"]["ny"], cfg["grid"]["nt"], pde_key)
             ic_points = sample_points(0., cfg["domain"]["lx"], 0., cfg["domain"]["ly"], 0., 0., cfg["ic_bc_grid"]["nx_ic"], cfg["ic_bc_grid"]["ny_ic"], 1, ic_key)
             left_wall = sample_points(0., 0., 0., cfg["domain"]["ly"], 0., cfg["domain"]["t_final"], 1, cfg["ic_bc_grid"]["ny_bc_left"], cfg["ic_bc_grid"]["nt_bc_left"], l_key)
@@ -123,7 +155,7 @@ def main(config_path: str):
             bottom_batches = get_batches(b_b_key, bottom_wall, batch_size)
             top_batches = get_batches(t_b_key, top_wall, batch_size)
             num_batches = len(pde_batches)
-            
+
             epoch_losses = {'pde': 0.0, 'ic': 0.0, 'bc': 0.0}
             for i in range(num_batches):
                 params, opt_state, batch_losses = train_step_jitted(
@@ -142,7 +174,7 @@ def main(config_path: str):
             avg_ic_loss = float(epoch_losses['ic'] / num_batches)
             avg_bc_loss = float(epoch_losses['bc'] / num_batches)
             avg_total_loss = float(total_loss({'pde': avg_pde_loss, 'ic': avg_ic_loss, 'bc': avg_bc_loss}, weights_dict))
-            
+
             with jax.disable_jit():
                 U_pred_val = model.apply({'params': params['params']}, pde_points, train=False)
                 h_pred_val = U_pred_val[..., 0]
@@ -156,14 +188,10 @@ def main(config_path: str):
                 rmse_val = float(rmse(h_pred_val, h_true_val))
 
             if nse_val > best_nse:
-                best_nse = nse_val
-                best_epoch = epoch
-                best_params = copy.deepcopy(params)
-                best_nse_time = time.time() - start_time
+                best_nse, best_epoch, best_params = nse_val, epoch, copy.deepcopy(params)
 
             if (epoch + 1) % 100 == 0:
-                total_time_lapsed = time.time() - start_time
-                print(f"Epoch {epoch+1:5d} | Loss: {avg_total_loss:.4e} | NSE: {nse_val:.4f} | RMSE: {rmse_val:.4f} | Total Time: {total_time_lapsed:.2f}s")
+                print(f"Epoch {epoch+1:5d} | Loss: {avg_total_loss:.4e} | NSE: {nse_val:.4f} | RMSE: {rmse_val:.4f}")
 
             aim_run.track(avg_total_loss, name='total_loss', step=epoch, context={'subset': 'train'})
             aim_run.track(avg_pde_loss, name='pde_loss', step=epoch, context={'subset': 'train'})
@@ -175,38 +203,48 @@ def main(config_path: str):
                 break
     except KeyboardInterrupt:
         print("\nTraining interrupted by user.")
-    
+
     finally:
-        total_training_time = time.time() - start_time
-        print(f"Training ended. Total time: {total_training_time:.2f} seconds.")
-        if best_params is not None:
-            save_model(best_params, model_dir, trial_name)
-            print(f"Best model from epoch {best_epoch+1} saved with NSE {best_nse:.6f} (achieved at {best_nse_time:.2f}s).")
-            
-            # Log the single best NSE time value
-            aim_run["best_nse_time"] = best_nse_time
-            
-            print("Generating final validation plot...")
-            x_val = jnp.linspace(0.0, cfg["domain"]["lx"], cfg["plotting"]["nx_val"])
-            pts_val = jnp.stack([
-                x_val, 
-                jnp.full_like(x_val, cfg["plotting"]["y_const_plot"]), 
-                jnp.full_like(x_val, cfg["plotting"]["t_const_val"])
-            ], axis=1)
-            U_val_pred = model.apply({'params': best_params['params']}, pts_val, train=False)
-            plot_path = os.path.join(results_dir, "final_validation_plot.png")
-            plot_h_vs_x(
-                x_val,
-                U_val_pred[..., 0],
-                cfg["plotting"]["t_const_val"],
-                cfg["plotting"]["y_const_plot"],
-                cfg,
-                plot_path
-            )
-        else:
-            print("Warning: No best model found or saved.")
-            
         aim_run.close()
+        print(f"Training ended. Total time: {time.time() - start_time:.2f} seconds.")
+
+        if ask_for_confirmation():
+            if best_params is not None:
+                print("Saving model, validation plot, and Aim log...")
+                save_model(best_params, model_dir, trial_name)
+                print(f"Best model from epoch {best_epoch+1} saved with NSE {best_nse:.6f}.")
+
+                print("Generating final validation plot...")
+                x_val = jnp.linspace(0.0, cfg["domain"]["lx"], cfg["plotting"]["nx_val"])
+                pts_val = jnp.stack([
+                    x_val,
+                    jnp.full_like(x_val, cfg["plotting"]["y_const_plot"]),
+                    jnp.full_like(x_val, cfg["plotting"]["t_const_val"])
+                ], axis=1)
+                U_val_pred = model.apply({'params': best_params['params']}, pts_val, train=False)
+                plot_path = os.path.join(results_dir, "final_validation_plot.png")
+                plot_h_vs_x(
+                    x_val,
+                    U_val_pred[..., 0],
+                    cfg["plotting"]["t_const_val"],
+                    cfg["plotting"]["y_const_plot"],
+                    cfg,
+                    plot_path
+                )
+                print("Artifacts saved.")
+            else:
+                print("Warning: No best model found to save.")
+        else:
+            print("Save aborted by user. Deleting artifacts...")
+            try:
+                # Delete the Aim run from the repository
+                aim_repo.delete_run(run_hash)
+                # Remove the created directories
+                shutil.rmtree(results_dir)
+                shutil.rmtree(model_dir)
+                print("All artifacts successfully deleted.")
+            except Exception as e:
+                print(f"Error during cleanup: {e}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a PINN model.")
