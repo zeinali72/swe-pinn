@@ -6,11 +6,13 @@ training:
   seed: 42                       # Random seed for reproducibility
 
 model:
-  width: 256                       # Width of the neural network layers (2*11)
-  depth: 4                         # Depth (number of layers) of the neural network
-  output_dim: 3                  # Output dimension of the neural network
-  kernel_init: "glorot_uniform"  # Kernel initializer for weights
-  bias_init: 0.0                 # Bias initializer
+  name: "FourierPINN"           # The name of the model class in src/models.py
+  width: 256
+  depth: 4
+  output_dim: 3
+  kernel_init: "glorot_uniform"
+  bias_init: 0.0
+  ff_dims: 256    
 
 domain:
   lx: 1200.0                     # Length of the domain in x-direction (m)

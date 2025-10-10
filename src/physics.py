@@ -1,31 +1,26 @@
 # src/physics.py
 import jax.numpy as jnp
 from typing import Tuple
-from src.config import config, EPS
 
-# Extract physics parameters from config
-N_MANNING = config["physics"]["n_manning"]
-U_CONST = config["physics"]["u_const"]
-G = config["physics"]["g"]
-INFLOW = config["physics"]["inflow"]
-
-def h_exact(x: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+def h_exact(x: jnp.ndarray, t: jnp.ndarray, n_manning: float, u_const: float) -> jnp.ndarray:
     """Compute the analytical solution for water depth h(x, t)."""
-    arg = (7 / 3) * N_MANNING**2 * U_CONST**2 * (U_CONST * t - x)
+    arg = (7 / 3) * n_manning**2 * u_const**2 * (u_const * t - x)
     return (jnp.maximum(arg, 0)) ** (3 / 7)
 
 class SWEPhysics:
     """Compute terms for the 2D Shallow Water Equations (SWE)."""
-    def __init__(self, U: jnp.ndarray, bed_elevation: jnp.ndarray = None):
+    # --- FIX: Accept eps as an argument ---
+    def __init__(self, U: jnp.ndarray, eps: float, bed_elevation: jnp.ndarray = None):
         h = U[..., 0]
         self.hu = U[..., 1]
         self.hv = U[..., 2]
-        self.h_safe = jnp.maximum(h, EPS)
+        # --- FIX: Use the passed-in eps value ---
+        self.h_safe = jnp.maximum(h, eps)
         self.u = self.hu / self.h_safe
         self.v = self.hv / self.h_safe
         self.bed = bed_elevation
 
-    def flux_jac(self, g: float = G) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def flux_jac(self, g: float) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """Compute analytical Jacobians of SWE fluxes."""
         F = jnp.stack([
             jnp.stack([jnp.zeros_like(self.h_safe), jnp.ones_like(self.h_safe), jnp.zeros_like(self.h_safe)], axis=-1),
@@ -39,7 +34,7 @@ class SWEPhysics:
         ], axis=-2)
         return F, G
 
-    def source(self, g: float, n_manning: float, inflow: float = INFLOW) -> jnp.ndarray:
+    def source(self, g: float, n_manning: float, inflow: float) -> jnp.ndarray:
         """Compute source terms for SWE."""
         vel = jnp.sqrt(self.u**2 + self.v**2)
         sfx = n_manning**2 * self.u * vel / (self.h_safe**(4 / 3))

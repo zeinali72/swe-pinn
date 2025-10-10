@@ -17,16 +17,23 @@ def _convert_str_floats(obj):
             pass
     return obj
 
-# Path is relative to the project root
-CONFIG_PATH = "experiments/fourier_mapping.yaml"
+def load_config(config_path: str):
+    """Load and process the configuration file."""
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found at: {config_path}")
 
-with open(CONFIG_PATH, "r") as f:
-    config = yaml.safe_load(f)
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
 
-# Convert scientific notation strings to floats and add the config path
-config = _convert_str_floats(config)
-config['CONFIG_PATH'] = CONFIG_PATH # Add the path to the config dict
+    config = _convert_str_floats(config)
+    config['CONFIG_PATH'] = config_path
 
-# Common numerical types derived from config for easy import
-DTYPE = getattr(jnp, config["device"]["dtype"])
-EPS = config["numerics"]["eps"]
+    global DTYPE, EPS
+    DTYPE = getattr(jnp, config["device"]["dtype"])
+    EPS = config["numerics"]["eps"]
+    
+    return config
+
+# These will be set by load_config
+DTYPE = None
+EPS = None

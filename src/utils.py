@@ -8,7 +8,6 @@ from typing import Dict, Any
 
 from src.physics import h_exact
 
-# Metrics
 def nse(pred: jnp.ndarray, true: jnp.ndarray) -> float:
     """Compute Nash-Sutcliffe Efficiency (NSE) metric."""
     num = jnp.sum((true - pred)**2)
@@ -19,7 +18,6 @@ def rmse(pred: jnp.ndarray, true: jnp.ndarray) -> float:
     """Compute Root Mean Square Error (RMSE)."""
     return jnp.sqrt(jnp.mean((pred - true)**2))
 
-# Experiment Management
 def generate_trial_name(config_filename):
     """Generate a unique trial name using the current date and config filename."""
     now = datetime.datetime.now()
@@ -32,11 +30,13 @@ def save_model(params: Dict[str, Any], save_dir: str, trial_name: str) -> None:
     with open(model_path, "wb") as f:
         pickle.dump(params, f)
 
-# Plotting
 def plot_h_vs_x(x_line: jnp.ndarray, h_pred_line: jnp.ndarray, t_const: float, y_const: float, 
-                filename: str = None) -> None:
+                config: Dict[str, Any], filename: str = None) -> None:
     """Plot predicted and exact water depth along the x-axis."""
-    h_exact_line = h_exact(x_line, jnp.full_like(x_line, t_const))
+    n_manning = config["physics"]["n_manning"]
+    u_const = config["physics"]["u_const"]
+    h_exact_line = h_exact(x_line, jnp.full_like(x_line, t_const), n_manning, u_const)
+    
     plt.figure(figsize=(10, 5))
     plt.plot(x_line, h_exact_line, 'b-', label="Exact $h$", linewidth=2.5)
     plt.plot(x_line, h_pred_line, 'r--', label="PINN $h$", linewidth=2)

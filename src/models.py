@@ -2,20 +2,10 @@
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
+from flax.core import FrozenDict
 from typing import Any, Dict, Tuple
-from src.config import config, DTYPE
+from src.config import DTYPE
 
-# --- Parameters (remain the same) ---
-WIDTH = config["model"]["width"]
-DEPTH = config["model"]["depth"]
-OUTPUT_DIM = config["model"]["output_dim"]
-KERNEL_INIT = nn.initializers.glorot_uniform()
-BIAS_INIT = nn.initializers.constant(config["model"]["bias_init"])
-LX = config["domain"]["lx"]
-LY = config["domain"]["ly"]
-T_FINAL = config["domain"]["t_final"]
-
-# --- Normalizer (remains the same) ---
 class Normalize(nn.Module):
     lx: float
     ly: float
@@ -27,65 +17,55 @@ class Normalize(nn.Module):
         t_scaled = 2. * x[..., 2] / self.t_final - 1.
         return jnp.stack([x_scaled, y_scaled, t_scaled], axis=-1)
 
-# --- NEW: Fourier Feature Mapping Module ---
 class FourierFeatures(nn.Module):
-    output_dims: int  # The desired dimension of the feature vector
-    scale: float = 10.0  # A hyperparameter controlling the frequency range
+    output_dims: int
+    scale: float = 10.0
 
     @nn.compact
     def __call__(self, x):
-        # Sample a random but fixed frequency matrix B
-        # Ensure B is not re-initialized on every call
         B = self.param('B', nn.initializers.normal(stddev=self.scale), (x.shape[-1], self.output_dims // 2))
-        
-        # Calculate the Fourier features
         x_proj = x @ B
         features = jnp.concatenate([jnp.sin(x_proj), jnp.cos(x_proj)], axis=-1)
         return features
 
-# --- UPDATED: PINN Model ---
-class PINN(nn.Module):
+class FourierPINN(nn.Module):
     """PINN with Fourier Feature Mapping."""
-    # MLP parameters
-    WIDTH: int = WIDTH
-    DEPTH: int = DEPTH
-    OUTPUT_DIM: int = OUTPUT_DIM
-    # Normalization parameters
-    lx: float = LX
-    ly: float = LY
-    t_final: float = T_FINAL
-    # Initializers
-    BIAS_INIT: Any = BIAS_INIT
-    kernel_init: Any = KERNEL_INIT
-    # Fourier Feature parameters
-    FF_DIMS: int = 256 # Number of fourier features, a key hyperparameter
+    config: FrozenDict
 
     def setup(self):
-        self.normalizer = Normalize(self.lx, self.ly, self.t_final)
-        self.fourier_features = FourierFeatures(output_dims=self.FF_DIMS)
+        model_cfg = self.config["model"]
+        domain_cfg = self.config["domain"]
+
+        self.normalizer = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])
+        self.fourier_features = FourierFeatures(output_dims=model_cfg["ff_dims"])
         
-        # Define the dense layers for the MLP part
-        self.dense_layers = [nn.Dense(self.WIDTH, kernel_init=self.kernel_init, bias_init=self.BIAS_INIT) for _ in range(self.DEPTH)]
-        self.output_layer = nn.Dense(self.OUTPUT_DIM, kernel_init=self.kernel_init, bias_init=self.BIAS_INIT)
+        dense_layers = []
+        for _ in range(model_cfg["depth"]):
+            dense_layers.append(nn.Dense(
+                model_cfg["width"],
+                kernel_init=nn.initializers.glorot_uniform(),
+                bias_init=nn.initializers.constant(model_cfg["bias_init"])
+            ))
+        self.dense_layers = dense_layers
+        
+        self.output_layer = nn.Dense(
+            model_cfg["output_dim"],
+            kernel_init=nn.initializers.glorot_uniform(),
+            bias_init=nn.initializers.constant(model_cfg["bias_init"])
+        )
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool = True) -> jnp.ndarray:
-        # 1. Normalize coordinates to [-1, 1]
         x_norm = self.normalizer(x)
-        
-        # 2. Create Fourier Features
         x_features = self.fourier_features(x_norm)
         
-        # 3. Process features with the standard MLP
         for layer in self.dense_layers:
             x_features = nn.tanh(layer(x_features))
         
         return self.output_layer(x_features)
 
-def init_model(key: jax.random.PRNGKey) -> Tuple[PINN, Dict[str, Any]]:
+def init_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
     """Initialize the PINN model and parameters."""
-    model = PINN()
-    # In `src/train.py` change `init_mlp` to `init_model`
+    model = model_class(config=config)
     variables = model.init(key, jnp.zeros((1, 3), dtype=DTYPE))
-    params = variables['params']
-    return model, {'params': params}
+    return model, {'params': variables['params']}

@@ -2,12 +2,12 @@
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
+from flax.core import FrozenDict
 from typing import Dict, Any
 
-from src.config import config, EPS
-from src.physics import SWEPhysics, h_exact, N_MANNING, G, INFLOW, U_CONST
+from src.physics import SWEPhysics, h_exact
 
-def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray) -> jnp.ndarray:
+def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray, config: FrozenDict) -> jnp.ndarray:
     """Compute the PDE residual mean squared error (MSE) for the SWE."""
     U_pred = model.apply({'params': params['params']}, pde_batch, train=True)
     def U_fn(pts):
@@ -16,14 +16,20 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
     dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
 
-    physics = SWEPhysics(U_pred)
-    JF, JG = physics.flux_jac(g=G)
+    # --- FIX: Get eps from config and pass it to SWEPhysics ---
+    eps = config["numerics"]["eps"]
+    physics = SWEPhysics(U_pred, eps=eps)
+    
+    g = config["physics"]["g"]
+    n_manning = config["physics"]["n_manning"]
+    inflow = config["physics"]["inflow"]
 
+    JF, JG = physics.flux_jac(g=g)
     div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
     div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
-    S = physics.source(g=G, n_manning=N_MANNING, inflow=INFLOW)
+    S = physics.source(g=g, n_manning=n_manning, inflow=inflow)
 
-    h_mask = jnp.where(U_pred[..., 0] < EPS, 0.0, 1.0)
+    h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
     residual = (dU_dt + div_F + div_G - S) * h_mask[..., None]
     return jnp.mean(residual ** 2)
 
@@ -35,25 +41,26 @@ def compute_ic_loss(model: nn.Module, params: Dict[str, Any], ic_batch: jnp.ndar
 
 def compute_bc_loss(model: nn.Module, params: Dict[str, Any],
                     left_batch: jnp.ndarray, right_batch: jnp.ndarray,
-                    bottom_batch: jnp.ndarray, top_batch: jnp.ndarray) -> jnp.ndarray:
+                    bottom_batch: jnp.ndarray, top_batch: jnp.ndarray,
+                    config: FrozenDict) -> jnp.ndarray:
     """Compute boundary condition loss for all domain boundaries."""
-    # Left boundary (inflow)
+    u_const = config["physics"]["u_const"]
+    n_manning = config["physics"]["n_manning"]
+
     U_left = model.apply({'params': params['params']}, left_batch, train=False)
     h_pred_left, hu_pred_left = U_left[..., 0], U_left[..., 1]
     t_left = left_batch[..., 2]
-    h_true_left = h_exact(0.0, t_left)
-    hu_true_left = h_true_left * U_CONST
+    h_true_left = h_exact(0.0, t_left, n_manning, u_const)
+    hu_true_left = h_true_left * u_const
     res_left_h = h_pred_left - h_true_left
     res_left_hu = hu_pred_left - hu_true_left
 
-    # Right boundary (zero-gradient)
     def U_fn(pts):
         return model.apply({'params': params['params']}, pts, train=False)
     jac_U_right = jax.vmap(jax.jacfwd(U_fn))(right_batch)
     dU_dx_right = jac_U_right[..., 0]
     res_right_grad = dU_dx_right
 
-    # Bottom and Top boundaries (no-flux)
     U_bottom = model.apply({'params': params['params']}, bottom_batch, train=False)
     res_bottom_hv = U_bottom[..., 2]
     U_top = model.apply({'params': params['params']}, top_batch, train=False)
