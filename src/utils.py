@@ -5,6 +5,9 @@ import datetime
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from typing import Dict, Any
+import sys
+import queue
+import threading
 
 from src.physics import h_exact
 
@@ -30,13 +33,13 @@ def save_model(params: Dict[str, Any], save_dir: str, trial_name: str) -> None:
     with open(model_path, "wb") as f:
         pickle.dump(params, f)
 
-def plot_h_vs_x(x_line: jnp.ndarray, h_pred_line: jnp.ndarray, t_const: float, y_const: float, 
+def plot_h_vs_x(x_line: jnp.ndarray, h_pred_line: jnp.ndarray, t_const: float, y_const: float,
                 config: Dict[str, Any], filename: str = None) -> None:
     """Plot predicted and exact water depth along the x-axis."""
     n_manning = config["physics"]["n_manning"]
     u_const = config["physics"]["u_const"]
     h_exact_line = h_exact(x_line, jnp.full_like(x_line, t_const), n_manning, u_const)
-    
+
     plt.figure(figsize=(10, 5))
     plt.plot(x_line, h_exact_line, 'b-', label="Exact $h$", linewidth=2.5)
     plt.plot(x_line, h_pred_line, 'r--', label="PINN $h$", linewidth=2)
@@ -51,3 +54,31 @@ def plot_h_vs_x(x_line: jnp.ndarray, h_pred_line: jnp.ndarray, t_const: float, y
         plt.savefig(filename)
         print(f"Plot saved as {filename}")
     plt.close()
+
+def ask_for_confirmation(timeout=60):
+    """Asks the user for confirmation with a timeout, defaulting to yes."""
+    q = queue.Queue()
+
+    def get_input():
+        try:
+            # Prompt is written to stderr to not interfere with stdout piping
+            sys.stderr.write(f"Save results? (y/n) [auto-yes in {timeout}s]: ")
+            sys.stderr.flush()
+            q.put(input().lower())
+        except EOFError:
+            # If the script is run non-interactively, default to 'y'
+            q.put('y')
+
+    input_thread = threading.Thread(target=get_input)
+    input_thread.daemon = True
+    input_thread.start()
+
+    try:
+        answer = q.get(timeout=timeout)
+        if answer == 'n':
+            return False
+        # Any other input, including 'y', defaults to yes
+        return True
+    except queue.Empty:
+        print("\nNo input received, proceeding to save automatically.")
+        return True

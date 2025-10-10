@@ -5,9 +5,6 @@ import copy
 import argparse
 import importlib
 from typing import Any, Dict, Tuple
-import sys
-import threading
-import queue
 import shutil
 
 import jax
@@ -21,36 +18,10 @@ from src.config import load_config
 from src.data import sample_points, get_batches
 from src.models import init_model
 from src.losses import compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss
-from src.utils import nse, rmse, generate_trial_name, save_model, plot_h_vs_x
+from src.utils import nse, rmse, generate_trial_name, save_model, plot_h_vs_x, ask_for_confirmation
 from src.physics import h_exact
+from src.reporting import print_epoch_stats, log_metrics, print_final_summary
 
-def ask_for_confirmation(timeout=60):
-    """Asks the user for confirmation with a timeout, defaulting to yes."""
-    q = queue.Queue()
-
-    def get_input():
-        try:
-            # Prompt is written to stderr to not interfere with stdout piping
-            sys.stderr.write(f"Save results? (y/n) [auto-yes in {timeout}s]: ")
-            sys.stderr.flush()
-            q.put(input().lower())
-        except EOFError:
-            # If the script is run non-interactively, default to 'y'
-            q.put('y')
-
-    input_thread = threading.Thread(target=get_input)
-    input_thread.daemon = True
-    input_thread.start()
-
-    try:
-        answer = q.get(timeout=timeout)
-        if answer == 'n':
-            return False
-        # Any other input, including 'y', defaults to yes
-        return True
-    except queue.Empty:
-        print("\nNo input received, proceeding to save automatically.")
-        return True
 
 def train_step(model: Any, params: Dict[str, Any], opt_state: Any,
                pde_batch: jnp.ndarray, ic_batch: jnp.ndarray,
@@ -103,36 +74,27 @@ def main(config_path: str):
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    central_aim_dir = "aim_repo"
-    aim_repo = Repo(path=central_aim_dir, init=True)
+    aim_repo = Repo(path="aim_repo", init=True)
     aim_run = Run(repo=aim_repo, experiment=trial_name)
-    run_hash = aim_run.hash # Get the hash to allow for deletion later
-
+    run_hash = aim_run.hash
     aim_run["hparams"] = cfg_dict
 
-    lr = cfg["training"]["learning_rate"]
-    lr_boundaries = {15000: 0.1, 30000: 0.1}
     lr_schedule = optax.piecewise_constant_schedule(
-        init_value=lr,
-        boundaries_and_scales=lr_boundaries
+        init_value=cfg["training"]["learning_rate"],
+        boundaries_and_scales={15000: 0.1, 30000: 0.1}
     )
-
     optimiser = optax.chain(
         optax.clip_by_global_norm(1.0),
         optax.adam(learning_rate=lr_schedule)
     )
-
     opt_state = optimiser.init(params)
-    weights_dict = {
-        'pde': cfg["loss_weights"]["pde_weight"],
-        'ic': cfg["loss_weights"]["ic_weight"],
-        'bc': cfg["loss_weights"]["bc_weight"]
-    }
+    weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
 
     print(f"Training started for model: {cfg['model']['name']}")
     best_nse: float = -jnp.inf
     best_epoch: int = 0
     best_params: Dict = None
+    best_nse_time: float = 0.0
     start_time = time.time()
 
     try:
@@ -170,76 +132,50 @@ def main(config_path: str):
                 )
                 for k in epoch_losses: epoch_losses[k] += batch_losses[k]
 
-            avg_pde_loss = float(epoch_losses['pde'] / num_batches)
-            avg_ic_loss = float(epoch_losses['ic'] / num_batches)
-            avg_bc_loss = float(epoch_losses['bc'] / num_batches)
-            avg_total_loss = float(total_loss({'pde': avg_pde_loss, 'ic': avg_ic_loss, 'bc': avg_bc_loss}, weights_dict))
+            avg_losses = {k: v / num_batches for k, v in epoch_losses.items()}
+            avg_total_loss = float(total_loss(avg_losses, weights_dict))
 
             with jax.disable_jit():
                 U_pred_val = model.apply({'params': params['params']}, pde_points, train=False)
                 h_pred_val = U_pred_val[..., 0]
-                h_true_val = h_exact(
-                    pde_points[:, 0],
-                    pde_points[:, 2],
-                    cfg["physics"]["n_manning"],
-                    cfg["physics"]["u_const"]
-                )
+                h_true_val = h_exact(pde_points[:, 0], pde_points[:, 2], cfg["physics"]["n_manning"], cfg["physics"]["u_const"])
                 nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))
 
             if nse_val > best_nse:
                 best_nse, best_epoch, best_params = nse_val, epoch, copy.deepcopy(params)
+                best_nse_time = time.time() - start_time
 
             if (epoch + 1) % 100 == 0:
-                print(f"Epoch {epoch+1:5d} | Loss: {avg_total_loss:.4e} | NSE: {nse_val:.4f} | RMSE: {rmse_val:.4f}")
+                print_epoch_stats(epoch, start_time, avg_total_loss, nse_val, rmse_val)
 
-            aim_run.track(avg_total_loss, name='total_loss', step=epoch, context={'subset': 'train'})
-            aim_run.track(avg_pde_loss, name='pde_loss', step=epoch, context={'subset': 'train'})
-            aim_run.track(nse_val, name='nse', step=epoch, context={'subset': 'validation'})
-            aim_run.track(rmse_val, name='rmse', step=epoch, context={'subset': 'validation'})
+            log_metrics(aim_run, {'total_loss': avg_total_loss, 'pde_loss': avg_losses['pde'], 'nse': nse_val, 'rmse': rmse_val}, epoch)
 
             if epoch > cfg["device"]["early_stop_min_epochs"] and (epoch - best_epoch) > cfg["device"]["early_stop_patience"]:
                 print(f"Early stopping at epoch {epoch+1}.")
                 break
     except KeyboardInterrupt:
         print("\nTraining interrupted by user.")
-
     finally:
         aim_run.close()
-        print(f"Training ended. Total time: {time.time() - start_time:.2f} seconds.")
+        total_time = time.time() - start_time
+        print_final_summary(total_time, best_epoch, best_nse, best_nse_time)
 
         if ask_for_confirmation():
             if best_params is not None:
-                print("Saving model, validation plot, and Aim log...")
                 save_model(best_params, model_dir, trial_name)
-                print(f"Best model from epoch {best_epoch+1} saved with NSE {best_nse:.6f}.")
-
-                print("Generating final validation plot...")
                 x_val = jnp.linspace(0.0, cfg["domain"]["lx"], cfg["plotting"]["nx_val"])
-                pts_val = jnp.stack([
-                    x_val,
-                    jnp.full_like(x_val, cfg["plotting"]["y_const_plot"]),
-                    jnp.full_like(x_val, cfg["plotting"]["t_const_val"])
-                ], axis=1)
+                pts_val = jnp.stack([x_val, jnp.full_like(x_val, cfg["plotting"]["y_const_plot"]), jnp.full_like(x_val, cfg["plotting"]["t_const_val"])], axis=1)
                 U_val_pred = model.apply({'params': best_params['params']}, pts_val, train=False)
                 plot_path = os.path.join(results_dir, "final_validation_plot.png")
-                plot_h_vs_x(
-                    x_val,
-                    U_val_pred[..., 0],
-                    cfg["plotting"]["t_const_val"],
-                    cfg["plotting"]["y_const_plot"],
-                    cfg,
-                    plot_path
-                )
+                plot_h_vs_x(x_val, U_val_pred[..., 0], cfg["plotting"]["t_const_val"], cfg["plotting"]["y_const_plot"], cfg, plot_path)
                 print("Artifacts saved.")
             else:
                 print("Warning: No best model found to save.")
         else:
             print("Save aborted by user. Deleting artifacts...")
             try:
-                # Delete the Aim run from the repository
                 aim_repo.delete_run(run_hash)
-                # Remove the created directories
                 shutil.rmtree(results_dir)
                 shutil.rmtree(model_dir)
                 print("All artifacts successfully deleted.")
@@ -248,11 +184,6 @@ def main(config_path: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a PINN model.")
-    parser.add_argument(
-        "--config",
-        type=str,
-        required=True,
-        help="Path to the configuration file (e.g., experiments/fourier_pinn_config.yaml)"
-    )
+    parser.add_argument("--config", type=str, required=True, help="Path to the configuration file (e.g., experiments/fourier_pinn_config.yaml)")
     args = parser.parse_args()
     main(args.config)
