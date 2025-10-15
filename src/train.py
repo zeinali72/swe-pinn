@@ -147,10 +147,21 @@ def main(config_path: str):
                 best_nse_time = time.time() - start_time
 
             if (epoch + 1) % 100 == 0:
-                print_epoch_stats(epoch, start_time, avg_total_loss, nse_val, rmse_val)
+                print_epoch_stats(
+                    epoch, start_time, avg_total_loss,
+                    avg_losses['pde'], avg_losses['ic'], avg_losses['bc'],
+                    nse_val, rmse_val
+                )
 
-            log_metrics(aim_run, {'total_loss': avg_total_loss, 'pde_loss': avg_losses['pde'], 'nse': nse_val, 'rmse': rmse_val}, epoch)
-
+            log_metrics(aim_run, {
+                'total_loss': avg_total_loss, 
+                'pde_loss': avg_losses['pde'], 
+                'ic_loss': avg_losses['ic'], 
+                'bc_loss': avg_losses['bc'], 
+                'nse': nse_val, 
+                'rmse': rmse_val
+            }, epoch)
+            
             if epoch > cfg["device"]["early_stop_min_epochs"] and (epoch - best_epoch) > cfg["device"]["early_stop_patience"]:
                 print(f"Early stopping at epoch {epoch+1}.")
                 break
