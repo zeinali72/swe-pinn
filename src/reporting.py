@@ -3,13 +3,18 @@ import time
 from typing import Dict
 from aim import Run
 
-def print_epoch_stats(epoch: int, start_time: float, total_loss: float, nse: float, rmse: float):
+def print_epoch_stats(epoch: int, start_time: float, total_loss: float, 
+                      pde_loss: float, ic_loss: float, bc_loss: float,
+                      nse: float, rmse: float):
     """Prints the training statistics for the current epoch."""
     elapsed_time = time.time() - start_time
     print(
         f"Epoch {epoch+1:5d} | "
         f"Time: {elapsed_time:.2f}s | "
-        f"Loss: {total_loss:.4e} | "
+        f"Total Loss: {total_loss:.4e} | "
+        f"PDE: {pde_loss:.4e} | "
+        f"IC: {ic_loss:.4e} | "
+        f"BC: {bc_loss:.4e} | "
         f"NSE: {nse:.4f} | "
         f"RMSE: {rmse:.4f}"
     )
@@ -18,6 +23,8 @@ def log_metrics(aim_run: Run, metrics: Dict, epoch: int):
     """Logs metrics to Aim."""
     aim_run.track(metrics['total_loss'], name='total_loss', step=epoch, context={'subset': 'train'})
     aim_run.track(metrics['pde_loss'], name='pde_loss', step=epoch, context={'subset': 'train'})
+    aim_run.track(metrics['ic_loss'], name='ic_loss', step=epoch, context={'subset': 'train'})
+    aim_run.track(metrics['bc_loss'], name='bc_loss', step=epoch, context={'subset': 'train'})
     aim_run.track(metrics['nse'], name='nse', step=epoch, context={'subset': 'validation'})
     aim_run.track(metrics['rmse'], name='rmse', step=epoch, context={'subset': 'validation'})
 
