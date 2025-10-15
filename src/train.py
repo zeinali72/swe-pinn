@@ -167,8 +167,11 @@ def main(config_path: str):
                 x_val = jnp.linspace(0.0, cfg["domain"]["lx"], cfg["plotting"]["nx_val"])
                 pts_val = jnp.stack([x_val, jnp.full_like(x_val, cfg["plotting"]["y_const_plot"]), jnp.full_like(x_val, cfg["plotting"]["t_const_val"])], axis=1)
                 U_val_pred = model.apply({'params': best_params['params']}, pts_val, train=False)
+                h_val_pred = U_val_pred[..., 0]
+                # Set h values below a small epsilon to zero for physical realism in plotting
+                h_val_pred = jnp.where(h_val_pred < cfg["numerics"]["eps"], 0.0, h_val_pred)
                 plot_path = os.path.join(results_dir, "final_validation_plot.png")
-                plot_h_vs_x(x_val, U_val_pred[..., 0], cfg["plotting"]["t_const_val"], cfg["plotting"]["y_const_plot"], cfg, plot_path)
+                plot_h_vs_x(x_val, h_val_pred, cfg["plotting"]["t_const_val"], cfg["plotting"]["y_const_plot"], cfg, plot_path)
                 print("Artifacts saved.")
             else:
                 print("Warning: No best model found to save.")
