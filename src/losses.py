@@ -19,7 +19,7 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     # --- FIX: Get eps from config and pass it to SWEPhysics ---
     eps = config["numerics"]["eps"]
     physics = SWEPhysics(U_pred, eps=eps)
-    
+
     g = config["physics"]["g"]
     n_manning = config["physics"]["n_manning"]
     inflow = config["physics"]["inflow"]
@@ -71,8 +71,40 @@ def compute_bc_loss(model: nn.Module, params: Dict[str, Any],
             jnp.mean(res_bottom_hv**2) + jnp.mean(res_top_hv**2))
     return loss
 
+def compute_building_bc_loss(model: nn.Module, params: Dict[str, Any],
+                             building_left_batch: jnp.ndarray,
+                             building_right_batch: jnp.ndarray,
+                             building_bottom_batch: jnp.ndarray,
+                             building_top_batch: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute slip boundary condition loss for a rectangular building obstacle.
+    """
+    # Left wall (x-momentum is zero)
+    U_left = model.apply({'params': params['params']}, building_left_batch, train=False)
+    loss_left = jnp.mean(U_left[..., 1]**2)  # hu**2
+
+    # Right wall (x-momentum is zero)
+    U_right = model.apply({'params': params['params']}, building_right_batch, train=False)
+    loss_right = jnp.mean(U_right[..., 1]**2)  # hu**2
+
+    # Bottom wall (y-momentum is zero)
+    U_bottom = model.apply({'params': params['params']}, building_bottom_batch, train=False)
+    loss_bottom = jnp.mean(U_bottom[..., 2]**2)  # hv**2
+
+    # Top wall (y-momentum is zero)
+    U_top = model.apply({'params': params['params']}, building_top_batch, train=False)
+    loss_top = jnp.mean(U_top[..., 2]**2)  # hv**2
+
+    return loss_left + loss_right + loss_bottom + loss_top
+
 def total_loss(terms: Dict[str, jnp.ndarray], weights: Dict[str, float]) -> jnp.ndarray:
     """Compute the weighted sum of loss terms."""
-    return (weights['pde'] * terms['pde'] + 
-            weights['ic'] * terms['ic'] + 
-            weights['bc'] * terms['bc'])
+    loss = (weights.get('pde', 0.0) * terms.get('pde', 0.0) +
+            weights.get('ic', 0.0) * terms.get('ic', 0.0) +
+            weights.get('bc', 0.0) * terms.get('bc', 0.0))
+
+    # Conditionally add building loss if it exists in both terms and weights
+    if 'building_bc' in terms and 'building_bc' in weights:
+        loss += weights['building_bc'] * terms['building_bc']
+
+    return loss

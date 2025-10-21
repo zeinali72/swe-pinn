@@ -55,18 +55,67 @@ def plot_h_vs_x(x_line: jnp.ndarray, h_pred_line: jnp.ndarray, t_const: float, y
         print(f"Plot saved as {filename}")
     plt.close()
 
+def mask_points_inside_building(points: jnp.ndarray, building_config: Dict[str, Any]) -> jnp.ndarray:
+    """
+    Creates a boolean mask to exclude points inside a building's footprint.
+    """
+    x_coords = points[:, 0]
+    y_coords = points[:, 1]
+
+    x_min = building_config["x_min"]
+    x_max = building_config["x_max"]
+    y_min = building_config["y_min"]
+    y_max = building_config["y_max"]
+
+    # Mask is True for points *outside* the building
+    mask = ~((x_coords >= x_min) & (x_coords <= x_max) & (y_coords >= y_min) & (y_coords <= y_max))
+    return mask
+
+def plot_h_2d_top_view(xx: jnp.ndarray, yy: jnp.ndarray, h_pred: jnp.ndarray, config: Dict[str, Any], filename: str = None) -> None:
+    """
+    Generates and saves a 2D top-view contour plot of the water depth `h`.
+    """
+    print("Generating 2D top-view plot...")
+    plot_cfg = config["plotting"]
+    building_cfg = config.get("building")
+    t_const = plot_cfg["t_const_val"]
+
+    plt.figure(figsize=(12, 6))
+    contour = plt.contourf(xx, yy, h_pred, cmap='viridis', levels=50)
+    plt.colorbar(contour, label='Water Depth h (m)')
+
+    if building_cfg:
+        rect = plt.Rectangle(
+            (building_cfg["x_min"], building_cfg["y_min"]),
+            building_cfg["x_max"] - building_cfg["x_min"],
+            building_cfg["y_max"] - building_cfg["y_min"],
+            linewidth=1.5, edgecolor='r', facecolor='grey', label='Building'
+        )
+        plt.gca().add_patch(rect)
+
+    plt.title(f"Water Depth (h) at t = {t_const:.2f}s")
+    plt.xlabel("x (m)")
+    plt.ylabel("y (m)")
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.axis('equal')
+    plt.tight_layout()
+
+    if filename:
+        plt.savefig(filename)
+        print(f"2D plot saved as {filename}")
+    plt.close()
+
 def ask_for_confirmation(timeout=60):
     """Asks the user for confirmation with a timeout, defaulting to yes."""
     q = queue.Queue()
 
     def get_input():
         try:
-            # Prompt is written to stderr to not interfere with stdout piping
             sys.stderr.write(f"Save results? (y/n) [auto-yes in {timeout}s]: ")
             sys.stderr.flush()
             q.put(input().lower())
         except EOFError:
-            # If the script is run non-interactively, default to 'y'
             q.put('y')
 
     input_thread = threading.Thread(target=get_input)
@@ -75,10 +124,7 @@ def ask_for_confirmation(timeout=60):
 
     try:
         answer = q.get(timeout=timeout)
-        if answer == 'n':
-            return False
-        # Any other input, including 'y', defaults to yes
-        return True
+        return answer != 'n'
     except queue.Empty:
         print("\nNo input received, proceeding to save automatically.")
         return True

@@ -1,0 +1,73 @@
+# Configuration and Constants
+training:
+  learning_rate: 0.0007891912931084699 # Learning rate for the optimizer
+  epochs: 20_000                   # Number of training epochs
+  batch_size: 512                # Batch size for training (2**10)
+  seed: 42                       # Random seed for reproducibility
+
+scenario: "one_building_DEM_zero" # For loading validation_sample.npy
+
+model:
+  name: "FourierPINN"           # The name of the model class in src/models.py
+  width: 256
+  depth: 4
+  output_dim: 3
+  kernel_init: "glorot_uniform"
+  bias_init: 0.0
+  ff_dims: 512
+  fourier_scale: 15.0
+
+domain:
+  lx: 1200.0                     # Length of the domain in x-direction (m)
+  ly: 100.0                      # Length of the domain in y-direction (m)
+  t_final: 3600.0                # Final time of simulation (s)
+
+grid:
+  nx: 48                         # Number of grid points in x-direction for PDE
+  ny: 23                         # Number of grid points in y-direction for PDE
+  nt: 21                         # Number of grid points in time for PDE
+
+ic_bc_grid:
+  nx_ic: 39                      # Number of grid points in x for initial condition
+  ny_ic: 33                      # Number of grid points in y for initial condition
+  ny_bc_left: 24                 # Number of grid points in y for left boundary
+  nt_bc_left: 18                 # Number of grid points in time for left boundary
+  ny_bc_right: 33                # Number of grid points in y for right boundary
+  nt_bc_right: 11                # Number of grid points in time for right boundary
+  nx_bc_bottom: 70               # Number of grid points in x for bottom boundary
+  nt_bc_other: 15                # Number of grid points in time for other boundaries
+  nx_bc_top: 69                  # Number of grid points in x for top boundary
+
+building:
+  x_min: 325.0
+  x_max: 375.0
+  y_min: 25.0
+  y_max: 75.0
+  nx: 20  # Sampling density for bottom/top walls
+  ny: 20  # Sampling density for left/right walls
+  nt: 20  # Sampling density over time
+
+physics:
+  u_const: 0.29                  # Constant velocity (m/s)
+  n_manning: 0.03                # Manning's roughness coefficient
+  inflow: null                   # Inflow rate (null if not used)
+  g: 9.81                        # Gravitational acceleration (m/s^2)
+
+loss_weights:
+  pde_weight: 739697.429819995   # Weight for PDE loss term
+  bc_weight: 52.451320991170604  # Weight for boundary condition loss term
+  ic_weight: 55.79602913312669   # Weight for initial condition loss term
+  building_bc_weight: 100.0      # Weight for building boundary condition loss
+
+plotting:
+  nx_val: 101                    # Number of points for validation plot in x-direction
+  t_const_val: 1800.0            # Time for validation plot (0.5 * t_final)
+  y_const_plot: 0                # Y-coordinate for validation plot (m)
+
+device:
+  dtype: "float32"               # Data type for JAX computations
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+
+numerics:
+  eps: 1e-6                      # Small epsilon for numerical stability
