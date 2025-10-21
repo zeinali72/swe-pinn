@@ -4,6 +4,7 @@ import time
 import copy
 import argparse
 import importlib
+import itertools  # <-- Import itertools
 from typing import Any, Dict, Tuple
 import shutil
 
@@ -131,6 +132,7 @@ def main(config_path: str):
 
     try:
         for epoch in range(cfg["training"]["epochs"]):
+            # --- Dynamic Sampling in each epoch ---
             key, pde_key, ic_key, l_key, r_key, b_key, t_key = random.split(key, 7)
             
             building_keys = {}
@@ -176,6 +178,18 @@ def main(config_path: str):
             if has_building:
                 for wall in ['left', 'right', 'bottom', 'top']:
                     building_batches[wall] = get_batches(building_batch_keys[wall], building_points[wall], batch_size)
+            
+            # --- Use itertools.cycle for unbiased batching ---
+            ic_batch_iter = itertools.cycle(ic_batches)
+            left_batch_iter = itertools.cycle(left_batches)
+            right_batch_iter = itertools.cycle(right_batches)
+            bottom_batch_iter = itertools.cycle(bottom_batches)
+            top_batch_iter = itertools.cycle(top_batches)
+            
+            building_batch_iters = {}
+            if has_building:
+                for wall, batches in building_batches.items():
+                    building_batch_iters[wall] = itertools.cycle(batches)
 
             num_batches = len(pde_batches)
             epoch_losses = {'pde': 0.0, 'ic': 0.0, 'bc': 0.0}
@@ -185,17 +199,17 @@ def main(config_path: str):
             for i in range(num_batches):
                 current_building_batches = {}
                 if has_building:
-                    for wall in ['left', 'right', 'bottom', 'top']:
-                        current_building_batches[wall] = building_batches[wall][i % len(building_batches[wall])]
+                    for wall, iter in building_batch_iters.items():
+                        current_building_batches[wall] = next(iter)
                 
                 params, opt_state, batch_losses = train_step_jitted(
                     model, params, opt_state,
                     pde_batches[i],
-                    ic_batches[i % len(ic_batches)],
-                    left_batches[i % len(left_batches)],
-                    right_batches[i % len(right_batches)],
-                    bottom_batches[i % len(bottom_batches)],
-                    top_batches[i % len(top_batches)],
+                    next(ic_batch_iter),
+                    next(left_batch_iter),
+                    next(right_batch_iter),
+                    next(bottom_batch_iter),
+                    next(top_batch_iter),
                     current_building_batches,
                     weights_dict, optimiser, cfg
                 )
