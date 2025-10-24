@@ -298,6 +298,7 @@ def main(config_path: str):
                 print("All artifacts successfully deleted.")
             except Exception as e:
                 print(f"Error during cleanup: {e}")
+    return best_nse
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a PINN model.")

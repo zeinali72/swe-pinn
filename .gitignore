@@ -134,3 +134,9 @@ results/
 
 # notes
 notes/
+
+
+# hyperparameter optimization
+hyperopt/trial_configs
+hyperopt/*.db
+
