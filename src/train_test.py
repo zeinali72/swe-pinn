@@ -1,10 +1,10 @@
-# src/train.py
+# src/train_test.py
 import os
 import time
 import copy
 import argparse
 import importlib
-import itertools  # <-- Import itertools
+import itertools
 from typing import Any, Dict, Tuple
 import shutil
 
@@ -42,7 +42,7 @@ def train_step(model: Any, params: Dict[str, Any], opt_state: Any,
         )
         terms = {'pde': pde_loss, 'ic': ic_loss, 'bc': bc_loss}
 
-        if config.get("building"):
+        if "building" in config:
             building_loss = compute_building_bc_loss(
                 model, p,
                 building_batches['left'],
@@ -103,7 +103,7 @@ def main(config_path: str):
     )
     opt_state = optimiser.init(params)
     weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
-    
+
     # --- Prepare validation data once ---
     val_points, h_true_val = None, None
     if has_building:
@@ -112,16 +112,13 @@ def main(config_path: str):
             validation_data = jnp.load(validation_data_path)
             val_points = validation_data[:, :3]  # x, y, t
             h_true_val = validation_data[:, 3]
-            
-            # Mask validation points as well
+
+            # Mask validation points as well (this is fine as it's outside the loop)
             mask = mask_points_inside_building(val_points, cfg["building"])
             val_points = val_points[mask]
             h_true_val = h_true_val[mask]
         else:
             print(f"Warning: Validation file not found at {validation_data_path}. Validation will be skipped.")
-    
-    # For no-building case, validation points for NSE will be the PDE points of the last epoch
-    # and h_true will be calculated via h_exact inside the loop.
 
     print(f"Training started for model: {cfg['model']['name']}")
     best_nse: float = -jnp.inf
@@ -134,7 +131,7 @@ def main(config_path: str):
         for epoch in range(cfg["training"]["epochs"]):
             # --- Dynamic Sampling in each epoch ---
             key, pde_key, ic_key, l_key, r_key, b_key, t_key = random.split(key, 7)
-            
+
             building_keys = {}
             if has_building:
                 key, bldg_l_key, bldg_r_key, bldg_b_key, bldg_t_key = random.split(key, 5)
@@ -147,9 +144,10 @@ def main(config_path: str):
             bottom_wall = sample_points(0., cfg["domain"]["lx"], 0., 0., 0., cfg["domain"]["t_final"], cfg["ic_bc_grid"]["nx_bc_bottom"], 1, cfg["ic_bc_grid"]["nt_bc_other"], b_key)
             top_wall = sample_points(0., cfg["domain"]["lx"], cfg["domain"]["ly"], cfg["domain"]["ly"], 0., cfg["domain"]["t_final"], cfg["ic_bc_grid"]["nx_bc_top"], 1, cfg["ic_bc_grid"]["nt_bc_other"], t_key)
 
-            if has_building:
-                mask = mask_points_inside_building(pde_points, cfg["building"])
-                pde_points = pde_points[mask]
+            # --- REMOVED: No more manual masking of pde_points in the loop ---
+            # if has_building:
+            #     mask = mask_points_inside_building(pde_points, cfg["building"])
+            #     pde_points = pde_points[mask]
 
             building_points = {}
             if has_building:
@@ -161,7 +159,7 @@ def main(config_path: str):
 
             batch_size = cfg["training"]["batch_size"]
             key, pde_b_key, ic_b_key, l_b_key, r_b_key, b_b_key, t_b_key = random.split(key, 7)
-            
+
             building_batch_keys = {}
             if has_building:
                 key, bldg_l_b_key, bldg_r_b_key, bldg_b_b_key, bldg_t_b_key = random.split(key, 5)
@@ -173,19 +171,18 @@ def main(config_path: str):
             right_batches = get_batches(r_b_key, right_wall, batch_size)
             bottom_batches = get_batches(b_b_key, bottom_wall, batch_size)
             top_batches = get_batches(t_b_key, top_wall, batch_size)
-            
+
             building_batches = {}
             if has_building:
                 for wall in ['left', 'right', 'bottom', 'top']:
                     building_batches[wall] = get_batches(building_batch_keys[wall], building_points[wall], batch_size)
-            
-            # --- Use itertools.cycle for unbiased batching ---
+
             ic_batch_iter = itertools.cycle(ic_batches)
             left_batch_iter = itertools.cycle(left_batches)
             right_batch_iter = itertools.cycle(right_batches)
             bottom_batch_iter = itertools.cycle(bottom_batches)
             top_batch_iter = itertools.cycle(top_batches)
-            
+
             building_batch_iters = {}
             if has_building:
                 for wall, batches in building_batches.items():
@@ -201,7 +198,7 @@ def main(config_path: str):
                 if has_building:
                     for wall, iter in building_batch_iters.items():
                         current_building_batches[wall] = next(iter)
-                
+
                 params, opt_state, batch_losses = train_step_jitted(
                     model, params, opt_state,
                     pde_batches[i],
@@ -251,7 +248,7 @@ def main(config_path: str):
                 'building_bc_loss': avg_losses.get('building_bc', 0.0),
                 'nse': nse_val, 'rmse': rmse_val
             }, epoch)
-            
+
             if epoch > cfg["device"]["early_stop_min_epochs"] and (epoch - best_epoch) > cfg["device"]["early_stop_patience"]:
                 print(f"Early stopping at epoch {epoch+1}.")
                 break
@@ -265,7 +262,7 @@ def main(config_path: str):
         if ask_for_confirmation():
             if best_params is not None:
                 save_model(best_params, model_dir, trial_name)
-                
+
                 if has_building:
                     resolution = 100
                     x = jnp.linspace(0, cfg["domain"]["lx"], resolution)
@@ -273,11 +270,11 @@ def main(config_path: str):
                     xx, yy = jnp.meshgrid(x, y)
                     t = jnp.full_like(xx, cfg["plotting"]["t_const_val"])
                     pts_2d = jnp.stack([xx.ravel(), yy.ravel(), t.ravel()], axis=-1)
-                    
+
                     U_val_pred_2d = model.apply({'params': best_params['params']}, pts_2d, train=False)
                     h_val_pred_2d = U_val_pred_2d[..., 0].reshape(resolution, resolution)
                     h_val_pred_2d = jnp.where(h_val_pred_2d < cfg["numerics"]["eps"], 0.0, h_val_pred_2d)
-                    
+
                     plot_path_2d = os.path.join(results_dir, "final_2d_top_view.png")
                     plot_h_2d_top_view(xx, yy, h_val_pred_2d, cfg, plot_path_2d)
                 else:
@@ -288,7 +285,7 @@ def main(config_path: str):
                     h_val_pred = jnp.where(h_val_pred < cfg["numerics"]["eps"], 0.0, h_val_pred)
                     plot_path = os.path.join(results_dir, "final_validation_plot.png")
                     plot_h_vs_x(x_val, h_val_pred, cfg["plotting"]["t_const_val"], cfg["plotting"]["y_const_plot"], cfg, plot_path)
-                
+
                 print("Artifacts saved.")
             else:
                 print("Warning: No best model found to save.")

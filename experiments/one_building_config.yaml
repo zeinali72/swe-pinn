@@ -58,6 +58,7 @@ loss_weights:
   bc_weight: 52.451320991170604  # Weight for boundary condition loss term
   ic_weight: 55.79602913312669   # Weight for initial condition loss term
   building_bc_weight: 100.0      # Weight for building boundary condition loss
+  
 
 plotting:
   nx_val: 101                    # Number of points for validation plot in x-direction

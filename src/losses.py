@@ -6,6 +6,7 @@ from flax.core import FrozenDict
 from typing import Dict, Any
 
 from src.physics import SWEPhysics, h_exact
+from src.utils import mask_points_inside_building # <-- Import the masking function
 
 def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray, config: FrozenDict) -> jnp.ndarray:
     """Compute the PDE residual mean squared error (MSE) for the SWE."""
@@ -16,7 +17,6 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
     dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
 
-    # --- FIX: Get eps from config and pass it to SWEPhysics ---
     eps = config["numerics"]["eps"]
     physics = SWEPhysics(U_pred, eps=eps)
 
@@ -29,9 +29,27 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
     S = physics.source(g=g, n_manning=n_manning, inflow=inflow)
 
+    residual = (dU_dt + div_F + div_G - S)
+
+    # Mask for physical realism (zero residual where water depth is near zero)
     h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
-    residual = (dU_dt + div_F + div_G - S) * h_mask[..., None]
-    return jnp.mean(residual ** 2)
+
+    # --- NEW: EFFICIENT MASKING INSIDE JIT-COMPILED FUNCTION ---
+    # Check if a building is defined in the config
+    if "building" in config:
+        # Create a boolean mask (True for points OUTSIDE the building)
+        # We need to reshape it to (batch_size, 1) to allow broadcasting with the residual
+        building_mask = mask_points_inside_building(pde_batch, config["building"])[..., None]
+
+        # Apply both the water depth mask and the building mask.
+        # The residual for points inside the building will become zero.
+        final_residual = residual * h_mask[..., None] * building_mask
+    else:
+        # If no building, just apply the water depth mask
+        final_residual = residual * h_mask[..., None]
+
+    return jnp.mean(final_residual ** 2)
+
 
 def compute_ic_loss(model: nn.Module, params: Dict[str, Any], ic_batch: jnp.ndarray) -> jnp.ndarray:
     """Compute initial condition loss for h=0, hu=0, hv=0 at t=0."""
