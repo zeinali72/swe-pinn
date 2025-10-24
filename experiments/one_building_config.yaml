@@ -19,7 +19,7 @@ model:
 
 domain:
   lx: 1200.0                     # Length of the domain in x-direction (m)
-  ly: 100.0                      # Length of the domain in y-direction (m)
+  ly: 100.0                      # Length of the domain y-direction (m)
   t_final: 3600.0                # Final time of simulation (s)
 
 grid:
@@ -57,13 +57,15 @@ loss_weights:
   pde_weight: 739697.429819995   # Weight for PDE loss term
   bc_weight: 52.451320991170604  # Weight for boundary condition loss term
   ic_weight: 55.79602913312669   # Weight for initial condition loss term
-  building_bc_weight: 100.0      # Weight for building boundary condition loss
-  
+  building_bc_weight: 50.0      # Weight for building boundary condition loss
+  data_weight: 1.0              # <<<--- NEW: Weight for the data loss term (adjust as needed)
+
 
 plotting:
   nx_val: 101                    # Number of points for validation plot in x-direction
   t_const_val: 1800.0            # Time for validation plot (0.5 * t_final)
   y_const_plot: 0                # Y-coordinate for validation plot (m)
+  plot_resolution: 150           # <<<--- Optional: Resolution for 2D plot
 
 device:
   dtype: "float32"               # Data type for JAX computations

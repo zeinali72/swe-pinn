@@ -7,7 +7,7 @@ import shutil
 import time
 
 # --- Use train_test.py as the main training entry point ---
-from src.train_test import main as train_main # Make sure src/train_test.py has the run_for_hpo flag
+from archive.train_test import main as train_main # Make sure src/train_test.py has the run_for_hpo flag
 
 # --- Configuration ---
 BASE_CONFIG_PATH = "experiments/one_building_config.yaml"
