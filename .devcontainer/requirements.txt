@@ -15,3 +15,7 @@ aim
 
 # Optimisation libraries
 optuna
+
+# Cupy and Cudf
+cudf-cu12==25.10.*
+cupy-cuda12x
