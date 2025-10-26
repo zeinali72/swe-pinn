@@ -16,6 +16,7 @@ from jax import random
 import optax
 from aim import Repo, Run # Keep AIM imports, handle potential errors
 from flax.core import FrozenDict
+import numpy as np # Import numpy for loading
 
 # --- Use DTYPE from config ---
 from src.config import load_config, DTYPE
@@ -28,7 +29,12 @@ from src.losses import (
 )
 # --- END ---
 # --- Re-added imports for no-building case ---
-from src.utils import nse, rmse, generate_trial_name, save_model, ask_for_confirmation, plot_h_2d_top_view, mask_points_inside_building, plot_h_vs_x
+from src.utils import ( # Updated utils import
+    nse, rmse, generate_trial_name, save_model, ask_for_confirmation,
+    # plot_h_2d_top_view, # <<<--- REMOVED this import
+    mask_points_inside_building, plot_h_vs_x,
+    plot_h_prediction_vs_true_2d # <<<--- Keep the stacked plot function
+)
 from src.physics import h_exact
 # --- END ---
 from src.reporting import print_epoch_stats, log_metrics, print_final_summary
@@ -104,13 +110,12 @@ def main(config_path: str):
 
     # --- Scenario-specific warnings ---
     if has_building and "scenario" not in cfg:
-        print("Warning: 'building' section found, but 'scenario' key is missing. Validation data path might be incorrect.")
+        print("Warning: 'building' section found, but 'scenario' key is missing. Data paths might be incorrect.")
     if not has_building:
         print("Info: No 'building' section found in config. Running in no-building mode.")
         if cfg.get("loss_weights", {}).get("building_bc_weight", 0.0) > 0:
             print("Warning: 'building_bc_weight' > 0 but no 'building' section in config. Building BC loss will not be calculated.")
-        if cfg.get("loss_weights", {}).get("data_weight", 0.0) > 0:
-            print("Warning: 'data_weight' > 0 but no 'building' section. Data loss requires 'validation_sample.npy' typically associated with building scenarios. Data loss may fail or be disabled.")
+        # Removed warning about data_weight as it will now use training_dataset_sample.npy
 
     # --- Model Initialization ---
     try:
@@ -162,34 +167,40 @@ def main(config_path: str):
     weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
     has_data_loss = 'data' in weights_dict and weights_dict['data'] > 0
 
-    # --- Load Data (Validation and optional Data Loss points) ---
-    val_points, h_true_val = None, None # Renamed for clarity (these are masked if building)
+    # --- Load Data (Separate Training and Validation) ---
+    val_points, h_true_val = None, None # For validation metrics
     data_points_full = None # For training data loss term
-    scenario_name = cfg.get('scenario', 'default_scenario')
-    # Data file path is relevant mainly for building scenarios or if data loss is explicitly wanted
-    data_file_path = os.path.join("data", scenario_name, "validation_sample.npy")
+    scenario_name = cfg.get('scenario', 'default_scenario') # Needed for data paths
+    base_data_path = os.path.join("data", scenario_name)
 
-    # Attempt to load data if the file exists (might be needed for data loss or building validation)
-    if os.path.exists(data_file_path):
-        try:
-            print(f"Loading data from: {data_file_path}")
-            loaded_data = jnp.load(data_file_path).astype(DTYPE)
-
-            # Use loaded data for data loss term if enabled
-            if has_data_loss:
-                data_points_full = loaded_data # Shape (N, 6): [t, x, y, h, u, v]
+    # --- Load Training Data (for data loss term) ---
+    training_data_file = os.path.join(base_data_path, "training_dataset_sample.npy")
+    if has_data_loss:
+        if os.path.exists(training_data_file):
+            try:
+                print(f"Loading TRAINING data from: {training_data_file}")
+                data_points_full = jnp.load(training_data_file).astype(DTYPE) # Shape (N, 6): [t, x, y, h, u, v]
                 print(f"Using {data_points_full.shape[0]} points for data loss term (weight={weights_dict['data']:.2e}).")
-                # Optional: Apply mask to data loss points too if desired for building case
-                # if has_building:
-                #    mask_data = mask_points_inside_building(loaded_data[:, [1, 2, 0]], cfg["building"])
-                #    data_points_full = data_points_full[mask_data]
-                #    print(f"Masked data loss points remaining: {data_points_full.shape[0]}.")
+            except Exception as e:
+                print(f"Error loading training data file {training_data_file}: {e}")
+                print("Disabling data loss term due to loading error.")
+                data_points_full = None
+                has_data_loss = False
+        else:
+            print(f"Warning: Training data file not found at {training_data_file}.")
+            print("Data loss term cannot be computed and will be disabled.")
+            has_data_loss = False
 
+    # --- Load Validation Data (for NSE/RMSE metrics) ---
+    validation_data_file = os.path.join(base_data_path, "validation_sample.npy")
+    if os.path.exists(validation_data_file):
+        try:
+            print(f"Loading VALIDATION data from: {validation_data_file}")
+            loaded_val_data = jnp.load(validation_data_file).astype(DTYPE)
 
-            # If it's a building scenario, prepare masked validation points
             if has_building:
-                val_points_all = loaded_data[:, [1, 2, 0]] # Input points (x, y, t)
-                h_true_val_all = loaded_data[:, 3]       # True water depth h
+                val_points_all = loaded_val_data[:, [1, 2, 0]] # Input points (x, y, t)
+                h_true_val_all = loaded_val_data[:, 3]       # True water depth h
                 print("Applying building mask to validation metrics points...")
                 mask_val = mask_points_inside_building(val_points_all, cfg["building"])
                 val_points = val_points_all[mask_val]
@@ -198,26 +209,19 @@ def main(config_path: str):
                 print(f"Masked validation metrics points remaining: {num_masked_val_points}.")
                 if num_masked_val_points == 0:
                      print("Warning: No validation points remaining after masking. NSE/RMSE calculation will be skipped for building case.")
-            # If no building, we don't use this loaded data for validation (will use analytical)
-            # but might still use it for data_loss if enabled.
-
         except Exception as e:
-            print(f"Error loading or processing data file {data_file_path}: {e}")
-            val_points, h_true_val, data_points_full = None, None, None
-            if has_data_loss:
-                print("Disabling data loss term due to data loading error.")
-                has_data_loss = False
+            print(f"Error loading or processing validation data file {validation_data_file}: {e}")
+            val_points, h_true_val = None, None
+            if has_building:
+                print("NSE/RMSE calculation for building scenario will be skipped due to validation data loading error.")
     else:
-        # File not found
-        print(f"Warning: Data file not found at {data_file_path}.")
-        if has_data_loss:
-            print("Data loss term cannot be computed and will be disabled.")
-            has_data_loss = False
+        print(f"Warning: Validation data file not found at {validation_data_file}.")
         if has_building:
             print("Validation metrics (NSE/RMSE) for building scenario will be skipped.")
         else:
-            print("Validation metrics (NSE/RMSE) will use analytical solution.")
+            print("Validation metrics (NSE/RMSE) will use analytical solution (if PDE points exist).")
     # --- End Data Loading ---
+
 
     # --- Training Initialization ---
     print(f"\n--- Training Started: {trial_name} ---")
@@ -233,6 +237,7 @@ def main(config_path: str):
     start_time = time.time()
 
     # --- Main Training Loop ---
+    # ... (Keep the training loop as it was in the previous response) ...
     try:
         for epoch in range(cfg["training"]["epochs"]):
             epoch_start_time = time.time()
@@ -315,7 +320,7 @@ def main(config_path: str):
                 right_batch_data = next(right_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
                 bottom_batch_data = next(bottom_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
                 top_batch_data = next(top_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-                data_batch_data = next(data_batch_iter, jnp.empty((0, 6), dtype=DTYPE))
+                data_batch_data = next(data_batch_iter, jnp.empty((0, 6), dtype=DTYPE)) # Data batch has 6 columns
 
                 current_building_batch_data = {}
                 if has_building:
@@ -332,7 +337,7 @@ def main(config_path: str):
                     bottom_batch_data,
                     top_batch_data,
                     current_building_batch_data if has_building else {}, # Pass empty dict if no building
-                    data_batch_data,
+                    data_batch_data, # Pass the data batch
                     weights_dict, optimiser, cfg
                 )
 
@@ -347,7 +352,7 @@ def main(config_path: str):
             nse_val, rmse_val = -jnp.inf, jnp.inf
             with jax.disable_jit():
                 if has_building:
-                    # Validate using masked data if available
+                    # Validate using masked validation data if available
                     if val_points is not None and h_true_val is not None and val_points.shape[0] > 0:
                          U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
                          h_pred_val = U_pred_val[..., 0]
@@ -378,13 +383,12 @@ def main(config_path: str):
                 best_epoch = epoch
                 best_params = copy.deepcopy(params) # Store the best parameters
                 best_nse_time = time.time() - start_time
-                # Only print if NSE is valid
                 if nse_val > -jnp.inf:
                     print(f"    ---> New best NSE: {best_nse:.6f} at epoch {epoch+1}")
 
             # --- Logging and Reporting ---
             epoch_time = time.time() - epoch_start_time
-            if (epoch + 1) % 100 == 0: # Log every 100 epochs
+            if (epoch + 1) % 100 == 0:
                 print_epoch_stats(
                     epoch, start_time, avg_total_loss,
                     avg_losses['pde'], avg_losses['ic'], avg_losses['bc'],
@@ -393,7 +397,6 @@ def main(config_path: str):
                     nse_val, rmse_val, epoch_time
                 )
 
-            # Log metrics to Aim if initialized
             if aim_run:
                 try:
                     log_metrics(aim_run, {
@@ -413,7 +416,7 @@ def main(config_path: str):
             if epoch >= min_epochs and (epoch - best_epoch) >= patience:
                 print(f"--- Early stopping triggered at epoch {epoch+1} ---")
                 print(f"Best NSE {best_nse:.6f} achieved at epoch {best_epoch+1}.")
-                break # Exit training loop
+                break
 
     except KeyboardInterrupt:
         print("\n--- Training interrupted by user ---")
@@ -442,28 +445,55 @@ def main(config_path: str):
                     save_model(best_params, model_dir, trial_name)
 
                     # --- Conditional Plotting ---
-                    print("Generating final plot...")
+                    print("Generating final plot...") # Changed message
                     plot_cfg = cfg.get("plotting", {})
                     eps_plot = cfg.get("numerics", {}).get("eps", 1e-6)
                     t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
 
                     if has_building:
-                        # Generate 2D Plot for building scenario
+                        # --- Generate Meshgrid Data for Prediction Plot ---
+                        print("  Generating meshgrid predictions...")
                         resolution = plot_cfg.get("plot_resolution", 100)
                         x_plot = jnp.linspace(0, cfg["domain"]["lx"], resolution, dtype=DTYPE)
                         y_plot = jnp.linspace(0, cfg["domain"]["ly"], resolution, dtype=DTYPE)
                         xx_plot, yy_plot = jnp.meshgrid(x_plot, y_plot)
                         t_plot = jnp.full_like(xx_plot, t_const_val_plot, dtype=DTYPE)
-                        plot_points = jnp.stack([xx_plot.ravel(), yy_plot.ravel(), t_plot.ravel()], axis=-1)
+                        plot_points_mesh = jnp.stack([xx_plot.ravel(), yy_plot.ravel(), t_plot.ravel()], axis=-1)
 
-                        U_plot_pred = model.apply({'params': best_params['params']}, plot_points, train=False)
-                        h_plot_pred = U_plot_pred[..., 0].reshape(resolution, resolution)
-                        h_plot_pred = jnp.where(h_plot_pred < eps_plot, 0.0, h_plot_pred)
+                        U_plot_pred_mesh = model.apply({'params': best_params['params']}, plot_points_mesh, train=False)
+                        h_plot_pred_mesh = U_plot_pred_mesh[..., 0].reshape(resolution, resolution)
+                        h_plot_pred_mesh = jnp.where(h_plot_pred_mesh < eps_plot, 0.0, h_plot_pred_mesh)
 
-                        plot_path = os.path.join(results_dir, "final_2d_top_view.png")
-                        plot_h_2d_top_view(xx_plot, yy_plot, h_plot_pred, cfg_dict, plot_path) # Pass dict config
-                    else:
+                        # --- REMOVED: Original 2D Top View Plot Call ---
+                        # plot_path_2d = os.path.join(results_dir, "final_2d_top_view.png")
+                        # plot_h_2d_top_view(xx_plot, yy_plot, h_plot_pred_mesh, cfg_dict, plot_path_2d)
+
+                        # --- Generate Stacked Comparison Plot using validation_plotting_t_XXXXs.npy ---
+                        print("  Loading plotting data for comparison...")
+                        plot_data_time = t_const_val_plot
+                        plot_data_file = os.path.join(base_data_path, f"validation_plotting_t_{int(plot_data_time)}s.npy")
+                        if os.path.exists(plot_data_file):
+                            try:
+                                plot_data = np.load(plot_data_file)
+                                x_coords_plot = jnp.array(plot_data[:, 1], dtype=DTYPE) # x
+                                y_coords_plot = jnp.array(plot_data[:, 2], dtype=DTYPE) # y
+                                h_true_plot_data = jnp.array(plot_data[:, 3], dtype=DTYPE) # h
+
+                                # Call the new stacked plotting function
+                                plot_path_comp = os.path.join(results_dir, f"final_comparison_plot_t{int(plot_data_time)}s.png")
+                                plot_h_prediction_vs_true_2d(
+                                    xx_plot, yy_plot, h_plot_pred_mesh, # Predicted mesh data
+                                    x_coords_plot, y_coords_plot, h_true_plot_data, # True scattered data
+                                    cfg_dict, plot_path_comp
+                                )
+                            except Exception as e_plot:
+                                print(f"  Error generating comparison plot: {e_plot}")
+                        else:
+                             print(f"  Warning: Plotting data file {plot_data_file} not found. Skipping comparison plot.")
+
+                    else: # No building scenario
                         # Generate 1D Plot for no-building scenario
+                        print("  Generating 1D validation plot...")
                         nx_val_plot = plot_cfg.get("nx_val", 101)
                         y_const_plot = plot_cfg.get("y_const_plot", 0.0)
                         x_val_plot = jnp.linspace(0.0, cfg["domain"]["lx"], nx_val_plot, dtype=DTYPE)
@@ -473,10 +503,10 @@ def main(config_path: str):
                         h_plot_pred_1d = U_plot_pred_1d[..., 0]
                         h_plot_pred_1d = jnp.where(h_plot_pred_1d < eps_plot, 0.0, h_plot_pred_1d)
 
-                        plot_path = os.path.join(results_dir, "final_validation_plot.png")
-                        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path) # Pass dict config
+                        plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
+                        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d) # Pass dict config
 
-                    print(f"Model and plot saved in {model_dir} and {results_dir}")
+                    print(f"Model and comparison plot saved in {model_dir} and {results_dir}") # Updated message
                 except Exception as e:
                      print(f"Error during saving/plotting: {e}")
                      import traceback
@@ -525,4 +555,3 @@ if __name__ == "__main__":
         print(f"An unexpected error occurred: {e}")
         import traceback
         traceback.print_exc()
-

@@ -58,7 +58,7 @@ loss_weights:
   bc_weight: 52.451320991170604  # Weight for boundary condition loss term
   ic_weight: 55.79602913312669   # Weight for initial condition loss term
   building_bc_weight: 50.0      # Weight for building boundary condition loss
-  data_weight: 1.0              # <<<--- NEW: Weight for the data loss term (adjust as needed)
+  data_weight: 100.0              # <<<--- NEW: Weight for the data loss term (adjust as needed)
 
 
 plotting:
