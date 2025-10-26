@@ -54,11 +54,17 @@ physics:
   g: 9.81                        # Gravitational acceleration (m/s^2)
 
 loss_weights:
-  pde_weight: 739697.429819995   # Weight for PDE loss term
-  bc_weight: 52.451320991170604  # Weight for boundary condition loss term
-  ic_weight: 55.79602913312669   # Weight for initial condition loss term
-  building_bc_weight: 50.0      # Weight for building boundary condition loss
-  data_weight: 100.0              # <<<--- NEW: Weight for the data loss term (adjust as needed)
+  pde_weight: 1.0 # Initial value, GradNorm will override if enabled
+  bc_weight: 1.0
+  ic_weight: 1.0
+  building_bc_weight: 1.0
+  data_weight: 1.0
+
+gradnorm:
+  enable: True # Set to True to use GradNorm, False for static weights
+  alpha: 1.5   # Restoring force strength (common value)
+  learning_rate: 0.025 # Learning rate for updating the weights w_i
+  update_freq: 100 # How often (in steps) to update GradNorm weights
 
 
 plotting:

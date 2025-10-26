@@ -61,6 +61,11 @@ def log_metrics(aim_run: Run, metrics: Dict, epoch: int):
         aim_run.track(_get_metric('rmse', float('inf')), name='rmse', step=epoch, context={'subset': 'validation'}) # Use inf default for RMSE
         aim_run.track(_get_metric('epoch_time'), name='epoch_time', step=epoch, context={'subset': 'system'})
 
+        # --- NEW: Log dynamic weights ---
+        for key in metrics:
+            if key.startswith('weight_'):
+                 aim_run.track(_get_metric(key, 1.0), name=key, step=epoch, context={'subset': 'gradnorm'})
+
     except Exception as e:
         print(f"Warning: Failed to log metrics to Aim in epoch {epoch}: {e}")
 
