@@ -57,6 +57,12 @@ loss_weights:
   building_bc_weight: 50.0      # Weight for building boundary condition loss (keep original or tune)
   data_weight: 100.0              # Weight for the data loss term (keep original or tune)
 
+gradnorm:
+  enable: True # Set to True to use GradNorm, False for static weights
+  alpha: 1.5   # Restoring force strength (common value)
+  learning_rate: 0.01 # Learning rate for updating the weights w_i
+  update_freq: 100 # How often (in steps) to update GradNorm weights
+
 plotting:
   nx_val: 101                    # Number of points for validation plot in x-direction
   t_const_val: 1800.0            # Time for validation plot (0.5 * t_final)

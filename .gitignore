@@ -140,3 +140,6 @@ notes/
 hyperopt/trial_configs
 hyperopt/*.db
 
+# database files
+*.sqlite3
+*.db
