@@ -13,20 +13,21 @@ import copy
 # Import the training loop function from the same directory
 from optimization_train_loop import run_training_trial
 
-def objective(trial: optuna.trial.Trial, base_config_dict: Dict, data_free: bool) -> float:
+def objective(trial: optuna.trial.Trial,
+              base_config_dict: Dict,
+              data_free: bool,
+              enable_gradnorm: bool) -> float: # Accept both flags
     """
     Objective function for Optuna hyperparameter optimization.
-    Suggests hyperparameters, constructs the config, runs training, returns NSE.
+    Suggests hyperparameters based on data_free and enable_gradnorm flags,
+    constructs the config, runs training, returns NSE.
     """
     base_cfg = FrozenDict(base_config_dict)
     model_name = base_cfg["model"]["name"]
     has_building = "building" in base_cfg
-    # GradNorm enabled only if specified in base config AND not data_free
-    enable_gradnorm = base_cfg.get("gradnorm", {}).get("enable", False) and not data_free
 
     # --- 1. Define Hyperparameter Search Space ---
-    # print(f"Trial {trial.number}: Suggesting hyperparameters...") # Keep logging minimal
-    trial_params = {}
+    trial_params = {} # Store suggested params
 
     # === Training Hyperparameters ===
     trial_params["learning_rate"] = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
@@ -45,13 +46,11 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict, data_free: bool
     # Add parameters for DGMNetwork if needed
 
     # === Grid Hyperparameters ===
-    # Base grid for PDE
+    # (Same as before - these are independent of data_free/gradnorm)
     nx_base = trial.suggest_int("nx_base", 20, 80, step=4)
     ny_base = trial.suggest_int("ny_base", 10, 40, step=2)
     nt_base = trial.suggest_int("nt_base", 10, 40, step=2)
     trial_params["grid"] = {"nx": nx_base, "ny": ny_base, "nt": nt_base}
-
-    # Factors for IC/BC grids
     trial_params["ic_bc_grid"] = {
         "nx_ic": max(5, int(trial.suggest_float("nx_ic_factor", 0.5, 1.5) * nx_base)),
         "ny_ic": max(5, int(trial.suggest_float("ny_ic_factor", 0.5, 1.5) * ny_base)),
@@ -63,8 +62,6 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict, data_free: bool
         "nt_bc_other": max(5, int(trial.suggest_float("nt_bc_other_factor", 0.3, 1.2) * nt_base)),
         "nx_bc_top": max(5, int(trial.suggest_float("nx_bc_top_factor", 0.5, 1.5) * nx_base)),
     }
-
-    # Factors for Building grid (if applicable)
     if has_building:
          trial_params["building_grid"] = {
              "nx": max(5, int(trial.suggest_float("nx_bldg_factor", 0.3, 1.2) * nx_base)),
@@ -72,31 +69,56 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict, data_free: bool
              "nt": max(5, int(trial.suggest_float("nt_bldg_factor", 0.3, 1.2) * nt_base)),
          }
 
-    # === Loss Weights / GradNorm Hyperparameters ===
-    trial_params["loss_weights"] = {}
+    # === Loss Weights / GradNorm Hyperparameters (Conditional Suggestion) ===
+    trial_params["loss_weights"] = {} # Initialize weights dict
+
     if enable_gradnorm:
+        print(f"Trial {trial.number}: Configuring for GradNorm (data_free={data_free}).") # Debug print
+        # *** Suggest GradNorm specific parameters ***
         trial_params["gradnorm_alpha"] = trial.suggest_float("gradnorm_alpha", 0.1, 3.0)
-        trial_params["gradnorm_update_freq"] = trial.suggest_categorical("gradnorm_update_freq", [50, 100, 200, 500]) # <-- ADD THIS LINE
-        # Set initial weights to 1.0 for all potentially active terms
+        trial_params["gradnorm_update_freq"] = trial.suggest_categorical("gradnorm_update_freq", [50, 100, 200, 500])
+        # trial_params["gradnorm_lr"] = trial.suggest_float("gradnorm_lr", 1e-3, 1e-1, log=True) # Optional
+
+        # Set initial weights to 1.0; GradNorm adjusts them
         trial_params["loss_weights"]["pde_weight"] = 1.0
         trial_params["loss_weights"]["ic_weight"] = 1.0
         trial_params["loss_weights"]["bc_weight"] = 1.0
         if has_building: trial_params["loss_weights"]["building_bc_weight"] = 1.0
-        # Include data weight if not data_free, GradNorm will manage it
-        if not data_free: trial_params["loss_weights"]["data_weight"] = 1.0
-        else: trial_params["loss_weights"]["data_weight"] = 0.0 # Explicitly zero if data_free
-    else: # Optimize static weights with PDE=1.0 scaling
+
+        # Data weight is 1.0 ONLY if GradNorm is ON *and* data_free is OFF
+        trial_params["loss_weights"]["data_weight"] = 1.0 if not data_free else 0.0
+
+        # Set irrelevant static factors to None for Optuna logging clarity
+        trial.set_user_attr("ic_weight_factor", None)
+        trial.set_user_attr("bc_weight_factor", None)
+        if has_building: trial.set_user_attr("building_bc_weight_factor", None)
+        trial.set_user_attr("data_weight_factor", None) # Even if data_free=False
+
+    else: # Static weights mode
+        print(f"Trial {trial.number}: Configuring static weights (data_free={data_free}).") # Debug print
+        # *** Suggest static weight factors ***
         trial_params["loss_weights"]["pde_weight"] = 1.0 # Fixed reference for static weights
-        # Suggest factors relative to PDE weight (which is 1.0)
-        trial_params["loss_weights"]["ic_weight"] = trial.suggest_float("ic_weight_factor", 1e-3, 1e3, log=True)
-        trial_params["loss_weights"]["bc_weight"] = trial.suggest_float("bc_weight_factor", 1e-3, 1e3, log=True)
+        # Suggest factors, calculate absolute weights (relative to PDE=1.0)
+        ic_factor = trial.suggest_float("ic_weight_factor", 1e-3, 1e3, log=True)
+        bc_factor = trial.suggest_float("bc_weight_factor", 1e-3, 1e3, log=True)
+        trial_params["loss_weights"]["ic_weight"] = ic_factor * trial_params["loss_weights"]["pde_weight"]
+        trial_params["loss_weights"]["bc_weight"] = bc_factor * trial_params["loss_weights"]["pde_weight"]
         if has_building:
-             trial_params["loss_weights"]["building_bc_weight"] = trial.suggest_float("building_bc_weight_factor", 1e-3, 1e3, log=True)
+            bldg_factor = trial.suggest_float("building_bc_weight_factor", 1e-3, 1e3, log=True)
+            trial_params["loss_weights"]["building_bc_weight"] = bldg_factor * trial_params["loss_weights"]["pde_weight"]
+
         # Data weight factor only optimized if not data_free
         if not data_free:
-             trial_params["loss_weights"]["data_weight"] = trial.suggest_float("data_weight_factor", 1e-3, 1e3, log=True)
+            data_factor = trial.suggest_float("data_weight_factor", 1e-3, 1e3, log=True)
+            trial_params["loss_weights"]["data_weight"] = data_factor * trial_params["loss_weights"]["pde_weight"]
         else:
-             trial_params["loss_weights"]["data_weight"] = 0.0 # Explicitly zero if data_free
+            trial_params["loss_weights"]["data_weight"] = 0.0 # Explicitly zero if data_free
+            trial.set_user_attr("data_weight_factor", None) # Log as None if not used
+
+        # Set irrelevant GradNorm params to None for Optuna logging clarity
+        trial.set_user_attr("gradnorm_alpha", None)
+        trial.set_user_attr("gradnorm_update_freq", None)
+        # trial.set_user_attr("gradnorm_lr", None) # If you were suggesting it
 
     # === Construct Trial Configuration Dictionary ===
     trial_config_dict = copy.deepcopy(base_config_dict) # Deep copy is crucial
@@ -117,48 +139,53 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict, data_free: bool
     trial_config_dict["grid"] = trial_params["grid"]
     trial_config_dict["ic_bc_grid"] = trial_params["ic_bc_grid"]
     if has_building:
-         # Make sure 'building' key exists before updating sub-keys
          if "building" not in trial_config_dict: trial_config_dict["building"] = {}
          trial_config_dict["building"]["nx"] = trial_params["building_grid"]["nx"]
          trial_config_dict["building"]["ny"] = trial_params["building_grid"]["ny"]
          trial_config_dict["building"]["nt"] = trial_params["building_grid"]["nt"]
 
+    # --- Update loss weights and GradNorm config section based on enable_gradnorm flag ---
     trial_config_dict["loss_weights"] = trial_params["loss_weights"]
-    if "gradnorm" not in trial_config_dict: trial_config_dict["gradnorm"] = {} # Ensure key exists
+
+    # Ensure gradnorm key exists
+    if "gradnorm" not in trial_config_dict: trial_config_dict["gradnorm"] = {}
+
     if enable_gradnorm:
         trial_config_dict["gradnorm"]["enable"] = True
         trial_config_dict["gradnorm"]["alpha"] = trial_params["gradnorm_alpha"]
-        # Keep LR/freq from base or optimize them too
-        trial_config_dict["gradnorm"]["learning_rate"] = base_cfg.get("gradnorm",{}).get("learning_rate", 0.01)
         trial_config_dict["gradnorm"]["update_freq"] = trial_params["gradnorm_update_freq"]
+        # Use base LR or the suggested one
+        trial_config_dict["gradnorm"]["learning_rate"] = trial_params.get("gradnorm_lr", base_cfg.get("gradnorm",{}).get("learning_rate", 0.01))
     else:
+        # Explicitly disable GradNorm in the trial config if it's not enabled
         trial_config_dict["gradnorm"]["enable"] = False
-
+        # Clean up keys that might have been in base_config but are irrelevant now
+        trial_config_dict["gradnorm"].pop("alpha", None)
+        trial_config_dict["gradnorm"].pop("update_freq", None)
+        # trial_config_dict["gradnorm"].pop("learning_rate", None) # Decide if you want base LR here
 
     # Convert final config to FrozenDict for JAX functions
     trial_cfg_frozen = FrozenDict(trial_config_dict)
 
     # --- Run the training trial ---
     try:
-        # Pass the Optuna trial object itself for pruning callbacks
-        best_nse = run_training_trial(trial, trial_cfg_frozen, data_free)
+        # Pass the Optuna trial object for pruning AND the data_free flag
+        best_nse = run_training_trial(trial, trial_cfg_frozen, data_free) # Pass data_free flag HERE
 
         # Ensure a standard float is returned for Optuna
-        if isinstance(best_nse, (jax.Array, np.ndarray)):
+        if isinstance(best_nse, (jax.Array, jnp.ndarray, np.ndarray)):
             best_nse = float(best_nse)
-        # Handle cases where training failed or NSE was invalid
-        if best_nse <= -jnp.inf or jnp.isnan(best_nse):
+
+        if jnp.isnan(best_nse) or not isinstance(best_nse, (float, int)) or best_nse <= -float('inf'):
              print(f"Trial {trial.number}: Invalid NSE ({best_nse}). Returning -1.0.")
-             return -1.0
+             return -1.0 # Optuna prefers finite numbers
 
         return best_nse
 
     except optuna.exceptions.TrialPruned as e:
-         # print(f"Trial {trial.number} pruned from within objective.") # Optional logging
          raise e # Re-raise for Optuna to handle pruning correctly
     except Exception as e:
          print(f"Trial {trial.number}: UNHANDLED EXCEPTION in run_training_trial: {e}")
          import traceback
          traceback.print_exc()
-         # Return a very poor score to Optuna to indicate failure
-         return -1.0
+         return -1.0 # Indicate failure with a poor score

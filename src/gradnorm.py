@@ -15,7 +15,7 @@ from src.losses import (
 from src.config import DTYPE
 
 # Define which layer parameters to use for GradNorm (e.g., the final Dense layer)
-SHARED_LAYER_NAME = 'output_layer'  # Adjust based on actual model architecture
+SHARED_LAYER_NAME = 'OutputDense'  # Adjust based on actual model architecture
 
 @flax.struct.dataclass
 class GradNormState:
