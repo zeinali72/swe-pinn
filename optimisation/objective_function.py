@@ -3,6 +3,7 @@
 Defines the Optuna objective function: suggests hyperparameters,
 builds the trial configuration, and calls the training loop.
 """
+import jax
 import optuna
 from flax.core import FrozenDict
 import jax.numpy as jnp # Only needed for type hints potentially
@@ -33,12 +34,12 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict, data_free: bool
     # Epochs are fixed via run_optimization.py --opt_epochs argument
 
     # === Model Hyperparameters ===
-    trial_params["model_width"] = trial.suggest_categorical("model_width", [64, 128, 256, 512])
-    trial_params["model_depth"] = trial.suggest_int("model_depth", 2, 6)
+    trial_params["model_width"] = trial.suggest_categorical("model_width", [256, 512, 1024])
+    trial_params["model_depth"] = trial.suggest_int("model_depth", 3, 6)
 
     if model_name == "FourierPINN":
-        trial_params["ff_dims"] = trial.suggest_categorical("ff_dims", [64, 128, 256, 512])
-        trial_params["fourier_scale"] = trial.suggest_float("fourier_scale", 1.0, 20.0)
+        trial_params["ff_dims"] = trial.suggest_categorical("ff_dims", [128, 256, 512])
+        trial_params["fourier_scale"] = trial.suggest_float("fourier_scale", 5.0, 20.0)
     elif model_name == "SIREN":
         trial_params["w0"] = trial.suggest_float("w0", 1.0, 30.0)
     # Add parameters for DGMNetwork if needed
@@ -52,53 +53,50 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict, data_free: bool
 
     # Factors for IC/BC grids
     trial_params["ic_bc_grid"] = {
-        "nx_ic": max(1, int(trial.suggest_float("nx_ic_factor", 0.5, 1.5) * nx_base)),
-        "ny_ic": max(1, int(trial.suggest_float("ny_ic_factor", 0.5, 1.5) * ny_base)),
-        "ny_bc_left": max(1, int(trial.suggest_float("ny_bc_left_factor", 0.3, 1.2) * ny_base)),
-        "nt_bc_left": max(1, int(trial.suggest_float("nt_bc_left_factor", 0.3, 1.2) * nt_base)),
-        "ny_bc_right": max(1, int(trial.suggest_float("ny_bc_right_factor", 0.3, 1.2) * ny_base)),
-        "nt_bc_right": max(1, int(trial.suggest_float("nt_bc_right_factor", 0.3, 1.2) * nt_base)),
-        "nx_bc_bottom": max(1, int(trial.suggest_float("nx_bc_bottom_factor", 0.5, 1.5) * nx_base)),
-        "nt_bc_other": max(1, int(trial.suggest_float("nt_bc_other_factor", 0.3, 1.2) * nt_base)),
-        "nx_bc_top": max(1, int(trial.suggest_float("nx_bc_top_factor", 0.5, 1.5) * nx_base)),
+        "nx_ic": max(5, int(trial.suggest_float("nx_ic_factor", 0.5, 1.5) * nx_base)),
+        "ny_ic": max(5, int(trial.suggest_float("ny_ic_factor", 0.5, 1.5) * ny_base)),
+        "ny_bc_left": max(5, int(trial.suggest_float("ny_bc_left_factor", 0.3, 1.2) * ny_base)),
+        "nt_bc_left": max(5, int(trial.suggest_float("nt_bc_left_factor", 0.3, 1.2) * nt_base)),
+        "ny_bc_right": max(5, int(trial.suggest_float("ny_bc_right_factor", 0.3, 1.2) * ny_base)),
+        "nt_bc_right": max(5, int(trial.suggest_float("nt_bc_right_factor", 0.3, 1.2) * nt_base)),
+        "nx_bc_bottom": max(5, int(trial.suggest_float("nx_bc_bottom_factor", 0.5, 1.5) * nx_base)),
+        "nt_bc_other": max(5, int(trial.suggest_float("nt_bc_other_factor", 0.3, 1.2) * nt_base)),
+        "nx_bc_top": max(5, int(trial.suggest_float("nx_bc_top_factor", 0.5, 1.5) * nx_base)),
     }
 
     # Factors for Building grid (if applicable)
     if has_building:
          trial_params["building_grid"] = {
-             "nx": max(1, int(trial.suggest_float("nx_bldg_factor", 0.3, 1.2) * nx_base)),
-             "ny": max(1, int(trial.suggest_float("ny_bldg_factor", 0.3, 1.2) * ny_base)),
-             "nt": max(1, int(trial.suggest_float("nt_bldg_factor", 0.3, 1.2) * nt_base)),
+             "nx": max(5, int(trial.suggest_float("nx_bldg_factor", 0.3, 1.2) * nx_base)),
+             "ny": max(5, int(trial.suggest_float("ny_bldg_factor", 0.3, 1.2) * ny_base)),
+             "nt": max(5, int(trial.suggest_float("nt_bldg_factor", 0.3, 1.2) * nt_base)),
          }
 
     # === Loss Weights / GradNorm Hyperparameters ===
     trial_params["loss_weights"] = {}
-    if enable_gradnorm: # Optimize GradNorm alpha (only if not data_free)
-        trial_params["gradnorm_alpha"] = trial.suggest_float("gradnorm_alpha", 0.1, 3.0) # Wider range maybe
-        # Set initial weights to 1.0; GradNorm adjusts them
+    if enable_gradnorm:
+        trial_params["gradnorm_alpha"] = trial.suggest_float("gradnorm_alpha", 0.1, 3.0)
+        trial_params["gradnorm_update_freq"] = trial.suggest_categorical("gradnorm_update_freq", [50, 100, 200, 500]) # <-- ADD THIS LINE
+        # Set initial weights to 1.0 for all potentially active terms
         trial_params["loss_weights"]["pde_weight"] = 1.0
         trial_params["loss_weights"]["ic_weight"] = 1.0
         trial_params["loss_weights"]["bc_weight"] = 1.0
         if has_building: trial_params["loss_weights"]["building_bc_weight"] = 1.0
-        # Data weight is included because enable_gradnorm is only true if not data_free
-        trial_params["loss_weights"]["data_weight"] = 1.0
-    else: # Optimize static weights
-        # Fix PDE weight to 1.0 if data_free, otherwise suggest its scale
-        if data_free:
-            trial_params["loss_weights"]["pde_weight"] = 1.0
-        else:
-            trial_params["loss_weights"]["pde_weight"] = trial.suggest_float("pde_weight_scale", 1e-1, 1e4, log=True) # Wider range
-
-        # Suggest factors relative to the (potentially suggested) PDE weight
-        trial_params["loss_weights"]["ic_weight"] = trial_params["loss_weights"]["pde_weight"] * trial.suggest_float("ic_weight_factor", 1e-3, 1e3, log=True)
-        trial_params["loss_weights"]["bc_weight"] = trial_params["loss_weights"]["pde_weight"] * trial.suggest_float("bc_weight_factor", 1e-3, 1e3, log=True)
+        # Include data weight if not data_free, GradNorm will manage it
+        if not data_free: trial_params["loss_weights"]["data_weight"] = 1.0
+        else: trial_params["loss_weights"]["data_weight"] = 0.0 # Explicitly zero if data_free
+    else: # Optimize static weights with PDE=1.0 scaling
+        trial_params["loss_weights"]["pde_weight"] = 1.0 # Fixed reference for static weights
+        # Suggest factors relative to PDE weight (which is 1.0)
+        trial_params["loss_weights"]["ic_weight"] = trial.suggest_float("ic_weight_factor", 1e-3, 1e3, log=True)
+        trial_params["loss_weights"]["bc_weight"] = trial.suggest_float("bc_weight_factor", 1e-3, 1e3, log=True)
         if has_building:
-             trial_params["loss_weights"]["building_bc_weight"] = trial_params["loss_weights"]["pde_weight"] * trial.suggest_float("building_bc_weight_factor", 1e-3, 1e3, log=True)
+             trial_params["loss_weights"]["building_bc_weight"] = trial.suggest_float("building_bc_weight_factor", 1e-3, 1e3, log=True)
         # Data weight factor only optimized if not data_free
         if not data_free:
-             trial_params["loss_weights"]["data_weight"] = trial_params["loss_weights"]["pde_weight"] * trial.suggest_float("data_weight_factor", 1e-3, 1e3, log=True)
+             trial_params["loss_weights"]["data_weight"] = trial.suggest_float("data_weight_factor", 1e-3, 1e3, log=True)
         else:
-             trial_params["loss_weights"]["data_weight"] = 0.0 # Explicitly zero
+             trial_params["loss_weights"]["data_weight"] = 0.0 # Explicitly zero if data_free
 
     # === Construct Trial Configuration Dictionary ===
     trial_config_dict = copy.deepcopy(base_config_dict) # Deep copy is crucial
@@ -132,7 +130,7 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict, data_free: bool
         trial_config_dict["gradnorm"]["alpha"] = trial_params["gradnorm_alpha"]
         # Keep LR/freq from base or optimize them too
         trial_config_dict["gradnorm"]["learning_rate"] = base_cfg.get("gradnorm",{}).get("learning_rate", 0.01)
-        trial_config_dict["gradnorm"]["update_freq"] = base_cfg.get("gradnorm",{}).get("update_freq", 100)
+        trial_config_dict["gradnorm"]["update_freq"] = trial_params["gradnorm_update_freq"]
     else:
         trial_config_dict["gradnorm"]["enable"] = False
 

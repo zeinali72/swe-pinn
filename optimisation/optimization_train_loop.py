@@ -465,10 +465,11 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
                  raise optuna.exceptions.TrialPruned()
 
             # Optional: Log progress less frequently
-            if (epoch + 1) % (validation_freq * 5) == 0: # e.g., every 500 epochs if freq is 100
-                epoch_time = time.time() - epoch_start_time
-                print(f"  Trial {trial.number}, Epoch {epoch+1}/{epochs}: "
-                      f"Time={epoch_time:.2f}s, Current Best NSE={best_nse_trial:.6f}")
+
+            epoch_time = time.time() - epoch_start_time
+            print(f"  Trial {trial.number}, Epoch {epoch+1}/{epochs}: "
+                    f"NSE={current_nse:.6f}, "
+                    f"Time={epoch_time:.2f}s, Current Best NSE={best_nse_trial:.6f}")
 
 
         # Update train_key for next epoch's sampling

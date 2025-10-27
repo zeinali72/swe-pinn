@@ -58,10 +58,11 @@ loss_weights:
   data_weight: 100.0              # Weight for the data loss term (keep original or tune)
 
 gradnorm:
-  enable: True # Set to True to use GradNorm, False for static weights
-  alpha: 1.5   # Restoring force strength (common value)
-  learning_rate: 0.01 # Learning rate for updating the weights w_i
-  update_freq: 100 # How often (in steps) to update GradNorm weights
+  enable: true            # SET THIS TO true TO ENABLE GRADNORM
+  alpha: 1.5              # Base value for alpha (Optuna might override this if you optimize it)
+  learning_rate: 0.01     # Base learning rate for GradNorm weight updates (Optuna might override)
+  update_freq: 100        # Base update frequency (Optuna might override)
+
 
 plotting:
   nx_val: 101                    # Number of points for validation plot in x-direction
