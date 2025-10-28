@@ -6,13 +6,14 @@ builds the trial configuration, stores it, and calls the training loop.
 import jax
 import optuna
 from flax.core import FrozenDict
+import numpy as np
 import jax.numpy as jnp
 from typing import Dict, Any
 import copy
 import yaml
 
 # Import the training loop function
-from optimization_train_loop import run_training_trial
+from optimisation.optimization_train_loop import run_training_trial
 
 def objective(trial: optuna.trial.Trial,
               base_config_dict: Dict,
