@@ -1,0 +1,92 @@
+# optimisation/configs/hpo_fourier_datafree_static.yaml
+# Base configuration for HPO - Defines FIXED parameters and HPO settings.
+
+hpo_settings:
+  data_free: true
+  enable_gradnorm: true
+  opt_epochs: 5000
+
+training: # <<<--- Add seed here
+  seed: 42 # Or any other integer seed value
+  # learning_rate and batch_size will be added by objective_function
+  # opt_epochs is added by run_optimization based on hpo_settings
+
+# --- Fixed Parameters ---
+scenario: "one_building_DEM_zero"
+
+model:
+  name: "DGMNetwork"
+  output_dim: 3
+  kernel_init: "glorot_uniform"
+  bias_init: 0.0
+  # --- Optimized Model Params ---
+  width: 256
+  depth: 4
+  ff_dims: 256
+  fourier_scale: 10.0
+
+domain: # Fixed
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+
+# --- Optimized Grid Params ---
+grid:
+  nx: 48
+  ny: 23
+  nt: 21
+
+ic_bc_grid:
+  nx_ic: 39
+  ny_ic: 33
+  ny_bc_left: 24
+  nt_bc_left: 18
+  ny_bc_right: 33
+  nt_bc_right: 11
+  nx_bc_bottom: 70
+  nt_bc_other: 15
+  nx_bc_top: 69
+
+building: # Define fixed geometry, Optuna suggests sampling density
+  x_min: 325.0
+  x_max: 375.0
+  y_min: 25.0
+  y_max: 75.0
+  # --- Optimized Building Grid ---
+  nx: 20
+  ny: 20
+  nt: 20
+
+physics: # Fixed
+  u_const: 0.29
+  n_manning: 0.03
+  inflow: null
+  g: 9.81
+
+# --- Optimized Loss Weights ---
+loss_weights:
+  pde_weight: 1.0
+  ic_weight: 1.0
+  bc_weight: 1.0
+  building_bc_weight: 1.0
+  data_weight: 0.0 # Set by objective based on data_free flag
+
+# --- Optimized GradNorm Params (if enable_gradnorm=true) ---
+gradnorm:
+  learning_rate: 0.01
+  alpha: 1.5
+  update_freq: 100
+
+plotting: # Fixed
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 0
+  plot_resolution: 150
+
+device: # Fixed
+  dtype: "float32"
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+
+numerics: # Fixed
+  eps: 1e-6

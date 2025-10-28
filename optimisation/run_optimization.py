@@ -1,6 +1,8 @@
 # optimisation/run_optimization.py
 """
 Sets up and runs the Optuna hyperparameter optimization study.
+Reads HPO settings (data_free, enable_gradnorm, opt_epochs) from the config file.
+Saves the full configuration of the best trial.
 """
 import optuna
 import argparse
@@ -8,6 +10,10 @@ import os
 import sys
 from functools import partial
 import time # For summary timing
+import yaml # To save the best config
+from flax.core import unfreeze, FrozenDict # <<<--- Import FrozenDict here
+import numpy as np # <<<--- Import numpy for saving function
+import jax.numpy as jnp # <<<--- Import jax.numpy for saving function
 
 # --- Add project root to path ---
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -19,66 +25,54 @@ if project_root not in sys.path:
 try:
     from optimisation.objective_function import objective
     from src.config import load_config
-    # Removed print_final_summary import from src.reporting, will format directly
 except ImportError as e:
     print("Error: Could not import necessary modules.")
-    print("Ensure 'objective_function.py' and 'optimization_train_loop.py' are in the 'optimisation' directory.")
-    print("Ensure you are running this script from the project root directory containing 'src' and 'optimisation'.")
     print(f"Details: {e}")
     sys.exit(1)
 
 def main():
     parser = argparse.ArgumentParser(description="Run Optuna hyperparameter optimization for SWE-PINN.")
     parser.add_argument("--config", type=str, required=True,
-                        help="Path to the BASE configuration file (e.g., experiments/one_building_config_gradnorm.yaml).")
+                        help="Path to the HPO BASE configuration file (e.g., optimisation/configs/hpo_base_fourier.yaml).")
     parser.add_argument("--n_trials", type=int, default=50,
                         help="Number of optimization trials to run.")
-    parser.add_argument("--storage", type=str, default="sqlite:///optimisation_study.db", # Default DB name
+    parser.add_argument("--storage", type=str, default="sqlite:///optimisation_study.db",
                         help="Optuna storage URL (e.g., sqlite:///study.db).")
-    parser.add_argument("--study_name", type=str, default="swe-pinn-hpo", # Default study name
+    parser.add_argument("--study_name", type=str, default="swe-pinn-hpo",
                         help="Name for the Optuna study.")
-    parser.add_argument("--data_free", action='store_true',
-                        help="Force optimization into data-free mode (ignores data_weight from config).")
-    parser.add_argument("--opt_epochs", type=int, default=5000,
-                        help="Number of epochs to run each optimization trial.")
+    # Removed --data_free and --opt_epochs arguments
 
     args = parser.parse_args()
 
     # --- Load Base Configuration ---
     try:
-        # Load config and ensure DTYPE/EPS are set globally for trial functions
         base_config_dict = load_config(args.config)
-        print(f"Loaded base configuration from: {args.config}")
+        print(f"Loaded HPO base configuration from: {args.config}")
     except FileNotFoundError:
-        print(f"Error: Base config file not found at {args.config}")
+        print(f"Error: HPO base config file not found at {args.config}")
         sys.exit(1)
     except Exception as e:
-        print(f"Error loading base config file: {e}")
+        print(f"Error loading HPO base config file: {e}")
         sys.exit(1)
 
-    # --- Determine Data-Free Flag (Argument takes precedence) ---
-    data_free_flag = args.data_free
-    if data_free_flag:
-        print("Mode: DATA-FREE optimization enforced via --data_free argument.")
-    else:
-        # Check config only if argument not used
-        data_weight_in_config = base_config_dict.get("loss_weights", {}).get("data_weight", 0.0)
-        if data_weight_in_config <= 0:
-            print("Mode: Data weight is <= 0 or missing in config. Running DATA-FREE.")
-            data_free_flag = True # Treat as data-free if weight is non-positive
-        else:
-            print("Mode: Running WITH data loss (data_weight > 0 in config and --data_free not specified).")
-            data_free_flag = False
+    # --- Get HPO Settings from Config ---
+    hpo_settings = base_config_dict.get("hpo_settings")
+    if not hpo_settings:
+        print("Error: 'hpo_settings' section not found in the config file.")
+        sys.exit(1)
 
-    # --- Determine GradNorm Flag (Based *only* on config) ---
-    enable_gradnorm_flag = base_config_dict.get("gradnorm", {}).get("enable", False)
-    print(f"GradNorm (from config): {enable_gradnorm_flag}")
-    # The objective function will handle the interaction between these two flags.
+    data_free_flag = hpo_settings.get("data_free", False) # Default to False if missing
+    enable_gradnorm_flag = hpo_settings.get("enable_gradnorm", False) # Default to False if missing
+    opt_epochs = hpo_settings.get("opt_epochs", 5000) # Default if missing
 
-    # --- Add/Override Optimization Epochs ---
+    print(f"Mode: {'DATA-FREE' if data_free_flag else 'With Data Loss'} (from config)")
+    print(f"GradNorm: {'Enabled' if enable_gradnorm_flag else 'Disabled'} (from config)")
+    print(f"Optimization trials will run for {opt_epochs} epochs each (from config).")
+
+    # --- Update base config dict with explicit opt_epochs for objective function ---
     if "training" not in base_config_dict: base_config_dict["training"] = {}
-    base_config_dict["training"]["opt_epochs"] = args.opt_epochs
-    print(f"Optimization trials will run for {args.opt_epochs} epochs each.")
+    base_config_dict["training"]["epochs"] = opt_epochs # <<<--- SET 'epochs' DIRECTLY HERE
+    print(f"Optimization trials will run for {opt_epochs} epochs each (from config).")
 
     # --- Setup Optuna Study ---
     storage_path = args.storage
@@ -96,7 +90,6 @@ def main():
         storage=storage_path,
         direction="maximize", # Maximize NSE
         load_if_exists=True,
-        # Increased warmup/interval for potentially longer epochs
         pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=10, interval_steps=10)
     )
 
@@ -112,14 +105,16 @@ def main():
     print(f"Storage       : {storage_path}")
     print(f"# Trials      : {args.n_trials}")
     print(f"Objective     : Maximize NSE")
-    print(f"Data-Free Mode: {data_free_flag}")      # Report the actual mode being used
-    print(f"GradNorm Mode : {enable_gradnorm_flag}") # Report the actual mode being used
-    print(f"Trial Epochs  : {args.opt_epochs}")
+    print(f"Data-Free Mode: {data_free_flag}")
+    print(f"GradNorm Mode : {enable_gradnorm_flag}")
+    print(f"Trial Epochs  : {opt_epochs}")
     print(f"Model Name    : {base_config_dict.get('model', {}).get('name', 'N/A')}")
     print(f"Base Config   : {args.config}")
     print("-" * 40)
 
     start_time_opt = time.time()
+    best_trial_config = None # Variable to store the best config
+
     try:
         study.optimize(objective_with_config, n_trials=args.n_trials, timeout=None, show_progress_bar=True)
     except KeyboardInterrupt:
@@ -132,7 +127,7 @@ def main():
          total_time_opt = time.time() - start_time_opt
          print(f"\nOptimization process finished in {total_time_opt:.2f} seconds.")
 
-    # --- Report Best Results ---
+    # --- Report Best Results & Save Best Config ---
     print("\n--- Optimization Finished ---")
     try:
         pruned_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.PRUNED])
@@ -158,25 +153,65 @@ def main():
             else:
                  print(f"Best NSE Value         : {best_nse} (Invalid or not achieved)")
 
-            print("Best Hyperparameters:")
+            print("Best Hyperparameters (Suggested by Optuna):")
             for key, value in sorted(best_trial.params.items()):
-                 # Check if the parameter exists (it might be None if not suggested in that trial branch)
                  if value is not None:
                      if isinstance(value, float):
                           print(f"  {key:<25}: {value:.6e}" if abs(value) < 1e-2 or abs(value) > 1e3 else f"  {key:<25}: {value:.6f}")
                      else:
                           print(f"  {key:<25}: {value}")
                  else:
-                      print(f"  {key:<25}: Not suggested (expected)") # Indicate params not used in this branch
-
+                      print(f"  {key:<25}: Not suggested")
             print("--------------------------")
+
+            # --- Save the best complete configuration ---
+            if 'full_config' in best_trial.user_attrs:
+                best_trial_config_dict = best_trial.user_attrs['full_config']
+
+                # Convert JAX arrays back to lists/floats if any exist (less likely now, but good practice)
+                def sanitize_for_yaml(data):
+                    if isinstance(data, (jnp.ndarray, np.ndarray)):
+                        return data.tolist()
+                    if isinstance(data, (jnp.float32, jnp.float64, np.float32, np.float64)):
+                        return float(data)
+                    if isinstance(data, dict):
+                        return {k: sanitize_for_yaml(v) for k, v in data.items()}
+                    if isinstance(data, list):
+                        return [sanitize_for_yaml(item) for item in data]
+                    return data
+
+                # Unfreeze if it's still a FrozenDict (objective might return dict)
+                if isinstance(best_trial_config_dict, FrozenDict):
+                     best_trial_config_dict = unfreeze(best_trial_config_dict)
+
+                best_trial_config_dict = sanitize_for_yaml(best_trial_config_dict)
+
+                # Remove the hpo_settings section as it's not needed for standard training
+                best_trial_config_dict.pop('hpo_settings', None)
+                # Ensure training->epochs is set for standard training, not opt_epochs
+                best_trial_config_dict['training']['epochs'] = base_config_dict.get('training', {}).get('epochs', 20000) # Use default from base or a standard value
+                best_trial_config_dict['training'].pop('opt_epochs', None) # Remove opt_epochs
+
+                save_dir = os.path.join(project_root, "optimisation", "results") # Save in optimisation results
+                os.makedirs(save_dir, exist_ok=True)
+                save_path = os.path.join(save_dir, f"{args.study_name}_best_trial_{best_trial.number}_config.yaml")
+
+                try:
+                    with open(save_path, 'w') as f:
+                        yaml.dump(best_trial_config_dict, f, default_flow_style=False, sort_keys=False)
+                    print(f"\n✅ Best trial's full configuration saved to: {save_path}")
+                    print("   You can copy this file to the 'experiments' folder for standard training.")
+                except Exception as e_save:
+                    print(f"\n❌ Error saving best configuration: {e_save}")
+            else:
+                print("\nWarning: Could not find 'full_config' in best trial's user attributes. Configuration not saved.")
 
     except ValueError as e:
         print(f"Could not retrieve best trial: {e}")
     except Exception as e:
         print(f"Error reporting results: {e}")
 
-    print(f"\nStudy results saved in: {storage_path}")
+    print(f"\nStudy results database saved in: {storage_path}")
     print("Consider using 'optuna-dashboard' to visualize results.")
 
 
