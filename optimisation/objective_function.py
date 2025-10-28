@@ -9,6 +9,7 @@ from flax.core import FrozenDict
 import jax.numpy as jnp
 from typing import Dict, Any
 import copy
+import yaml
 
 # Import the training loop function
 from optimization_train_loop import run_training_trial
@@ -159,6 +160,27 @@ def objective(trial: optuna.trial.Trial,
 
     # --- Convert final config to FrozenDict for JAX functions ---
     trial_cfg_frozen = FrozenDict(trial_config_dict)
+
+# <<<--- START: ADD PRINT STATEMENTS HERE --- >>>
+    print("-" * 50)
+    print(f"Starting Trial {trial.number}")
+    print("Suggested Hyperparameters:")
+    # Print the parameters Optuna actually suggested for this trial
+    for key, value in trial.params.items():
+         # Check if the parameter exists (it might be None if not suggested in that trial branch)
+         if value is not None:
+             if isinstance(value, float):
+                  print(f"  {key:<25}: {value:.6e}" if abs(value) < 1e-2 or abs(value) > 1e3 else f"  {key:<25}: {value:.6f}")
+             else:
+                  print(f"  {key:<25}: {value}")
+         # else: You could optionally print "Not suggested" here too
+
+    print("\nFull Configuration for this Trial:")
+    # Use yaml.dump for a readable, multi-line output of the dictionary
+    # Make sure to use the regular dict (config_to_store), not the FrozenDict
+    print(yaml.dump(config_to_store, default_flow_style=False, sort_keys=False, indent=2))
+    print("-" * 50)
+    # <<<--- END: ADD PRINT STATEMENTS HERE --- >>>
 
     # --- Run the training trial ---
     try:
