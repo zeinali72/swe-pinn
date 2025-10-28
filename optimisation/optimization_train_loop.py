@@ -64,7 +64,7 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
         bc_right_batch = bc_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
         bc_bottom_batch = bc_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
         bc_top_batch = bc_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
-        if 'bc' in active_loss_keys_base and any(b.shape[0] > 0 for b in bc_batches.values() if isinstance(b, jnp.ndarray)):
+        if 'bc' in active_loss_keys_base and any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
              terms['bc'] = compute_bc_loss(
                  model, p, bc_left_batch, bc_right_batch, bc_bottom_batch, bc_top_batch, config
              )
@@ -75,7 +75,7 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
             bldg_right_batch = bldg_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
             bldg_bottom_batch = bldg_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
             bldg_top_batch = bldg_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
-            if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if isinstance(b, jnp.ndarray)):
+            if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
                 terms['building_bc'] = compute_building_bc_loss(
                     model, p, bldg_left_batch, bldg_right_batch, bldg_bottom_batch, bldg_top_batch
                 )
@@ -192,7 +192,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
                 scenario_name_init = trial_cfg.get('scenario', 'default_scenario')
                 base_data_path_init = os.path.join("data", scenario_name_init)
                 training_data_file_init = os.path.join(base_data_path_init, "training_dataset_sample.npy")
-                loaded_train_data_init = jnp.load(training_data_file_init).astype(DTYPE)
+                loaded_train_data_init = np.load(training_data_file_init).astype(DTYPE)
                 data_points_init = loaded_train_data_init[:batch_size_init] # Take a small sample
              except Exception as e:
                 print(f"Trial {trial.number}: WARN - Failed to load training data for GradNorm init: {e}. Skipping data term in init.")
@@ -249,7 +249,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
 
     if os.path.exists(validation_data_file):
         try:
-            loaded_val_data = jnp.load(validation_data_file).astype(DTYPE)
+            loaded_val_data = np.load(validation_data_file).astype(DTYPE)
             val_points_all = loaded_val_data[:, [1, 2, 0]]
             h_true_val_all = loaded_val_data[:, 3]
             if has_building:
@@ -281,7 +281,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         training_data_file = os.path.join(base_data_path_val, "training_dataset_sample.npy")
         if os.path.exists(training_data_file):
              try:
-                  data_points_full = jnp.load(training_data_file).astype(DTYPE)
+                  data_points_full = np.load(training_data_file).astype(DTYPE)
                   if data_points_full.shape[0] == 0:
                        print(f"Trial {trial.number}: ERROR - Training data file is empty. Stopping trial.")
                        return -1.0
@@ -397,16 +397,25 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
                 for wall, iterator in building_batch_iters.items():
                     current_building_batch_data[wall] = next(iterator, jnp.empty((0, 3), dtype=DTYPE))
 
-            # Aggregate batches relevant to this step
-            current_all_batches = {}
-            if pde_batch_data.shape[0] > 0: current_all_batches['pde'] = pde_batch_data
-            if ic_batch_data.shape[0] > 0: current_all_batches['ic'] = ic_batch_data
-            if any(b.shape[0]>0 for b in [left_batch_data, right_batch_data, bottom_batch_data, top_batch_data]):
-                 current_all_batches['bc'] = {'left': left_batch_data, 'right': right_batch_data, 'bottom': bottom_batch_data, 'top': top_batch_data}
-            if current_building_batch_data and any(b.shape[0]>0 for b in current_building_batch_data.values()):
-                 current_all_batches['building_bc'] = current_building_batch_data
-            if data_batch_data.shape[0] > 0 and not data_free:
-                 current_all_batches['data'] = data_batch_data
+            # Aggregate batches - ALWAYS include all keys with consistent structure
+            # This prevents JIT retracing by maintaining a static dictionary structure
+            current_all_batches = {
+                'pde': pde_batch_data if pde_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
+                'ic': ic_batch_data if ic_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
+                'bc': {
+                    'left': left_batch_data if left_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
+                    'right': right_batch_data if right_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
+                    'bottom': bottom_batch_data if bottom_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
+                    'top': top_batch_data if top_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
+                },
+                'building_bc': {
+                    'left': current_building_batch_data.get('left', jnp.empty((0, 3), dtype=DTYPE)),
+                    'right': current_building_batch_data.get('right', jnp.empty((0, 3), dtype=DTYPE)),
+                    'bottom': current_building_batch_data.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
+                    'top': current_building_batch_data.get('top', jnp.empty((0, 3), dtype=DTYPE)),
+                },
+                'data': data_batch_data if data_batch_data.shape[0] > 0 and not data_free else jnp.empty((0, 6), dtype=DTYPE),
+            }
 
             # --- GradNorm Update ---
             if enable_gradnorm and global_step % gradnorm_update_freq == 0:
@@ -432,24 +441,22 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
             current_nse = -jnp.inf # Default if validation fails/skipped
 
             if validation_data_loaded: # Use loaded validation data
-                 with jax.disable_jit():
-                     try:
-                         U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
-                         h_pred_val = U_pred_val[..., 0]
-                         current_nse = float(nse(h_pred_val, h_true_val))
-                     except Exception as e_val:
-                          print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - NSE calculation error: {e_val}")
-                          current_nse = -jnp.inf
+                try:
+                    U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
+                    h_pred_val = U_pred_val[..., 0]
+                    current_nse = float(nse(h_pred_val, h_true_val))
+                except Exception as e_val:
+                    print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - NSE calculation error: {e_val}")
+                    current_nse = -jnp.inf
             elif not has_building and pde_points.shape[0] > 0: # No building, no validation file -> use analytical on PDE points
-                 with jax.disable_jit():
-                      try:
-                           U_pred_val_no_building = model.apply({'params': params['params']}, pde_points, train=False)
-                           h_pred_val_no_building = U_pred_val_no_building[..., 0]
-                           h_true_val_no_building = h_exact(pde_points[:, 0], pde_points[:, 2], trial_cfg["physics"]["n_manning"], trial_cfg["physics"]["u_const"])
-                           current_nse = float(nse(h_pred_val_no_building, h_true_val_no_building))
-                      except Exception as e_val:
-                           print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - Analytical NSE calculation error: {e_val}")
-                           current_nse = -jnp.inf
+                try:
+                    U_pred_val_no_building = model.apply({'params': params['params']}, pde_points, train=False)
+                    h_pred_val_no_building = U_pred_val_no_building[..., 0]
+                    h_true_val_no_building = h_exact(pde_points[:, 0], pde_points[:, 2], trial_cfg["physics"]["n_manning"], trial_cfg["physics"]["u_const"])
+                    current_nse = float(nse(h_pred_val_no_building, h_true_val_no_building))
+                except Exception as e_val:
+                    print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - Analytical NSE calculation error: {e_val}")
+                    current_nse = -jnp.inf
             # Else (building case with no validation data), current_nse remains -inf
 
             if jnp.isnan(current_nse):
