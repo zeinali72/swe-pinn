@@ -4,7 +4,7 @@
 hpo_settings:
   data_free: true
   enable_gradnorm: true
-  opt_epochs: 100
+  opt_epochs: 1000
 
 training: # <<<--- Add seed here
   seed: 42 # Or any other integer seed value

@@ -50,25 +50,25 @@ def objective(trial: optuna.trial.Trial,
     nt_base = trial.suggest_int("nt_base", 10, 40, step=2)
     
     # Suggest factors once to ensure consistency
-    nx_bc_horizontal_factor = trial.suggest_float("nx_bc_horizontal_factor", 0.2, 1)
+    nx_bc_horizontal_factor = trial.suggest_float("nx_bc_horizontal_factor", 0.2, 1.2)
     
     trial_params["grid"] = {"nx": nx_base, "ny": ny_base, "nt": nt_base}
     trial_params["ic_bc_grid"] = {
-        "nx_ic": max(5, int(trial.suggest_float("nx_ic_factor", 0.2, 1) * nx_base)),
-        "ny_ic": max(5, int(trial.suggest_float("ny_ic_factor", 0.2, 1) * ny_base)),
-        "ny_bc_left": max(5, int(trial.suggest_float("ny_bc_left_factor", 0.2, 1) * ny_base)),
-        "nt_bc_left": max(5, int(trial.suggest_float("nt_bc_left_factor", 0.2, 1) * nt_base)),
-        "ny_bc_right": max(5, int(trial.suggest_float("ny_bc_right_factor", 0.2, 1) * ny_base)),
-        "nt_bc_right": max(5, int(trial.suggest_float("nt_bc_right_factor", 0.2, 1) * nt_base)),
+        "nx_ic": max(5, int(trial.suggest_float("nx_ic_factor", 0.2, 1.2) * nx_base)),
+        "ny_ic": max(5, int(trial.suggest_float("ny_ic_factor", 0.2, 1.2) * ny_base)),
+        "ny_bc_left": max(5, int(trial.suggest_float("ny_bc_left_factor", 0.2, 1.2) * ny_base)),
+        "nt_bc_left": max(5, int(trial.suggest_float("nt_bc_left_factor", 0.2, 1.2) * nt_base)),
+        "ny_bc_right": max(5, int(trial.suggest_float("ny_bc_right_factor", 0.2, 1.2) * ny_base)),
+        "nt_bc_right": max(5, int(trial.suggest_float("nt_bc_right_factor", 0.2, 1.2) * nt_base)),
         "nx_bc_bottom": max(5, int(nx_bc_horizontal_factor * nx_base)),
-        "nt_bc_other": max(5, int(trial.suggest_float("nt_bc_other_factor", 0.2, 1) * nt_base)),
+        "nt_bc_other": max(5, int(trial.suggest_float("nt_bc_other_factor", 0.2, 1.2) * nt_base)),
         "nx_bc_top": max(5, int(nx_bc_horizontal_factor * nx_base)),
     }
     if has_building:
          trial_params["building_grid"] = {
-             "nx": max(5, int(trial.suggest_float("nx_bldg_factor", 0.2, 1) * nx_base)),
-             "ny": max(5, int(trial.suggest_float("ny_bldg_factor", 0.2, 1) * ny_base)),
-             "nt": max(5, int(trial.suggest_float("nt_bldg_factor", 0.2, 1) * nt_base)),
+             "nx": max(5, int(trial.suggest_float("nx_bldg_factor", 0.2, 1.2) * nx_base)),
+             "ny": max(5, int(trial.suggest_float("ny_bldg_factor", 0.2, 1.2) * ny_base)),
+             "nt": max(5, int(trial.suggest_float("nt_bldg_factor", 0.2, 1.2) * nt_base)),
          }
 
     # === Loss Weights / GradNorm Hyperparameters (Conditional Suggestion) ===

@@ -79,7 +79,7 @@ def main():
     if args.storage is None:
         db_dir = os.path.join(project_root, "optimisation", "database")
         os.makedirs(db_dir, exist_ok=True)
-        db_file = os.path.join(db_dir, f"{args.study_name}.db")
+        db_file = os.path.join(db_dir, "all_my_studies.db")
         storage_path = f"sqlite:///{db_file}"
     else:
         storage_path = args.storage
