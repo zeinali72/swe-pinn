@@ -21,7 +21,7 @@ from src.data import sample_points, get_batches
 from src.models import init_model
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
-    compute_building_bc_loss#, compute_data_loss # Removed data loss import
+    compute_building_bc_loss, compute_data_loss # Removed data loss import
 )
 # --- Import GradNorm ---
 from src.gradnorm import GradNormState, init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP
@@ -108,14 +108,13 @@ def get_initial_losses(model: Any, params: FrozenDict, all_batches: Dict[str, An
     """Computes the initial value for each loss term (excluding data loss)."""
     initial_losses = {}
     # Use keys from config *excluding* data_weight
-    loss_keys = [k for k in config["loss_weights"].keys() if k != 'data_weight']
+    loss_keys = [k for k in config["loss_weights"].keys()]
     has_building = "building" in config
 
     print("Calculating initial losses (L_i(0))...")
     for key in loss_keys:
         loss_key_base = key.replace('_weight', '') # e.g., 'pde_weight' -> 'pde'
-        if loss_key_base == 'data': # Explicitly skip data loss
-            continue
+
         if loss_key_base not in LOSS_FN_MAP:
             print(f"Warning: Loss key '{loss_key_base}' derived from config not in LOSS_FN_MAP. Skipping initial loss calculation.")
             continue
@@ -152,6 +151,8 @@ def get_initial_losses(model: Any, params: FrozenDict, all_batches: Dict[str, An
                                                       batch_data.get('right', jnp.empty((0,3), dtype=DTYPE)),
                                                       batch_data.get('bottom', jnp.empty((0,3), dtype=DTYPE)),
                                                       batch_data.get('top', jnp.empty((0,3), dtype=DTYPE)))
+            elif loss_key_base == 'data':
+                    loss_val = compute_data_loss(model, p_frozen, batch_data, config) # Call data loss function
             else:
                  # Fallback for potentially other losses, though unlikely needed now
                  loss_val = loss_func(p_frozen, model, batch_data, config)
@@ -166,10 +167,9 @@ def get_initial_losses(model: Any, params: FrozenDict, all_batches: Dict[str, An
     final_initial_losses = {}
     for cfg_key in config['loss_weights']:
         base_key = cfg_key.replace('_weight', '')
-        if base_key != 'data': # Exclude data key
-            final_initial_losses[base_key] = initial_losses.get(base_key, 1e-8) # Use default if calculation failed or skipped
+        final_initial_losses[base_key] = initial_losses.get(base_key, 1e-8) # Use default if calculation failed or skipped
 
-    print(f"Final Initial Losses (excluding data): {final_initial_losses}")
+    print(f"Final Initial Losses: {final_initial_losses}")
     return final_initial_losses
 
 
