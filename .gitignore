@@ -143,3 +143,6 @@ hyperopt/*.db
 # database files
 *.sqlite3
 *.db
+
+#jobs
+jobs/
