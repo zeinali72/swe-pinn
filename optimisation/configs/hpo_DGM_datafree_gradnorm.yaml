@@ -4,7 +4,7 @@
 hpo_settings:
   data_free: true
   enable_gradnorm: true
-  opt_epochs: 5000
+  opt_epochs: 100
 
 training: # <<<--- Add seed here
   seed: 42 # Or any other integer seed value
@@ -17,13 +17,9 @@ scenario: "one_building_DEM_zero"
 model:
   name: "DGMNetwork"
   output_dim: 3
-  kernel_init: "glorot_uniform"
-  bias_init: 0.0
   # --- Optimized Model Params ---
   width: 256
   depth: 4
-  ff_dims: 256
-  fourier_scale: 10.0
 
 domain: # Fixed
   lx: 1200.0

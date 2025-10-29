@@ -36,8 +36,8 @@ def main():
                         help="Path to the HPO BASE configuration file (e.g., optimisation/configs/hpo_base_fourier.yaml).")
     parser.add_argument("--n_trials", type=int, default=50,
                         help="Number of optimization trials to run.")
-    parser.add_argument("--storage", type=str, default="sqlite:///optimisation_study.db",
-                        help="Optuna storage URL (e.g., sqlite:///study.db).")
+    parser.add_argument("--storage", type=str, default=None,
+                        help="Optuna storage URL (e.g., sqlite:///study.db). If not provided, defaults to optimisation/database/{study_name}.db")
     parser.add_argument("--study_name", type=str, default="swe-pinn-hpo",
                         help="Name for the Optuna study.")
     # Removed --data_free and --opt_epochs arguments
@@ -75,15 +75,22 @@ def main():
     print(f"Optimization trials will run for {opt_epochs} epochs each (from config).")
 
     # --- Setup Optuna Study ---
-    storage_path = args.storage
-    if storage_path.startswith("sqlite:///"):
-        db_file = storage_path.split("sqlite:///")[-1]
-        if not os.path.isabs(db_file):
-            db_file = os.path.join(project_root, db_file)
-            storage_path = f"sqlite:///{db_file}"
-        db_dir = os.path.dirname(db_file)
-        if db_dir and not os.path.exists(db_dir):
-            os.makedirs(db_dir, exist_ok=True)
+    # Default storage path in optimisation/database if not provided
+    if args.storage is None:
+        db_dir = os.path.join(project_root, "optimisation", "database")
+        os.makedirs(db_dir, exist_ok=True)
+        db_file = os.path.join(db_dir, f"{args.study_name}.db")
+        storage_path = f"sqlite:///{db_file}"
+    else:
+        storage_path = args.storage
+        if storage_path.startswith("sqlite:///"):
+            db_file = storage_path.split("sqlite:///")[-1]
+            if not os.path.isabs(db_file):
+                db_file = os.path.join(project_root, db_file)
+                storage_path = f"sqlite:///{db_file}"
+            db_dir = os.path.dirname(db_file)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
 
     study = optuna.create_study(
         study_name=args.study_name,
@@ -192,9 +199,10 @@ def main():
                 best_trial_config_dict['training']['epochs'] = base_config_dict.get('training', {}).get('epochs', 20000) # Use default from base or a standard value
                 best_trial_config_dict['training'].pop('opt_epochs', None) # Remove opt_epochs
 
-                save_dir = os.path.join(project_root, "optimisation", "results") # Save in optimisation results
+                # Save in study-specific results folder
+                save_dir = os.path.join(project_root, "optimisation", "results", args.study_name)
                 os.makedirs(save_dir, exist_ok=True)
-                save_path = os.path.join(save_dir, f"{args.study_name}_best_trial_{best_trial.number}_config.yaml")
+                save_path = os.path.join(save_dir, f"best_trial_{best_trial.number}_config.yaml")
 
                 try:
                     with open(save_path, 'w') as f:
