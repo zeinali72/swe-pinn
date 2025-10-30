@@ -30,7 +30,7 @@ def objective(trial: optuna.trial.Trial,
     trial_params = {} # Store suggested params
 
     # === Training Hyperparameters ===
-    trial_params["learning_rate"] = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
+    trial_params["learning_rate"] = trial.suggest_float("learning_rate", 1e-6, 1e-2, log=True)
     trial_params["batch_size"] = trial.suggest_categorical("batch_size", [256, 512, 1024])
     # opt_epochs comes from base_cfg['training']['opt_epochs']
 
@@ -78,7 +78,7 @@ def objective(trial: optuna.trial.Trial,
         print(f"Trial {trial.number}: Configuring for GradNorm (data_free={data_free}).")
         trial_params["gradnorm_alpha"] = trial.suggest_float("gradnorm_alpha", 0.1, 3.0)
         trial_params["gradnorm_update_freq"] = trial.suggest_categorical("gradnorm_update_freq", [50, 100, 200, 500])
-        # trial_params["gradnorm_lr"] = trial.suggest_float("gradnorm_lr", 1e-3, 1e-1, log=True) # Optional
+        trial_params["gradnorm_lr"] = trial.suggest_float("gradnorm_lr", 1e-3, 1e-1, log=True)
 
         # Set initial weights to 1.0; GradNorm adjusts them
         trial_params["loss_weights"]["pde_weight"] = 1.0
@@ -115,7 +115,7 @@ def objective(trial: optuna.trial.Trial,
         # Log irrelevant GradNorm params as None
         trial.set_user_attr("gradnorm_alpha", None)
         trial.set_user_attr("gradnorm_update_freq", None)
-        # trial.set_user_attr("gradnorm_lr", None)
+        trial.set_user_attr("gradnorm_lr", None)
 
     # === Construct FULL Trial Configuration Dictionary ===
     # Start with a deep copy of the base config (which is already a dict)
