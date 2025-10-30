@@ -43,32 +43,51 @@ def objective(trial: optuna.trial.Trial,
     elif model_name == "SIREN":
         trial_params["w0"] = trial.suggest_float("w0", 1.0, 30.0)
 
-    # === Grid Hyperparameters ===
-    # (Same suggestion logic as before)
+    # === Grid Hyperparameters (MODIFIED AS REQUESTED) ===
+    # 1. PDE (Base)
     nx_base = trial.suggest_int("nx_base", 20, 80, step=4)
     ny_base = trial.suggest_int("ny_base", 10, 40, step=2)
     nt_base = trial.suggest_int("nt_base", 10, 40, step=2)
-    
-    # Suggest factors once to ensure consistency
-    nx_bc_horizontal_factor = trial.suggest_float("nx_bc_horizontal_factor", 0.2, 1.2)
-    
     trial_params["grid"] = {"nx": nx_base, "ny": ny_base, "nt": nt_base}
+
+    # 2. IC (One factor)
+    ic_factor = trial.suggest_float("ic_factor", 0.2, 1.5)
+    
+    # 3. Left BC (Inflow)
+    left_bc_factor = trial.suggest_float("left_bc_factor", 0.2, 1.5)
+    
+    # 4. Right BC (Outlet)
+    right_bc_factor = trial.suggest_float("right_bc_factor", 0.2, 1.5)
+
+    # 5. Horizontal BCs (Top/Bottom Walls)
+    horizontal_bc_factor = trial.suggest_float("horizontal_bc_factor", 0.2, 1.5)
+    
     trial_params["ic_bc_grid"] = {
-        "nx_ic": max(5, int(trial.suggest_float("nx_ic_factor", 0.2, 1.2) * nx_base)),
-        "ny_ic": max(5, int(trial.suggest_float("ny_ic_factor", 0.2, 1.2) * ny_base)),
-        "ny_bc_left": max(5, int(trial.suggest_float("ny_bc_left_factor", 0.2, 1.2) * ny_base)),
-        "nt_bc_left": max(5, int(trial.suggest_float("nt_bc_left_factor", 0.2, 1.2) * nt_base)),
-        "ny_bc_right": max(5, int(trial.suggest_float("ny_bc_right_factor", 0.2, 1.2) * ny_base)),
-        "nt_bc_right": max(5, int(trial.suggest_float("nt_bc_right_factor", 0.2, 1.2) * nt_base)),
-        "nx_bc_bottom": max(5, int(nx_bc_horizontal_factor * nx_base)),
-        "nt_bc_other": max(5, int(trial.suggest_float("nt_bc_other_factor", 0.2, 1.2) * nt_base)),
-        "nx_bc_top": max(5, int(nx_bc_horizontal_factor * nx_base)),
+        # Use ic_factor for both nx_ic and ny_ic
+        "nx_ic": max(5, int(ic_factor * nx_base)),
+        "ny_ic": max(5, int(ic_factor * ny_base)),
+        
+        # Use left_bc_factor for both ny_bc_left and nt_bc_left
+        "ny_bc_left": max(5, int(left_bc_factor * ny_base)),
+        "nt_bc_left": max(5, int(left_bc_factor * nt_base)),
+        
+        # Use right_bc_factor for both ny_bc_right and nt_bc_right
+        "ny_bc_right": max(5, int(right_bc_factor * ny_base)),
+        "nt_bc_right": max(5, int(right_bc_factor * nt_base)),
+        
+        # Use horizontal_bc_factor for top and bottom (nx and nt)
+        "nx_bc_bottom": max(5, int(horizontal_bc_factor * nx_base)),
+        "nt_bc_other": max(5, int(horizontal_bc_factor * nt_base)), # This name is from the original config
+        "nx_bc_top": max(5, int(horizontal_bc_factor * nx_base)),
     }
+    
     if has_building:
+         # 6. Building BCs (One factor)
+         building_bc_factor = trial.suggest_float("building_bc_factor", 0.2, 1.5)
          trial_params["building_grid"] = {
-             "nx": max(5, int(trial.suggest_float("nx_bldg_factor", 0.2, 1.2) * nx_base)),
-             "ny": max(5, int(trial.suggest_float("ny_bldg_factor", 0.2, 1.2) * ny_base)),
-             "nt": max(5, int(trial.suggest_float("nt_bldg_factor", 0.2, 1.2) * nt_base)),
+             "nx": max(5, int(building_bc_factor * nx_base)),
+             "ny": max(5, int(building_bc_factor * ny_base)),
+             "nt": max(5, int(building_bc_factor * nt_base)),
          }
 
     # === Loss Weights / GradNorm Hyperparameters (Conditional Suggestion) ===
