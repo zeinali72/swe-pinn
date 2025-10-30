@@ -146,3 +146,9 @@ hyperopt/*.db
 
 #jobs
 jobs/
+
+#virtual environments
+venv-*/
+
+#HPC optimisation_logs
+optimisation_logs/
