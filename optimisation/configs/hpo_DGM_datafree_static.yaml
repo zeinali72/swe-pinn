@@ -80,7 +80,7 @@ plotting: # Fixed
   plot_resolution: 150
 
 device: # Fixed
-  dtype: "float32"
+  dtype: "float64"
   early_stop_min_epochs: 4000
   early_stop_patience: 3000
 

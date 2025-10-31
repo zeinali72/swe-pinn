@@ -472,7 +472,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
                  raise optuna.exceptions.TrialPruned()
 
             # Optional: Log progress less frequently
-            if (epoch + 1) % (validation_freq*10) == 0:
+            if (epoch + 1) % (validation_freq*200) == 0:
                 epoch_time = time.time() - epoch_start_time
                 print(f"  Trial {trial.number}, Epoch {epoch+1}/{epochs}: "
                         f"NSE={current_nse:.6f}, "
