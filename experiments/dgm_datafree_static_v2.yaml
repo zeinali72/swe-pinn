@@ -1,0 +1,63 @@
+training:
+  seed: 42
+  epochs: 1000
+  learning_rate: 0.003248709952752224
+  batch_size: 512
+scenario: one_building_DEM_zero
+model:
+  name: DGMNetwork
+  output_dim: 3
+  width: 512
+  depth: 6
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+grid:
+  nx: 72
+  ny: 40
+  nt: 14
+ic_bc_grid:
+  nx_ic: 42
+  ny_ic: 23
+  ny_bc_left: 28
+  nt_bc_left: 9
+  ny_bc_right: 25
+  nt_bc_right: 9
+  nx_bc_bottom: 101
+  nt_bc_other: 19
+  nx_bc_top: 101
+building:
+  x_min: 325.0
+  x_max: 375.0
+  y_min: 25.0
+  y_max: 75.0
+  nx: 69
+  ny: 38
+  nt: 13
+physics:
+  u_const: 0.29
+  n_manning: 0.03
+  inflow: null
+  g: 9.81
+loss_weights:
+  pde_weight: 1.0
+  ic_weight: 1.2870051261334887
+  bc_weight: 0.022456522375260714
+  building_bc_weight: 0.005533230231283883
+  data_weight: 0.0
+gradnorm:
+  learning_rate: 0.01
+  enable: false
+plotting:
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 0
+  plot_resolution: 150
+device:
+  dtype: "float64"
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+numerics:
+  eps: 1.0e-06
+CONFIG_PATH: optimisation/configs/hpo_DGM_datafree_static.yaml
