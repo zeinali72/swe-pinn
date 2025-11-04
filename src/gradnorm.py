@@ -6,6 +6,7 @@ import optax
 from flax.core import FrozenDict
 from typing import Dict, Any, Callable, Tuple, List
 import chex # For type hinting
+import importlib # <<<--- NEW IMPORT
 
 # --- Import specific loss computation functions directly ---
 from src.losses import (
@@ -13,9 +14,9 @@ from src.losses import (
     compute_building_bc_loss, compute_data_loss
 )
 from src.config import DTYPE
+# --- NEW: Import model base class to find shared layer dynamically ---
+from src.models import FourierPINN, SIREN, DGMNetwork
 
-# Define which layer parameters to use for GradNorm (e.g., the final Dense layer)
-SHARED_LAYER_NAME = 'OutputDense'  # Adjust based on actual model architecture
 
 @flax.struct.dataclass
 class GradNormState:
@@ -30,7 +31,7 @@ def init_gradnorm(loss_keys: List[str], initial_losses: Dict[str, float], gradno
     weights = jnp.ones(num_losses, dtype=DTYPE)
 
     # Ensure initial losses (provided based on loss_keys) have a minimum value
-    processed_initial_losses = {k: max(initial_losses[k], 1e-8) for k in loss_keys}
+    processed_initial_losses = {k: max(initial_losses.get(k, 1e-8), 1e-8) for k in loss_keys}
 
     optimizer = optax.adam(learning_rate=gradnorm_lr)
     opt_state = optimizer.init(weights)
@@ -41,34 +42,46 @@ def init_gradnorm(loss_keys: List[str], initial_losses: Dict[str, float], gradno
         opt_state=opt_state
     )
 
-def _get_shared_layer_params(params: FrozenDict) -> chex.ArrayTree:
+# --- MODIFIED: Dynamically find the shared layer name ---
+def _get_shared_layer_name(model: Any) -> str:
+    """Determines the name of the final output layer for GradNorm."""
+    if isinstance(model, DGMNetwork):
+        return 'OutputDense'
+    elif isinstance(model, (FourierPINN, SIREN)):
+        return 'output_layer'
+    else:
+        # Fallback or error
+        print(f"Warning: Unknown model type '{type(model)}' for GradNorm. Defaulting to 'OutputDense'.")
+        return 'OutputDense'
+
+def _get_shared_layer_params(params: FrozenDict, shared_layer_name: str) -> chex.ArrayTree:
     """Extracts parameters of the specified shared layer."""
-    # This assumes the parameters are nested under 'params'.
-    # Flax names layers in lists as LayerName_index (e.g., Dense_0, Dense_1...)
-    # Access the specific dense layer directly by its name
-    if SHARED_LAYER_NAME not in params['params']:
+    if 'params' not in params:
+        # Handle cases where params might be passed without the outer 'params' key
+        params = FrozenDict({'params': params})
+
+    if shared_layer_name not in params['params']:
         available_layers = list(params['params'].keys())
-        # Provide a more helpful error message
         raise ValueError(
-            f"Shared layer '{SHARED_LAYER_NAME}' not found in model parameters. "
-            f"Check model depth and naming. Available top-level layers: {available_layers}"
+            f"Shared layer '{shared_layer_name}' not found in model parameters. "
+            f"Check model architecture and '_get_shared_layer_name' in 'src/gradnorm.py'. "
+            f"Available top-level layers: {available_layers}"
         )
-    return params['params'][SHARED_LAYER_NAME]
+    return params['params'][shared_layer_name]
+# --- END MODIFIED ---
+
 
 # Define individual loss functions compatible with jax.value_and_grad
 def pde_loss_fn(params, model, batch, config):
     return compute_pde_loss(model, params, batch, config)
 
 def ic_loss_fn(params, model, batch, config):
-    # No wrapping needed - compute_ic_loss expects params directly
     return compute_ic_loss(model, params, batch)
 
 def bc_loss_fn(params, model, batches, config):
-    # No wrapping needed - compute_bc_loss expects params directly
     return compute_bc_loss(model, params, batches['left'], batches['right'], batches['bottom'], batches['top'], config)
 
 def building_bc_loss_fn(params, model, batches, config):
-    # No wrapping needed - compute_building_bc_loss expects params directly
     return compute_building_bc_loss(model, params,
                                      batches.get('left', jnp.empty((0,3), dtype=DTYPE)),
                                      batches.get('right', jnp.empty((0,3), dtype=DTYPE)),
@@ -76,7 +89,6 @@ def building_bc_loss_fn(params, model, batches, config):
                                      batches.get('top', jnp.empty((0,3), dtype=DTYPE)))
 
 def data_loss_fn(params, model, batch, config):
-    # No wrapping needed - compute_data_loss expects params directly
     return compute_data_loss(model, params, batch, config)
 
 # Map loss keys to their respective functions and required batch data
@@ -85,7 +97,7 @@ LOSS_FN_MAP = {
     'ic': {'func': ic_loss_fn, 'batch_key': 'ic'},
     'bc': {'func': bc_loss_fn, 'batch_key': 'bc'}, # BC needs dict of batches
     'building_bc': {'func': building_bc_loss_fn, 'batch_key': 'building_bc'}, # Bldg BC needs dict
-    'data': {'func': data_loss_fn, 'batch_key': 'data'} # Keep data here, but it won't be used if excluded in train_gradnorm.py
+    'data': {'func': data_loss_fn, 'batch_key': 'data'} # Data loss is now included
 }
 
 # Apply JIT functionally to _compute_gradient_norm
@@ -124,8 +136,10 @@ def update_gradnorm_weights(
     grads_wrt_shared_layer = {}
 
     # --- 1. Calculate current losses and gradients w.r.t. shared layer ---
-    # Get the structure without unnecessary copying
-    shared_layer_params = _get_shared_layer_params(model_params)
+    # --- MODIFIED: Get layer name dynamically ---
+    shared_layer_name = _get_shared_layer_name(model)
+    shared_layer_params = _get_shared_layer_params(model_params, shared_layer_name)
+    # --- END MODIFIED ---
 
     for key in loss_keys: # Iterate only over relevant keys
         if key not in LOSS_FN_MAP:
@@ -146,7 +160,6 @@ def update_gradnorm_weights(
         if is_empty_batch:
             current_losses[key] = 0.0
             grads_wrt_shared_layer[key] = jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params)
-            print(f"GradNorm Warning: Empty or missing batch for '{key}'. Using zero loss/grads.")
             continue
 
         # Compute loss and gradient for the specific task w.r.t. model_params
@@ -158,17 +171,20 @@ def update_gradnorm_weights(
 
             current_losses[key] = float(loss_val) # Store as float
             # Extract gradients only for the shared layer
-            grads_wrt_shared_layer[key] = _get_shared_layer_params(full_grads)
+            # --- MODIFIED: Pass layer name ---
+            grads_wrt_shared_layer[key] = _get_shared_layer_params(full_grads, shared_layer_name)
 
         except Exception as e:
-            print(f"Error computing loss/gradient for '{key}': {e}. Using zero loss/grads.")
+            print(f"Error computing loss/gradient for '{key}': {e}.")
+            import traceback
+            traceback.print_exc()
             current_losses[key] = 0.0
             grads_wrt_shared_layer[key] = jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params)
 
 
     # Convert dict values to a jnp array in the order defined by loss_keys
     current_losses_array = jnp.array([current_losses.get(k, 0.0) for k in loss_keys], dtype=DTYPE)
-    initial_losses_array = jnp.array([gradnorm_state.initial_losses[k] for k in loss_keys], dtype=DTYPE) # Already max(val, 1e-8)
+    initial_losses_array = jnp.array([gradnorm_state.initial_losses[k] for k in loss_keys], dtype=DTYPE) 
 
     # --- 2. Calculate GradNorm Loss (L_grad) ---
     def gradnorm_loss_calculation(current_weights_array):
@@ -185,7 +201,7 @@ def update_gradnorm_weights(
         relative_inverse_rates = loss_ratios / mean_loss_ratio
 
         # G_i = || grad(w_i * L_i) ||_W = w_i * || grad(L_i) ||_W
-        grad_norms = jnp.array([_compute_gradient_norm(grads_wrt_shared_layer[k]) for k in loss_keys], dtype=DTYPE)
+        grad_norms = jnp.array([_compute_gradient_norm(grads_wrt_shared_layer.get(k, jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params))) for k in loss_keys], dtype=DTYPE)
         weighted_grad_norms = w * grad_norms
 
         # G_avg = mean(G_j)
@@ -222,6 +238,68 @@ def update_gradnorm_weights(
     # Create dict for easy use in train_step
     new_weights_dict = {key: float(w) for key, w in zip(loss_keys, new_weights_normalized)}
 
-    # Removed per-step weight printing
-
     return updated_state, new_weights_dict
+
+# --- NEW: Function copied from train_gradnorm.py ---
+def get_initial_losses(model: Any, params: FrozenDict, all_batches: Dict[str, Any], config: FrozenDict) -> Dict[str, float]:
+    """Computes the initial value for each loss term (L_i(0))."""
+    initial_losses = {}
+    # Use keys from the provided batches (which are already filtered for relevance)
+    loss_keys_from_batches = list(all_batches.keys())
+    
+    print("Calculating initial losses (L_i(0))...")
+    for loss_key_base in loss_keys_from_batches:
+        if loss_key_base not in LOSS_FN_MAP:
+            print(f"Warning: Loss key '{loss_key_base}' from batches not in LOSS_FN_MAP. Skipping initial loss calculation.")
+            continue
+
+        loss_info = LOSS_FN_MAP[loss_key_base]
+        loss_func = loss_info['func']
+        batch_key = loss_info['batch_key'] # This should match loss_key_base
+        batch_data = all_batches.get(batch_key)
+
+        # Skip if batch is empty/missing
+        is_empty_batch = False
+        if batch_data is None: is_empty_batch = True
+        elif isinstance(batch_data, jnp.ndarray) and batch_data.shape[0] == 0: is_empty_batch = True
+        elif isinstance(batch_data, dict) and not any(isinstance(b, jnp.ndarray) and b.shape[0] > 0 for b in batch_data.values() if isinstance(b, jnp.ndarray)): is_empty_batch = True
+
+        if is_empty_batch:
+            initial_losses[loss_key_base] = 0.0
+            print(f"  Initial loss for {loss_key_base}: 0.0 (empty batch)")
+            continue
+
+        # Compute the loss value
+        try:
+            # Pass params directly, as required by the *_loss_fn wrappers
+            if loss_key_base == 'pde':
+                 loss_val = pde_loss_fn(params, model, batch_data, config)
+            elif loss_key_base == 'ic':
+                 loss_val = ic_loss_fn(params, model, batch_data, config)
+            elif loss_key_base == 'bc':
+                 loss_val = bc_loss_fn(params, model, batch_data, config)
+            elif loss_key_base == 'building_bc':
+                 loss_val = building_bc_loss_fn(params, model, batch_data, config)
+            elif loss_key_base == 'data':
+                 loss_val = data_loss_fn(params, model, batch_data, config)
+            else:
+                 # Fallback for any other custom losses
+                 loss_val = loss_func(params, model, batch_data, config)
+
+            initial_losses[loss_key_base] = max(float(loss_val), 1e-8) # Store as float, ensure minimum value
+            print(f"  Initial loss for {loss_key_base}: {initial_losses[loss_key_base]:.4e}")
+        except Exception as e:
+            print(f"  Error calculating initial loss for {loss_key_base}: {e}. Setting to 1e-8.")
+            initial_losses[loss_key_base] = 1e-8 # Default small value on error
+
+    # Ensure all relevant keys from the *original config* are present
+    final_initial_losses = {}
+    for cfg_key in config['loss_weights']:
+        base_key = cfg_key.replace('_weight', '')
+        # Only add keys that were intended to be active (i.e., in all_batches)
+        if base_key in all_batches: 
+            final_initial_losses[base_key] = initial_losses.get(base_key, 1e-8) # Use default if calculation failed
+
+    print(f"Final Initial Losses for GradNorm: {final_initial_losses}")
+    return final_initial_losses
+# --- END NEW FUNCTION ---

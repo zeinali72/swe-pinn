@@ -26,8 +26,7 @@ from src.losses import (
     compute_building_bc_loss, compute_data_loss
 )
 # Note: get_initial_losses is specifically for GradNorm setup
-from src.train_gradnorm import get_initial_losses
-from src.gradnorm import GradNormState, init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP
+from src.gradnorm import get_initial_losses, GradNormState, init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP
 from src.utils import nse, rmse, mask_points_inside_building
 from src.physics import h_exact
 # Do not import reporting here; objective function returns the value directly
