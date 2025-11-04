@@ -1,0 +1,49 @@
+# This is a base config file. The test script will create this 
+# and modify it in memory for each test case.
+# You don't need to manually edit this, but it's here for reference.
+training:
+  learning_rate: 0.0001
+  epochs: 2
+  batch_size: 4
+  seed: 42
+scenario: test_scenario
+model:
+  name: FourierPINN
+  width: 16
+  depth: 2
+  output_dim: 3
+  ff_dims: 32
+  fourier_scale: 1.0
+domain:
+  lx: 100.0
+  ly: 100.0
+  t_final: 2.0
+grid:
+  nx: 5
+  ny: 5
+  nt: 2
+ic_bc_grid:
+  nx_ic: 5
+  ny_ic: 5
+  ny_bc_left: 5
+  nt_bc_left: 2
+  ny_bc_right: 5
+  nt_bc_right: 2
+  nx_bc_bottom: 5
+  nt_bc_other: 2
+  nx_bc_top: 5
+physics:
+  u_const: 0.1
+  n_manning: 0.03
+  inflow: null
+  g: 9.81
+plotting:
+  nx_val: 10
+  t_const_val: 1.0
+  y_const_plot: 0
+  plot_resolution: 10
+device:
+  dtype: float32
+numerics:
+  eps: 1.0e-06
+

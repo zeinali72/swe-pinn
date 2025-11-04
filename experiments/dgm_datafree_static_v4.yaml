@@ -1,3 +1,4 @@
+data_free: true
 training:
   seed: 42
   epochs: 20_000

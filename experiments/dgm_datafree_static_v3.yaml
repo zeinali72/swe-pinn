@@ -1,3 +1,6 @@
+data_free: true
+  enable_gradnorm: false
+  opt_epochs: 20000
 training:
   seed: 42
   epochs: 20_000

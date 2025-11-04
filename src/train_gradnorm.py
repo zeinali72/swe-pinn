@@ -1,12 +1,7 @@
-# src/train.py
-# Unified training script based on the cleaner logic from
-# optimisation/optimization_train_loop.py, but for standalone runs.
-# Handles:
-# - Static weights (GradNorm disabled)
-# - Dynamic weights (GradNorm enabled)
-# - Data-Free mode (data_weight: 0.0 or file missing)
-# - Data-Driven mode (data_weight > 0 and file present)
-# - Aim logging, plotting, and model saving.
+# src/train_unified.py
+# Unified training script handling scenarios with and without buildings,
+# with optional GradNorm for dynamic loss weighting.
+# Based on the robust logic from optimisation/optimization_train_loop.py
 
 import os
 import time
@@ -75,7 +70,7 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
             terms['ic'] = compute_ic_loss(model, p, ic_batch_data)
 
         bc_batches = all_batches.get('bc', {})
-        if 'bc' in active_loss_keys_base and any(isinstance(b, jnp.ndarray) and b.shape[0] > 0 for b in bc_batches.values()):
+        if 'bc' in active_loss_keys_base and any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
              terms['bc'] = compute_bc_loss(
                  model, p, 
                  bc_batches.get('left', jnp.empty((0,3), dtype=DTYPE)),
@@ -87,7 +82,7 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
 
         if has_building and 'building_bc' in active_loss_keys_base:
             bldg_batches = all_batches.get('building_bc', {})
-            if bldg_batches and any(isinstance(b, jnp.ndarray) and b.shape[0] > 0 for b in bldg_batches.values()):
+            if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
                 terms['building_bc'] = compute_building_bc_loss(
                     model, p, 
                     bldg_batches.get('left', jnp.empty((0,3), dtype=DTYPE)),
@@ -101,12 +96,8 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
              terms['data'] = compute_data_loss(model, p, data_batch_data, config)
 
         # Calculate weighted total loss
-        # Use only weights for terms that were actually computed in this step
-        active_weights = {k: weights_dict.get(k, 0.0) for k in terms.keys()}
-        # Ensure all keys from weights_dict are present for total_loss function
         terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
-
-        total = total_loss(terms_with_defaults, active_weights)
+        total = total_loss(terms_with_defaults, weights_dict)
         return total, terms # Return only computed terms
 
     (total_loss_val, individual_terms_val), grads = jax.value_and_grad(loss_and_individual_terms, has_aux=True)(params)
@@ -168,42 +159,14 @@ def main(config_path: str):
 
     # --- Prepare Initial Weights and GradNorm Config ---
     static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
-    # has_data_loss is True if weight > 0 AND the file loads successfully later
-    has_data_loss = 'data' in static_weights_dict and static_weights_dict['data'] > 0
-
+    
     gradnorm_cfg = cfg.get("gradnorm", {})
-    enable_gradnorm = gradnorm_cfg.get("enable", False)
+    enable_gradnorm = gradnorm_cfg.get("enable", False) 
     gradnorm_alpha = gradnorm_cfg.get("alpha", 1.5)
     gradnorm_lr = gradnorm_cfg.get("learning_rate", 0.01) # LR for weight updates
     gradnorm_update_freq = gradnorm_cfg.get("update_freq", 100)
     
     gradnorm_state = None
-
-    # --- Aim Run Setup (Initialize variables *before* try block) ---
-    aim_repo = None
-    aim_run = None
-    run_hash = None
-    try:
-        aim_repo_path = "aim_repo"
-        if not os.path.exists(aim_repo_path): os.makedirs(aim_repo_path, exist_ok=True)
-        aim_repo = Repo(path=aim_repo_path, init=True)
-        aim_run = Run(repo=aim_repo, experiment=trial_name)
-        run_hash = aim_run.hash
-        
-        hparams_to_log = copy.deepcopy(cfg_dict)
-        hparams_to_log["gradnorm_enabled"] = enable_gradnorm
-        if enable_gradnorm:
-             hparams_to_log["gradnorm_alpha"] = gradnorm_alpha
-             hparams_to_log["gradnorm_lr"] = gradnorm_lr
-             hparams_to_log["gradnorm_update_freq"] = gradnorm_update_freq
-        # Note: data_loss_active will be added *after* data loading
-        
-        aim_run["hparams"] = hparams_to_log 
-        print(f"Aim tracking initialized for run: {trial_name} ({run_hash})")
-    except Exception as e: 
-        print(f"Warning: Failed to initialize Aim tracking: {e}.")
-        print("Training will continue without Aim logging.")
-
 
     # --- Load Data (Separate Training and Validation) ---
     val_points, h_true_val = None, None # For validation metrics
@@ -211,9 +174,27 @@ def main(config_path: str):
     scenario_name = cfg.get('scenario', 'default_scenario') 
     base_data_path = os.path.join("data", scenario_name)
 
+    # --- NEW: Check for explicit data_free flag in config (like optimization loop) ---
+    data_free_flag = cfg.get("data_free", None) # Look for top-level flag
+    
+    if data_free_flag is True:
+        print("Info: 'data_free: true' found in config. Data loss term will be disabled.")
+        has_data_loss = False
+        data_free = True
+    elif data_free_flag is False:
+        print("Info: 'data_free: false' found in config. Attempting to load data for data loss term.")
+        has_data_loss = True # Will attempt to load file
+        data_free = False
+    else: # data_free_flag is None (not present)
+        print("Info: 'data_free' flag not found in config. Inferring from 'data_weight'.")
+        # Use original logic based on weight
+        has_data_loss = 'data' in static_weights_dict and static_weights_dict['data'] > 0
+        data_free = not has_data_loss
+
     # --- Load Training Data (for data loss term) ---
+    # This block now runs if has_data_loss is True (from flag or weight)
     training_data_file = os.path.join(base_data_path, "training_dataset_sample.npy")
-    if has_data_loss: # Only attempt load if weight is non-zero
+    if has_data_loss: # Only attempt load if data loss is intended
         if os.path.exists(training_data_file):
             try:
                 print(f"Loading TRAINING data from: {training_data_file}")
@@ -223,7 +204,7 @@ def main(config_path: str):
                      data_points_full = None
                      has_data_loss = False # <-- Update flag
                 else:
-                     print(f"Using {data_points_full.shape[0]} points for data loss term (weight={static_weights_dict['data']:.2e}).")
+                     print(f"Using {data_points_full.shape[0]} points for data loss term (weight={static_weights_dict.get('data', 0.0):.2e}).")
             except Exception as e:
                 print(f"Error loading training data file {training_data_file}: {e}")
                 print("Disabling data loss term due to loading error.")
@@ -233,11 +214,8 @@ def main(config_path: str):
             print(f"Warning: Training data file not found at {training_data_file}.")
             print("Data loss term cannot be computed and will be disabled.")
             has_data_loss = False # <-- Update flag
-    else:
-        print("Info: 'data_weight' is 0 or not specified. Running in data-free mode.")
-        has_data_loss = False # Ensure it's False
     
-    # This is the final, definitive flag
+    # This is the final, definitive flag, accounting for file existence
     data_free = not has_data_loss
 
     # --- Load Validation Data (for NSE/RMSE metrics) ---
@@ -280,6 +258,28 @@ def main(config_path: str):
             print("Validation metrics (NSE/RMSE) will use analytical solution (if PDE points exist).")
     # --- End Data Loading ---
 
+    # --- Initialize Aim Run (with error handling) ---
+    # *** BUG FIX: Initialize variables to None before try block ***
+    aim_repo = None
+    aim_run = None
+    run_hash = None
+    try:
+        aim_repo_path = "aim_repo"
+        if not os.path.exists(aim_repo_path):
+             os.makedirs(aim_repo_path, exist_ok=True)
+        aim_repo = Repo(path=aim_repo_path, init=True)
+        aim_run = Run(repo=aim_repo, experiment=trial_name)
+        run_hash = aim_run.hash
+        # Log hparams (create dict for logging)
+        hparams_to_log = {**cfg_dict} # Copy config
+        hparams_to_log["data_free_config_flag"] = data_free_flag # Log the flag itself (True, False, or None)
+        hparams_to_log["data_loss_active_final"] = has_data_loss # Log the *actual* data loss status
+        aim_run["hparams"] = hparams_to_log
+        print(f"Aim tracking initialized for run: {trial_name} ({run_hash})")
+    except Exception as e:
+        print(f"Warning: Failed to initialize Aim tracking: {e}. Training will continue without Aim.")
+
+
     # --- Determine Active Loss Keys ---
     active_loss_term_keys = []
     for k, v in static_weights_dict.items():
@@ -290,7 +290,7 @@ def main(config_path: str):
     
     # This dict holds the weights, either static or dynamic
     current_weights_dict = {k: static_weights_dict[k] for k in active_loss_term_keys}
-    
+
     # --- GradNorm Initialization (if enabled) ---
     if enable_gradnorm:
         print("GradNorm enabled. Initializing dynamic weights...")
@@ -336,7 +336,7 @@ def main(config_path: str):
         relevant_init_batches = {
             k: init_batches[k] for k in active_loss_term_keys if k in init_batches and 
             (isinstance(init_batches[k], jnp.ndarray) and init_batches[k].shape[0] > 0) or
-            (isinstance(init_batches[k], dict) and any(isinstance(b, jnp.ndarray) and b.shape[0] > 0 for b in init_batches[k].values()))
+            (isinstance(init_batches[k], dict) and any(b.shape[0] > 0 for b in init_batches[k].values() if isinstance(b, jnp.ndarray)))
         }
         active_loss_term_keys = list(relevant_init_batches.keys()) # Update keys to only those with batches
         print(f"GradNorm active keys for init: {active_loss_term_keys}")
@@ -362,16 +362,13 @@ def main(config_path: str):
     else:
          print(f"GradNorm disabled. Using Static Weights: {current_weights_dict}")
     
-    # --- Update Aim Hparams (This block fixes the NameError) ---
-    if aim_run: 
+    # --- Aim Run hparams update (moved after data loading) ---
+    if aim_run:
         try:
-            hparams_to_log = aim_run["hparams"] # Get hparams dict
-            hparams_to_log["data_loss_active"] = has_data_loss # Log the *actual* data loss status
-            hparams_to_log["active_loss_terms"] = active_loss_term_keys
-            aim_run["hparams"] = hparams_to_log # Update hparams
+            # Log the final active loss terms
+            aim_run["hparams"]["active_loss_terms_final"] = active_loss_term_keys
         except Exception as e:
             print(f"Warning: Could not update Aim hparams: {e}")
-
 
     # --- Training Initialization ---
     print(f"\n--- Training Started: {trial_name} ---")
@@ -380,7 +377,7 @@ def main(config_path: str):
     print(f"Saving results to: {results_dir}")
     print(f"Saving model to: {model_dir}")
     print(f"GradNorm Enabled: {enable_gradnorm}")
-    print(f"Data Loss Active: {has_data_loss} (Data-Free: {data_free})")
+    print(f"Data Loss Active: {has_data_loss} (Final Data-Free: {data_free})")
     print(f"Active Loss Terms: {active_loss_term_keys}")
     print(f"Initial Weights: {current_weights_dict}")
 
@@ -470,7 +467,7 @@ def main(config_path: str):
             for i in range(num_batches):
                 global_step += 1
 
-                # Get batches
+                # Get batches, ensuring empty tensors if not active or iterator empty
                 pde_batch_data = next(pde_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
                 ic_batch_data = next(ic_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
                 left_batch_data = next(left_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
@@ -484,8 +481,9 @@ def main(config_path: str):
                     for wall, iterator in building_batch_iters.items():
                         current_building_batch_data[wall] = next(iterator, jnp.empty((0, 3), dtype=DTYPE))
 
-                # Aggregate batches for GradNorm
-                current_all_batches_for_gradnorm = {
+                # Aggregate batches into the dictionary structure expected by train_step
+                # *** RENAMED for consistency ***
+                current_all_batches = {
                     'pde': pde_batch_data,
                     'ic': ic_batch_data,
                     'bc': {'left': left_batch_data, 'right': right_batch_data, 'bottom': bottom_batch_data, 'top': top_batch_data},
@@ -497,33 +495,21 @@ def main(config_path: str):
                 if enable_gradnorm and global_step % gradnorm_update_freq == 0:
                     # Filter batches to only those GradNorm is tracking
                     active_batches_for_gradnorm = {
-                        k: current_all_batches_for_gradnorm[LOSS_FN_MAP[k]['batch_key']] 
+                        k: current_all_batches[LOSS_FN_MAP[k]['batch_key']] 
                         for k in active_loss_term_keys if k in LOSS_FN_MAP
                     }
                     
-                    with jax.disable_jit(): # Ensure GradNorm update runs without JIT
+                    with jax.disable_jit(): # GradNorm update itself should be outside JIT
                          gradnorm_state, current_weights_dict = update_gradnorm_weights(
                               gradnorm_state, params, model, active_batches_for_gradnorm,
                               cfg, gradnorm_alpha, gradnorm_lr
                          )
 
                 # --- Training Step ---
-                # Pass all batches to the jitted function for stable graph
-                all_batches_for_step = {
-                    'pde': pde_batch_data, 'ic': ic_batch_data,
-                    'bc': {'left': left_batch_data, 'right': right_batch_data, 'bottom': bottom_batch_data, 'top': top_batch_data},
-                    'building_bc': {
-                        'left': current_building_batch_data.get('left', jnp.empty((0, 3), dtype=DTYPE)),
-                        'right': current_building_batch_data.get('right', jnp.empty((0, 3), dtype=DTYPE)),
-                        'bottom': current_building_batch_data.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
-                        'top': current_building_batch_data.get('top', jnp.empty((0, 3), dtype=DTYPE)),
-                    },
-                    'data': data_batch_data
-                }
-                
+                # *** BUG FIX: Pass the dictionary, not individual arrays ***
                 params, opt_state, batch_losses_unweighted, batch_total_weighted_loss = train_step_jitted(
                     model, params, opt_state,
-                    all_batches_for_step,
+                    current_all_batches,  # Pass the dictionary
                     current_weights_dict, # Pass (potentially dynamic) weights
                     optimiser, cfg, data_free # Pass data_free flag
                 )
@@ -538,29 +524,33 @@ def main(config_path: str):
             avg_total_weighted_loss = epoch_total_weighted_loss / num_batches
 
             nse_val, rmse_val = -jnp.inf, jnp.inf
-            with jax.disable_jit():
-                if validation_data_loaded: # Use loaded validation data
-                    U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
-                    h_pred_val = U_pred_val[..., 0]
-                    h_true_mean = jnp.mean(h_true_val)
-                    denominator_nse = jnp.sum((h_true_val - h_true_mean)**2)
-                    if denominator_nse > cfg.get("numerics", {}).get("eps", 1e-9):
-                         numerator_nse = jnp.sum((h_true_val - h_pred_val)**2)
-                         nse_val = float(1.0 - numerator_nse / denominator_nse)
-                    rmse_val = float(rmse(h_pred_val, h_true_val))
-                
-                elif not has_building and pde_points.shape[0] > 0: # Fallback: No building, no validation file -> use analytical
-                    if (epoch + 1) % 100 == 0:
-                        print(f"Info: No validation data. Using analytical solution on PDE points for NSE/RMSE.")
-                    U_pred_val_no_building = model.apply({'params': params['params']}, pde_points, train=False)
-                    h_pred_val_no_building = U_pred_val_no_building[..., 0]
-                    h_true_val_no_building = h_exact(pde_points[:, 0], pde_points[:, 2], cfg["physics"]["n_manning"], cfg["physics"]["u_const"])
-                    h_true_mean = jnp.mean(h_true_val_no_building)
-                    denominator_nse = jnp.sum((h_true_val_no_building - h_true_mean)**2)
-                    if denominator_nse > cfg.get("numerics", {}).get("eps", 1e-9):
-                        numerator_nse = jnp.sum((h_true_val_no_building - h_pred_val_no_building)**2)
-                        nse_val = float(1.0 - numerator_nse / denominator_nse)
-                    rmse_val = float(rmse(h_pred_val_no_building, h_true_val_no_building))
+            
+            # *** FIX: Removed 'with jax.disable_jit():' wrapper ***
+            # This logic now runs in the main Python loop (eager mode),
+            # which is consistent with optimization_train_loop.py.
+            if validation_data_loaded: # Use loaded validation data
+                U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
+                h_pred_val = U_pred_val[..., 0]
+                h_true_mean = jnp.mean(h_true_val)
+                denominator_nse = jnp.sum((h_true_val - h_true_mean)**2)
+                if denominator_nse > cfg.get("numerics", {}).get("eps", 1e-9):
+                     numerator_nse = jnp.sum((h_true_val - h_pred_val)**2)
+                     nse_val = float(1.0 - numerator_nse / denominator_nse)
+                rmse_val = float(rmse(h_pred_val, h_true_val))
+            
+            elif not has_building and pde_points.shape[0] > 0: # Fallback: No building, no validation file -> use analytical
+                if (epoch + 1) % 100 == 0: # Only log this message periodically
+                    print(f"Info: No validation data. Using analytical solution on PDE points for NSE/RMSE.")
+                U_pred_val_no_building = model.apply({'params': params['params']}, pde_points, train=False)
+                h_pred_val_no_building = U_pred_val_no_building[..., 0]
+                h_true_val_no_building = h_exact(pde_points[:, 0], pde_points[:, 2], cfg["physics"]["n_manning"], cfg["physics"]["u_const"])
+                h_true_mean = jnp.mean(h_true_val_no_building)
+                denominator_nse = jnp.sum((h_true_val_no_building - h_true_mean)**2)
+                if denominator_nse > cfg.get("numerics", {}).get("eps", 1e-9):
+                    numerator_nse = jnp.sum((h_true_val_no_building - h_pred_val_no_building)**2)
+                    nse_val = float(1.0 - numerator_nse / denominator_nse)
+                rmse_val = float(rmse(h_pred_val_no_building, h_true_val_no_building))
+            # --- End of validation block ---
 
             # --- Update Best Model ---
             if nse_val > best_nse:
@@ -580,7 +570,7 @@ def main(config_path: str):
                     avg_losses_unweighted.get('ic', 0.0), 
                     avg_losses_unweighted.get('bc', 0.0),
                     avg_losses_unweighted.get('building_bc', 0.0),
-                    avg_losses_unweighted.get('data', 0.0), 
+                    avg_losses_unweighted.get('data', 0.0), # Pass unweighted data loss
                     nse_val, rmse_val, epoch_time
                 )
                 if enable_gradnorm:
@@ -590,12 +580,12 @@ def main(config_path: str):
             if aim_run:
                 try:
                     metrics_to_log = {
-                        'total_loss': avg_total_weighted_loss,
+                        'total_loss': avg_total_weighted_loss, # Log weighted total
                         'pde_loss': avg_losses_unweighted.get('pde', 0.0),
                         'ic_loss': avg_losses_unweighted.get('ic', 0.0),
                         'bc_loss': avg_losses_unweighted.get('bc', 0.0),
                         'building_bc_loss': avg_losses_unweighted.get('building_bc', 0.0),
-                        'data_loss': avg_losses_unweighted.get('data', 0.0),
+                        'data_loss': avg_losses_unweighted.get('data', 0.0), # Log unweighted
                         'nse': nse_val, 'rmse': rmse_val, 'epoch_time': epoch_time
                     }
                     if enable_gradnorm:
@@ -637,9 +627,11 @@ def main(config_path: str):
         total_time = time.time() - start_time
         print_final_summary(total_time, best_epoch, best_nse, best_nse_time)
 
+        # Ask for confirmation to save results
         if ask_for_confirmation():
             if best_params is not None:
                 try:
+                    # Save the best model parameters
                     save_model(best_params, model_dir, trial_name)
 
                     # --- Conditional Plotting ---
@@ -649,6 +641,7 @@ def main(config_path: str):
                     t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
 
                     if has_building:
+                        # --- Generate Meshgrid Data for Prediction Plot ---
                         print("  Generating meshgrid predictions...")
                         resolution = plot_cfg.get("plot_resolution", 100)
                         x_plot = jnp.linspace(0, cfg["domain"]["lx"], resolution, dtype=DTYPE)
@@ -661,11 +654,10 @@ def main(config_path: str):
                         h_plot_pred_mesh = U_plot_pred_mesh[..., 0].reshape(resolution, resolution)
                         h_plot_pred_mesh = jnp.where(h_plot_pred_mesh < eps_plot, 0.0, h_plot_pred_mesh)
 
+                        # --- Generate Stacked Comparison Plot using validation_plotting_t_XXXXs.npy ---
                         print("  Loading plotting data for comparison...")
                         plot_data_time = t_const_val_plot
-                        # Re-define base_data_path for plotting, just in case
-                        plot_base_data_path = os.path.join("data", scenario_name)
-                        plot_data_file = os.path.join(plot_base_data_path, f"validation_plotting_t_{int(plot_data_time)}s.npy")
+                        plot_data_file = os.path.join(base_data_path, f"validation_plotting_t_{int(plot_data_time)}s.npy")
                         if os.path.exists(plot_data_file):
                             try:
                                 plot_data = np.load(plot_data_file)
@@ -675,8 +667,8 @@ def main(config_path: str):
 
                                 plot_path_comp = os.path.join(results_dir, f"final_comparison_plot_t{int(plot_data_time)}s.png")
                                 plot_h_prediction_vs_true_2d(
-                                    xx_plot, yy_plot, h_plot_pred_mesh,
-                                    x_coords_plot, y_coords_plot, h_true_plot_data,
+                                    xx_plot, yy_plot, h_plot_pred_mesh, # Predicted mesh data
+                                    x_coords_plot, y_coords_plot, h_true_plot_data, # True scattered data
                                     cfg_dict, plot_path_comp
                                 )
                             except Exception as e_plot:
@@ -685,6 +677,7 @@ def main(config_path: str):
                              print(f"  Warning: Plotting data file {plot_data_file} not found. Skipping comparison plot.")
 
                     else: # No building scenario
+                        # Generate 1D Plot for no-building scenario
                         print("  Generating 1D validation plot...")
                         nx_val_plot = plot_cfg.get("nx_val", 101)
                         y_const_plot = plot_cfg.get("y_const_plot", 0.0)
@@ -696,7 +689,7 @@ def main(config_path: str):
                         h_plot_pred_1d = jnp.where(h_plot_pred_1d < eps_plot, 0.0, h_plot_pred_1d)
 
                         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
-                        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d)
+                        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d) # Pass dict config
 
                     print(f"Model and comparison plot saved in {model_dir} and {results_dir}")
                 except Exception as e:
@@ -706,9 +699,11 @@ def main(config_path: str):
             else:
                 print("Warning: No best model found (best_params is None). Skipping save and plot.")
         else:
+            # User chose not to save, clean up artifacts
             print("Save aborted by user. Deleting artifacts...")
             try:
                 if aim_run and run_hash and aim_repo:
+                    # Note: You must have imported aim_repo and run_hash from the try block
                     aim_repo.delete_run(run_hash)
                     print("Aim run deleted.")
                 if os.path.exists(results_dir):
@@ -721,18 +716,19 @@ def main(config_path: str):
             except Exception as e:
                 print(f"Error during cleanup: {e}")
 
+    # Return best NSE
     return best_nse if best_nse > -jnp.inf else -1.0
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train a PINN model for SWE (Handles building/no-building, data-driven/data-free, and optional GradNorm).")
-    parser.add_argument("--config", type=str, required=True, help="Path to the configuration file (e.g., experiments/one_building_config_gradnorm.yaml or experiments/fourier_pinn_config.yaml)")
+    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE.")
+    parser.add_argument("--config", type=str, required=True, help="Path to the configuration file (e.g., experiments/one_building_config.yaml)")
     args = parser.parse_args()
 
     try:
         final_nse = main(args.config) # Call main
         print(f"\n--- Script Finished ---")
-        if isinstance(final_nse, (float, int)) and final_nse > -float('inf'):
+        if isinstance(final_nse, (float, int)) and final_nse > -jnp.inf:
             print(f"Final best NSE reported: {final_nse:.6f}")
         else:
             print(f"Final best NSE value invalid or not achieved: {final_nse}")
