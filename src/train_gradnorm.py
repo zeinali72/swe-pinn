@@ -1,7 +1,12 @@
 # src/train.py
-# Unified training script handling scenarios with and without buildings,
-# with optional GradNorm for dynamic loss weighting.
-# Refactored to use the cleaner logic from optimisation/optimization_train_loop.py
+# Unified training script based on the cleaner logic from
+# optimisation/optimization_train_loop.py, but for standalone runs.
+# Handles:
+# - Static weights (GradNorm disabled)
+# - Dynamic weights (GradNorm enabled)
+# - Data-Free mode (data_weight: 0.0 or file missing)
+# - Data-Driven mode (data_weight > 0 and file present)
+# - Aim logging, plotting, and model saving.
 
 import os
 import time
@@ -29,12 +34,11 @@ from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
     compute_building_bc_loss, compute_data_loss
 )
-# --- NEW: Import GradNorm components ---
+# --- Import GradNorm components ---
 from src.gradnorm import (
     GradNormState, init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP,
     get_initial_losses
 )
-# --- END NEW ---
 from src.utils import ( 
     nse, rmse, generate_trial_name, save_model, ask_for_confirmation,
     mask_points_inside_building, plot_h_vs_x,
@@ -71,7 +75,7 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
             terms['ic'] = compute_ic_loss(model, p, ic_batch_data)
 
         bc_batches = all_batches.get('bc', {})
-        if 'bc' in active_loss_keys_base and any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
+        if 'bc' in active_loss_keys_base and any(isinstance(b, jnp.ndarray) and b.shape[0] > 0 for b in bc_batches.values()):
              terms['bc'] = compute_bc_loss(
                  model, p, 
                  bc_batches.get('left', jnp.empty((0,3), dtype=DTYPE)),
@@ -83,7 +87,7 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
 
         if has_building and 'building_bc' in active_loss_keys_base:
             bldg_batches = all_batches.get('building_bc', {})
-            if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
+            if bldg_batches and any(isinstance(b, jnp.ndarray) and b.shape[0] > 0 for b in bldg_batches.values()):
                 terms['building_bc'] = compute_building_bc_loss(
                     model, p, 
                     bldg_batches.get('left', jnp.empty((0,3), dtype=DTYPE)),
@@ -97,8 +101,12 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
              terms['data'] = compute_data_loss(model, p, data_batch_data, config)
 
         # Calculate weighted total loss
+        # Use only weights for terms that were actually computed in this step
+        active_weights = {k: weights_dict.get(k, 0.0) for k in terms.keys()}
+        # Ensure all keys from weights_dict are present for total_loss function
         terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
-        total = total_loss(terms_with_defaults, weights_dict)
+
+        total = total_loss(terms_with_defaults, active_weights)
         return total, terms # Return only computed terms
 
     (total_loss_val, individual_terms_val), grads = jax.value_and_grad(loss_and_individual_terms, has_aux=True)(params)
@@ -170,6 +178,32 @@ def main(config_path: str):
     gradnorm_update_freq = gradnorm_cfg.get("update_freq", 100)
     
     gradnorm_state = None
+
+    # --- Aim Run Setup (Initialize variables *before* try block) ---
+    aim_repo = None
+    aim_run = None
+    run_hash = None
+    try:
+        aim_repo_path = "aim_repo"
+        if not os.path.exists(aim_repo_path): os.makedirs(aim_repo_path, exist_ok=True)
+        aim_repo = Repo(path=aim_repo_path, init=True)
+        aim_run = Run(repo=aim_repo, experiment=trial_name)
+        run_hash = aim_run.hash
+        
+        hparams_to_log = copy.deepcopy(cfg_dict)
+        hparams_to_log["gradnorm_enabled"] = enable_gradnorm
+        if enable_gradnorm:
+             hparams_to_log["gradnorm_alpha"] = gradnorm_alpha
+             hparams_to_log["gradnorm_lr"] = gradnorm_lr
+             hparams_to_log["gradnorm_update_freq"] = gradnorm_update_freq
+        # Note: data_loss_active will be added *after* data loading
+        
+        aim_run["hparams"] = hparams_to_log 
+        print(f"Aim tracking initialized for run: {trial_name} ({run_hash})")
+    except Exception as e: 
+        print(f"Warning: Failed to initialize Aim tracking: {e}.")
+        print("Training will continue without Aim logging.")
+
 
     # --- Load Data (Separate Training and Validation) ---
     val_points, h_true_val = None, None # For validation metrics
@@ -256,7 +290,7 @@ def main(config_path: str):
     
     # This dict holds the weights, either static or dynamic
     current_weights_dict = {k: static_weights_dict[k] for k in active_loss_term_keys}
-
+    
     # --- GradNorm Initialization (if enabled) ---
     if enable_gradnorm:
         print("GradNorm enabled. Initializing dynamic weights...")
@@ -302,7 +336,7 @@ def main(config_path: str):
         relevant_init_batches = {
             k: init_batches[k] for k in active_loss_term_keys if k in init_batches and 
             (isinstance(init_batches[k], jnp.ndarray) and init_batches[k].shape[0] > 0) or
-            (isinstance(init_batches[k], dict) and any(b.shape[0] > 0 for b in init_batches[k].values() if isinstance(b, jnp.ndarray)))
+            (isinstance(init_batches[k], dict) and any(isinstance(b, jnp.ndarray) and b.shape[0] > 0 for b in init_batches[k].values()))
         }
         active_loss_term_keys = list(relevant_init_batches.keys()) # Update keys to only those with batches
         print(f"GradNorm active keys for init: {active_loss_term_keys}")
@@ -328,8 +362,8 @@ def main(config_path: str):
     else:
          print(f"GradNorm disabled. Using Static Weights: {current_weights_dict}")
     
-    # --- Aim Run Setup (moved after data loading) ---
-    if aim_run:
+    # --- Update Aim Hparams (This block fixes the NameError) ---
+    if aim_run: 
         try:
             hparams_to_log = aim_run["hparams"] # Get hparams dict
             hparams_to_log["data_loss_active"] = has_data_loss # Log the *actual* data loss status
@@ -337,6 +371,7 @@ def main(config_path: str):
             aim_run["hparams"] = hparams_to_log # Update hparams
         except Exception as e:
             print(f"Warning: Could not update Aim hparams: {e}")
+
 
     # --- Training Initialization ---
     print(f"\n--- Training Started: {trial_name} ---")
@@ -435,7 +470,7 @@ def main(config_path: str):
             for i in range(num_batches):
                 global_step += 1
 
-                # Get batches, ensuring empty tensors if not active or iterator empty
+                # Get batches
                 pde_batch_data = next(pde_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
                 ic_batch_data = next(ic_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
                 left_batch_data = next(left_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
@@ -473,16 +508,22 @@ def main(config_path: str):
                          )
 
                 # --- Training Step ---
+                # Pass all batches to the jitted function for stable graph
+                all_batches_for_step = {
+                    'pde': pde_batch_data, 'ic': ic_batch_data,
+                    'bc': {'left': left_batch_data, 'right': right_batch_data, 'bottom': bottom_batch_data, 'top': top_batch_data},
+                    'building_bc': {
+                        'left': current_building_batch_data.get('left', jnp.empty((0, 3), dtype=DTYPE)),
+                        'right': current_building_batch_data.get('right', jnp.empty((0, 3), dtype=DTYPE)),
+                        'bottom': current_building_batch_data.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
+                        'top': current_building_batch_data.get('top', jnp.empty((0, 3), dtype=DTYPE)),
+                    },
+                    'data': data_batch_data
+                }
+                
                 params, opt_state, batch_losses_unweighted, batch_total_weighted_loss = train_step_jitted(
                     model, params, opt_state,
-                    pde_batch_data,
-                    ic_batch_data,
-                    left_batch_data,
-                    right_batch_data,
-                    bottom_batch_data,
-                    top_batch_data,
-                    current_building_batch_data if has_building else {},
-                    data_batch_data,
+                    all_batches_for_step,
                     current_weights_dict, # Pass (potentially dynamic) weights
                     optimiser, cfg, data_free # Pass data_free flag
                 )
@@ -509,7 +550,7 @@ def main(config_path: str):
                     rmse_val = float(rmse(h_pred_val, h_true_val))
                 
                 elif not has_building and pde_points.shape[0] > 0: # Fallback: No building, no validation file -> use analytical
-                    if (epoch + 1) % 100 == 0: # Only log this message periodically
+                    if (epoch + 1) % 100 == 0:
                         print(f"Info: No validation data. Using analytical solution on PDE points for NSE/RMSE.")
                     U_pred_val_no_building = model.apply({'params': params['params']}, pde_points, train=False)
                     h_pred_val_no_building = U_pred_val_no_building[..., 0]
@@ -539,7 +580,7 @@ def main(config_path: str):
                     avg_losses_unweighted.get('ic', 0.0), 
                     avg_losses_unweighted.get('bc', 0.0),
                     avg_losses_unweighted.get('building_bc', 0.0),
-                    avg_losses_unweighted.get('data', 0.0), # Pass unweighted data loss
+                    avg_losses_unweighted.get('data', 0.0), 
                     nse_val, rmse_val, epoch_time
                 )
                 if enable_gradnorm:
@@ -549,12 +590,12 @@ def main(config_path: str):
             if aim_run:
                 try:
                     metrics_to_log = {
-                        'total_loss': avg_total_weighted_loss, # Log weighted total
+                        'total_loss': avg_total_weighted_loss,
                         'pde_loss': avg_losses_unweighted.get('pde', 0.0),
                         'ic_loss': avg_losses_unweighted.get('ic', 0.0),
                         'bc_loss': avg_losses_unweighted.get('bc', 0.0),
                         'building_bc_loss': avg_losses_unweighted.get('building_bc', 0.0),
-                        'data_loss': avg_losses_unweighted.get('data', 0.0), # Log unweighted
+                        'data_loss': avg_losses_unweighted.get('data', 0.0),
                         'nse': nse_val, 'rmse': rmse_val, 'epoch_time': epoch_time
                     }
                     if enable_gradnorm:
@@ -596,11 +637,9 @@ def main(config_path: str):
         total_time = time.time() - start_time
         print_final_summary(total_time, best_epoch, best_nse, best_nse_time)
 
-        # Ask for confirmation to save results
         if ask_for_confirmation():
             if best_params is not None:
                 try:
-                    # Save the best model parameters
                     save_model(best_params, model_dir, trial_name)
 
                     # --- Conditional Plotting ---
@@ -610,7 +649,6 @@ def main(config_path: str):
                     t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
 
                     if has_building:
-                        # --- Generate Meshgrid Data for Prediction Plot ---
                         print("  Generating meshgrid predictions...")
                         resolution = plot_cfg.get("plot_resolution", 100)
                         x_plot = jnp.linspace(0, cfg["domain"]["lx"], resolution, dtype=DTYPE)
@@ -623,10 +661,11 @@ def main(config_path: str):
                         h_plot_pred_mesh = U_plot_pred_mesh[..., 0].reshape(resolution, resolution)
                         h_plot_pred_mesh = jnp.where(h_plot_pred_mesh < eps_plot, 0.0, h_plot_pred_mesh)
 
-                        # --- Generate Stacked Comparison Plot using validation_plotting_t_XXXXs.npy ---
                         print("  Loading plotting data for comparison...")
                         plot_data_time = t_const_val_plot
-                        plot_data_file = os.path.join(base_data_path, f"validation_plotting_t_{int(plot_data_time)}s.npy")
+                        # Re-define base_data_path for plotting, just in case
+                        plot_base_data_path = os.path.join("data", scenario_name)
+                        plot_data_file = os.path.join(plot_base_data_path, f"validation_plotting_t_{int(plot_data_time)}s.npy")
                         if os.path.exists(plot_data_file):
                             try:
                                 plot_data = np.load(plot_data_file)
@@ -636,8 +675,8 @@ def main(config_path: str):
 
                                 plot_path_comp = os.path.join(results_dir, f"final_comparison_plot_t{int(plot_data_time)}s.png")
                                 plot_h_prediction_vs_true_2d(
-                                    xx_plot, yy_plot, h_plot_pred_mesh, # Predicted mesh data
-                                    x_coords_plot, y_coords_plot, h_true_plot_data, # True scattered data
+                                    xx_plot, yy_plot, h_plot_pred_mesh,
+                                    x_coords_plot, y_coords_plot, h_true_plot_data,
                                     cfg_dict, plot_path_comp
                                 )
                             except Exception as e_plot:
@@ -646,7 +685,6 @@ def main(config_path: str):
                              print(f"  Warning: Plotting data file {plot_data_file} not found. Skipping comparison plot.")
 
                     else: # No building scenario
-                        # Generate 1D Plot for no-building scenario
                         print("  Generating 1D validation plot...")
                         nx_val_plot = plot_cfg.get("nx_val", 101)
                         y_const_plot = plot_cfg.get("y_const_plot", 0.0)
@@ -658,7 +696,7 @@ def main(config_path: str):
                         h_plot_pred_1d = jnp.where(h_plot_pred_1d < eps_plot, 0.0, h_plot_pred_1d)
 
                         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
-                        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d) # Pass dict config
+                        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d)
 
                     print(f"Model and comparison plot saved in {model_dir} and {results_dir}")
                 except Exception as e:
@@ -668,7 +706,6 @@ def main(config_path: str):
             else:
                 print("Warning: No best model found (best_params is None). Skipping save and plot.")
         else:
-            # User chose not to save, clean up artifacts
             print("Save aborted by user. Deleting artifacts...")
             try:
                 if aim_run and run_hash and aim_repo:
@@ -684,7 +721,6 @@ def main(config_path: str):
             except Exception as e:
                 print(f"Error during cleanup: {e}")
 
-    # Return best NSE
     return best_nse if best_nse > -jnp.inf else -1.0
 
 
@@ -696,7 +732,7 @@ if __name__ == "__main__":
     try:
         final_nse = main(args.config) # Call main
         print(f"\n--- Script Finished ---")
-        if isinstance(final_nse, (float, int)) and final_nse > -jnp.inf:
+        if isinstance(final_nse, (float, int)) and final_nse > -float('inf'):
             print(f"Final best NSE reported: {final_nse:.6f}")
         else:
             print(f"Final best NSE value invalid or not achieved: {final_nse}")
