@@ -6,7 +6,7 @@ from aim import Run # Keep Aim import
 # --- Updated signature to include data_loss ---
 def print_epoch_stats(epoch: int, start_time: float, total_loss: float,
                       pde_loss: float, ic_loss: float, bc_loss: float,
-                      building_bc_loss: float, data_loss: float, # Added data_loss
+                      neg_h_loss: float, building_bc_loss: float, data_loss: float, # Added data_loss
                       nse: float, rmse: float,
                       epoch_time: float):
     """Prints the training statistics for the current epoch."""
@@ -17,6 +17,7 @@ def print_epoch_stats(epoch: int, start_time: float, total_loss: float,
     # --- NEW: Conditional string for data loss ---
     data_loss_str = f"Data: {data_loss:.3e} | " if data_loss > 1e-9 else ""
     # --- END NEW ---
+    neg_h_loss_str = f"NegH: {neg_h_loss:.3e} | " if neg_h_loss > 1e-9 else ""
 
     print(
         f"Epoch {epoch+1:5d} | "
@@ -27,9 +28,8 @@ def print_epoch_stats(epoch: int, start_time: float, total_loss: float,
         f"IC: {ic_loss:.3e} | "
         f"BC: {bc_loss:.3e} | "
         f"{building_loss_str}"
-        # --- NEW: Include data loss string ---
         f"{data_loss_str}"
-        # --- END NEW ---
+        f"{neg_h_loss_str}"
         f"NSE: {nse:.4f} | "
         f"RMSE: {rmse:.4f}"
     )

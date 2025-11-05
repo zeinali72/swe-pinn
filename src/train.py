@@ -27,11 +27,11 @@ from src.models import init_model
 # --- Updated losses import ---
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
-    compute_building_bc_loss, compute_data_loss
+    compute_building_bc_loss, compute_data_loss, compute_neg_h_loss
 )
 # --- Import GradNorm components ---
 from src.gradnorm import (
-    GradNormState, init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP,
+    init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP,
     get_initial_losses
 )
 from src.utils import ( 
@@ -42,6 +42,7 @@ from src.utils import (
 from src.physics import h_exact
 from src.reporting import print_epoch_stats, log_metrics, print_final_summary
 
+#jax.config.update('jax_enable_x64', True)
 
 # --- Define Training Step (based on optimization_train_loop.py) ---
 def train_step(model: Any, params: FrozenDict, opt_state: Any,
@@ -64,6 +65,8 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
         pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
         if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
             terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config)
+            if 'neg_h' in active_loss_keys_base:
+                terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data)
 
         ic_batch_data = all_batches.get('ic', jnp.empty((0,3), dtype=DTYPE))
         if 'ic' in active_loss_keys_base and ic_batch_data.shape[0] > 0:
@@ -98,7 +101,7 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
         # Calculate weighted total loss
         terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
         total = total_loss(terms_with_defaults, weights_dict)
-        return total, terms # Return only computed terms
+        return total, terms
 
     (total_loss_val, individual_terms_val), grads = jax.value_and_grad(loss_and_individual_terms, has_aux=True)(params)
     updates, new_opt_state = optimiser.update(grads, opt_state, params)
@@ -303,7 +306,11 @@ def main(config_path: str):
 
         if 'pde' in active_loss_term_keys:
             pde_points_init = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key)
-            if pde_points_init.shape[0] > 0: init_batches['pde'] = get_batches(pde_key, pde_points_init, batch_size_init)[0]
+            if pde_points_init.shape[0] > 0: 
+                init_batches['pde'] = get_batches(pde_key, pde_points_init, batch_size_init)[0]
+                # neg_h loss uses the same PDE points
+                if 'neg_h' in active_loss_term_keys:
+                    init_batches['neg_h'] = init_batches['pde']
         
         if 'ic' in active_loss_term_keys:
             ic_points_init = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., 0., ic_bc_grid_cfg["nx_ic"], ic_bc_grid_cfg["ny_ic"], 1, ic_key)
@@ -333,11 +340,15 @@ def main(config_path: str):
                  init_batches['data'] = get_batches(data_key_init, data_points_full, batch_size_init)[0]
         
         # Filter init_batches to only include non-empty, active batches
-        relevant_init_batches = {
-            k: init_batches[k] for k in active_loss_term_keys if k in init_batches and 
-            (isinstance(init_batches[k], jnp.ndarray) and init_batches[k].shape[0] > 0) or
-            (isinstance(init_batches[k], dict) and any(b.shape[0] > 0 for b in init_batches[k].values() if isinstance(b, jnp.ndarray)))
-        }
+        relevant_init_batches = {}
+        for k in active_loss_term_keys:
+            if k in init_batches:
+                batch = init_batches[k]
+                is_valid = (isinstance(batch, jnp.ndarray) and batch.shape[0] > 0) or \
+                          (isinstance(batch, dict) and any(b.shape[0] > 0 for b in batch.values() if isinstance(b, jnp.ndarray)))
+                if is_valid:
+                    relevant_init_batches[k] = batch
+        
         active_loss_term_keys = list(relevant_init_batches.keys()) # Update keys to only those with batches
         print(f"GradNorm active keys for init: {active_loss_term_keys}")
 
@@ -531,11 +542,7 @@ def main(config_path: str):
             if validation_data_loaded: # Use loaded validation data
                 U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
                 h_pred_val = U_pred_val[..., 0]
-                h_true_mean = jnp.mean(h_true_val)
-                denominator_nse = jnp.sum((h_true_val - h_true_mean)**2)
-                if denominator_nse > cfg.get("numerics", {}).get("eps", 1e-9):
-                     numerator_nse = jnp.sum((h_true_val - h_pred_val)**2)
-                     nse_val = float(1.0 - numerator_nse / denominator_nse)
+                nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))
             
             elif not has_building and pde_points.shape[0] > 0: # Fallback: No building, no validation file -> use analytical
@@ -544,11 +551,7 @@ def main(config_path: str):
                 U_pred_val_no_building = model.apply({'params': params['params']}, pde_points, train=False)
                 h_pred_val_no_building = U_pred_val_no_building[..., 0]
                 h_true_val_no_building = h_exact(pde_points[:, 0], pde_points[:, 2], cfg["physics"]["n_manning"], cfg["physics"]["u_const"])
-                h_true_mean = jnp.mean(h_true_val_no_building)
-                denominator_nse = jnp.sum((h_true_val_no_building - h_true_mean)**2)
-                if denominator_nse > cfg.get("numerics", {}).get("eps", 1e-9):
-                    numerator_nse = jnp.sum((h_true_val_no_building - h_pred_val_no_building)**2)
-                    nse_val = float(1.0 - numerator_nse / denominator_nse)
+                nse_val = float(nse(h_pred_val_no_building, h_true_val_no_building))
                 rmse_val = float(rmse(h_pred_val_no_building, h_true_val_no_building))
             # --- End of validation block ---
 
@@ -571,6 +574,7 @@ def main(config_path: str):
                     avg_losses_unweighted.get('bc', 0.0),
                     avg_losses_unweighted.get('building_bc', 0.0),
                     avg_losses_unweighted.get('data', 0.0), # Pass unweighted data loss
+                    avg_losses_unweighted.get('neg_h', 0.0),
                     nse_val, rmse_val, epoch_time
                 )
                 if enable_gradnorm:
@@ -586,6 +590,7 @@ def main(config_path: str):
                         'bc_loss': avg_losses_unweighted.get('bc', 0.0),
                         'building_bc_loss': avg_losses_unweighted.get('building_bc', 0.0),
                         'data_loss': avg_losses_unweighted.get('data', 0.0), # Log unweighted
+                        'neg_h_loss': avg_losses_unweighted.get('neg_h', 0.0),
                         'nse': nse_val, 'rmse': rmse_val, 'epoch_time': epoch_time
                     }
                     if enable_gradnorm:
