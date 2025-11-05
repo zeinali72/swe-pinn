@@ -47,9 +47,10 @@ loss_weights:
   bc_weight: 1.0
   building_bc_weight: 1.0
   data_weight: 1.0
+  neg_h_weight: 1.0
 gradnorm:
   learning_rate: 0.023443270275937553
-  alpha: 1.423011407677423
+  alpha: 2.5
   update_freq: 100
   enable: true
 plotting:
