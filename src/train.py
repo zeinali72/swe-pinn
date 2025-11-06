@@ -765,15 +765,26 @@ def main(config_path: str):
         else:
             print("Save aborted by user. Deleting artifacts...")
             try:
+                # First, delete the run from Aim's database
                 if aim_run and run_hash and aim_repo:
                     aim_repo.delete_run(run_hash)
                     print("Aim run deleted.")
+                
+                # Then, clean up the local directories
                 if os.path.exists(results_dir):
                     shutil.rmtree(results_dir)
                     print(f"Deleted results directory: {results_dir}")
                 if os.path.exists(model_dir):
                     shutil.rmtree(model_dir)
                     print(f"Deleted model directory: {model_dir}")
+
+                # Explicitly delete the run's artifact directory if it exists
+                if run_hash:
+                    run_artifact_dir = os.path.join("aim_repo", "aim_artifacts", run_hash)
+                    if os.path.exists(run_artifact_dir):
+                        shutil.rmtree(run_artifact_dir)
+                        print(f"Deleted run artifact directory: {run_artifact_dir}")
+
                 print("Cleanup complete.")
             except Exception as e:
                 print(f"Error during cleanup: {e}")
