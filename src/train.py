@@ -40,9 +40,9 @@ from src.utils import (
     plot_h_prediction_vs_true_2d
 )
 from src.physics import h_exact
-# --- Import NEW logging functions ---
+# --- Import NEW single logging function ---
 from src.reporting import (
-    print_epoch_stats, log_step_metrics, log_epoch_metrics, print_final_summary
+    print_epoch_stats, log_metrics, print_final_summary
 )
 
 #jax.config.update('jax_enable_x64', True)
@@ -64,11 +64,9 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
 
     def loss_and_individual_terms(p):
         terms = {}
-        # Compute losses based on available non-empty batches and active weights
         pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
         if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
             terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config)
-            # --- MODIFIED: Compute neg_h only if active ---
             if 'neg_h' in active_loss_keys_base:
                 terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data)
 
@@ -102,16 +100,13 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
         if not data_free and 'data' in active_loss_keys_base and data_batch_data.shape[0] > 0:
              terms['data'] = compute_data_loss(model, p, data_batch_data, config)
 
-        # Calculate weighted total loss
         terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
         total = total_loss(terms_with_defaults, weights_dict)
-        # --- Return unweighted terms and weighted total ---
         return total, terms
 
     (total_loss_val, individual_terms_val), grads = jax.value_and_grad(loss_and_individual_terms, has_aux=True)(params)
     updates, new_opt_state = optimiser.update(grads, opt_state, params)
     new_params = optax.apply_updates(params, updates)
-    # --- Return unweighted terms and weighted total ---
     return new_params, new_opt_state, individual_terms_val, total_loss_val
 
 # JIT the training step
@@ -124,7 +119,7 @@ train_step_jitted = jax.jit(
 def main(config_path: str):
     """Main training loop for the PINN (Handles building/no-building, data-driven/data-free, and optional GradNorm)."""
     # --- 1. Load Config and Init Model ---
-    cfg_dict = load_config(config_path) # DTYPE is set globally here
+    cfg_dict = load_config(config_path)
     cfg = FrozenDict(cfg_dict)
     has_building = "building" in cfg
 
@@ -255,7 +250,7 @@ def main(config_path: str):
         else:
             print("Validation metrics (NSE/RMSE) will use analytical solution (if PDE points exist).")
 
-    # --- 6. Initialize Aim Run & Log HParams (Point 6) ---
+    # --- 6. Initialize Aim Run & Log HParams (Point 7) ---
     aim_repo = None
     aim_run = None
     run_hash = None
@@ -267,16 +262,12 @@ def main(config_path: str):
         aim_run = Run(repo=aim_repo, experiment=trial_name)
         run_hash = aim_run.hash
         
-        # --- MODIFIED HParam Logging ---
-        # Log the original config dict (grouped)
-        # Use deepcopy to avoid issues with FrozenDict/dict
         hparams_to_log = copy.deepcopy(cfg_dict)
         aim_run["hparams"] = hparams_to_log
         
-        # Log key flags separately for easy filtering/grouping in Aim UI
         aim_run['flags'] = {
-            "data_free_config_flag": data_free_flag, # The flag from config (True, False, or None)
-            "data_loss_active_final": has_data_loss, # The *actual* status
+            "data_free_config_flag": data_free_flag,
+            "data_loss_active_final": has_data_loss,
             "gradnorm_enabled": enable_gradnorm,
             "has_building": has_building
         }
@@ -289,7 +280,7 @@ def main(config_path: str):
     active_loss_term_keys = []
     for k, v in static_weights_dict.items():
         if v > 0:
-            if k == 'data' and data_free: # Check the *final* data_free flag
+            if k == 'data' and data_free:
                 continue 
             active_loss_term_keys.append(k)
     
@@ -305,12 +296,12 @@ def main(config_path: str):
         domain_cfg = cfg["domain"]; grid_cfg = cfg["grid"]; ic_bc_grid_cfg = cfg["ic_bc_grid"]
         init_batches = {} 
 
-        if 'pde' in active_loss_term_keys:
+        if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys:
             pde_points_init = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key)
             if pde_points_init.shape[0] > 0: 
                 init_batches['pde'] = get_batches(pde_key, pde_points_init, batch_size_init)[0]
                 if 'neg_h' in active_loss_term_keys:
-                    init_batches['neg_h'] = init_batches['pde'] # neg_h uses pde points
+                    init_batches['neg_h'] = init_batches['pde']
         
         if 'ic' in active_loss_term_keys:
             ic_points_init = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., 0., ic_bc_grid_cfg["nx_ic"], ic_bc_grid_cfg["ny_ic"], 1, ic_key)
@@ -336,17 +327,18 @@ def main(config_path: str):
 
         if not data_free and 'data' in active_loss_term_keys: 
              if data_points_full is not None and data_points_full.shape[0] > 0:
-                 # Use a small part of the full data for init
                  init_data_sample = data_points_full[np.random.choice(data_points_full.shape[0], batch_size_init, replace=False)]
                  init_batches['data'] = get_batches(data_key_init, init_data_sample, batch_size_init)[0]
         
         relevant_init_batches = {}
         for k in active_loss_term_keys:
-            if k in init_batches:
-                batch = init_batches[k]
+            batch_key = LOSS_FN_MAP[k]['batch_key'] # Find the required batch (e.g., 'neg_h' needs 'pde')
+            if batch_key in init_batches:
+                batch = init_batches[batch_key]
                 is_valid = (isinstance(batch, jnp.ndarray) and batch.shape[0] > 0) or \
                           (isinstance(batch, dict) and any(b.shape[0] > 0 for b in batch.values() if isinstance(b, jnp.ndarray)))
                 if is_valid:
+                    # Store the batch using the loss key (e.g., 'neg_h')
                     relevant_init_batches[k] = batch
         
         active_loss_term_keys = list(relevant_init_batches.keys())
@@ -394,8 +386,7 @@ def main(config_path: str):
     best_loss_time: float = 0.0
     best_losses_at_min_total: Dict = {}
     
-    # --- Step Logging Config ---
-    log_freq_steps = cfg.get("training", {}).get("log_freq_steps", 100) # Log every 100 steps
+    log_freq_steps = cfg.get("training", {}).get("log_freq_steps", 100)
     
     global_step = 0 
     start_time = time.time()
@@ -410,7 +401,7 @@ def main(config_path: str):
             l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
             domain_cfg = cfg["domain"]; grid_cfg = cfg["grid"]; ic_bc_grid_cfg = cfg["ic_bc_grid"]
 
-            pde_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key) if 'pde' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+            pde_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key) if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
             ic_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., 0., ic_bc_grid_cfg["nx_ic"], ic_bc_grid_cfg["ny_ic"], 1, ic_key) if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
             left_wall = sample_points(0., 0., 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_left"], ic_bc_grid_cfg["nt_bc_left"], l_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
             right_wall = sample_points(domain_cfg["lx"], domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_right"], ic_bc_grid_cfg["nt_bc_right"], r_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
@@ -469,7 +460,6 @@ def main(config_path: str):
                  for wall, batches in building_batches_dict.items():
                      building_batch_iters[wall] = itertools.cycle(batches) if batches else iter(())
 
-            # --- Epoch Loss Accumulators ---
             epoch_losses_unweighted_sum = {k: 0.0 for k in active_loss_term_keys}
             epoch_total_weighted_loss_sum = 0.0
 
@@ -497,7 +487,6 @@ def main(config_path: str):
                     'data': data_batch_data,
                 }
                 
-                # --- GradNorm Weight Update (Periodically, Outside JIT) ---
                 if enable_gradnorm and global_step % gradnorm_update_freq == 0:
                     active_batches_for_gradnorm = {
                         k: current_all_batches[LOSS_FN_MAP[k]['batch_key']] 
@@ -509,7 +498,6 @@ def main(config_path: str):
                               cfg, gradnorm_alpha, gradnorm_lr
                          )
 
-                # --- Training Step ---
                 params, opt_state, batch_losses_unweighted, batch_total_weighted_loss = train_step_jitted(
                     model, params, opt_state,
                     current_all_batches,
@@ -517,25 +505,24 @@ def main(config_path: str):
                     optimiser, cfg, data_free
                 )
 
-                # --- Accumulate Epoch Losses (for epoch avg and best loss tracking) ---
                 for k in active_loss_term_keys:
                     epoch_losses_unweighted_sum[k] += float(batch_losses_unweighted.get(k, 0.0))
                 epoch_total_weighted_loss_sum += float(batch_total_weighted_loss)
 
-                # --- Per-Step Logging (Points 1, 2, 3) ---
+                # --- Per-Step Logging (Points 1, 2, 4) ---
                 if aim_run and (global_step % log_freq_steps == 0):
                     step_metrics = {
-                        'total_loss_weighted': batch_total_weighted_loss,
-                        'unweighted_losses': batch_losses_unweighted
+                        'batch_losses': batch_losses_unweighted,
+                        'batch_total_weighted_loss': batch_total_weighted_loss
                     }
                     if enable_gradnorm:
                         step_metrics['gradnorm_weights'] = current_weights_dict
                     
-                    log_step_metrics(aim_run, step=global_step, epoch=epoch, metrics=step_metrics)
+                    log_metrics(aim_run, step=global_step, epoch=epoch, metrics=step_metrics)
             
             # --- End of Batch Loop ---
 
-            # --- Epoch End Calculation & Validation (Points 4, 5) ---
+            # --- Epoch End Calculation & Validation (Points 3, 5, 6) ---
             avg_losses_unweighted = {k: v / num_batches for k, v in epoch_losses_unweighted_sum.items()}
             avg_total_weighted_loss = epoch_total_weighted_loss_sum / num_batches
 
@@ -553,10 +540,10 @@ def main(config_path: str):
                 nse_val = float(nse(h_pred_val_no_building, h_true_val_no_building))
                 rmse_val = float(rmse(h_pred_val_no_building, h_true_val_no_building))
 
-            # --- Update Best NSE/RMSE (Point 4) ---
+            # --- Update Best NSE/RMSE (Point 5) ---
             if nse_val > best_nse:
                 best_nse = nse_val
-                best_rmse = rmse_val # Store RMSE at best NSE
+                best_rmse = rmse_val
                 best_epoch_nse = epoch
                 best_global_step_nse = global_step
                 best_params = copy.deepcopy(params)
@@ -564,7 +551,7 @@ def main(config_path: str):
                 if nse_val > -jnp.inf:
                     print(f"    ---> New best NSE: {best_nse:.6f} at epoch {epoch+1}")
 
-            # --- Update Best Loss (Point 5) ---
+            # --- Update Best Loss (Point 6) ---
             if avg_total_weighted_loss < best_total_loss:
                 best_total_loss = avg_total_weighted_loss
                 best_epoch_loss = epoch
@@ -590,24 +577,31 @@ def main(config_path: str):
                      print(f"      Current Weights: { {k: f'{v:.2e}' for k, v in current_weights_dict.items()} }")
 
             if aim_run:
-                # Log only epoch-level metrics here (validation and system)
+                # --- MODIFIED: Log epoch metrics using the single log_metrics function ---
                 epoch_metrics_to_log = {
-                    'nse': nse_val, 
-                    'rmse': rmse_val, 
-                    'epoch_time': epoch_time
+                    'validation_metrics': {
+                        'nse': nse_val, 
+                        'rmse': rmse_val
+                    },
+                    'epoch_avg_losses': avg_losses_unweighted, # Pass dict
+                    'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
+                    'system_metrics': {
+                        'epoch_time': epoch_time
+                    }
                 }
-                log_epoch_metrics(aim_run, epoch=epoch, metrics=epoch_metrics_to_log)
+                # Log against global_step (Point 1)
+                log_metrics(aim_run, step=global_step, epoch=epoch, metrics=epoch_metrics_to_log)
 
             # --- Early Stopping Check ---
             min_epochs = cfg.get("device", {}).get("early_stop_min_epochs", float('inf'))
             patience = cfg.get("device", {}).get("early_stop_patience", float('inf'))
 
-            if epoch >= min_epochs and (epoch - best_epoch_nse) >= patience: # Stop based on best NSE
+            if epoch >= min_epochs and (epoch - best_epoch_nse) >= patience:
                 print(f"--- Early stopping triggered at epoch {epoch+1} ---")
                 print(f"Best NSE {best_nse:.6f} achieved at epoch {best_epoch_nse+1}.")
                 break
 
-            train_key = key # Update train_key for next epoch's sampling
+            train_key = key
 
     except KeyboardInterrupt:
         print("\n--- Training interrupted by user ---")
@@ -621,14 +615,14 @@ def main(config_path: str):
         total_time = time.time() - start_time
         print_final_summary(total_time, best_epoch_nse, best_nse, best_nse_time)
 
-        # --- Log Summary Metrics to Aim (Points 4, 5) ---
+        # --- Log Summary Metrics to Aim (Points 5, 6) ---
         if aim_run:
             try:
                 summary_metrics = {
                     'best_validation': {
                         'nse': best_nse,
                         'rmse_at_best_nse': best_rmse,
-                        'epoch': best_epoch_nse + 1, # Use 1-based index
+                        'epoch': best_epoch_nse + 1,
                         'step': best_global_step_nse,
                         'time_elapsed_seconds': best_nse_time
                     },
