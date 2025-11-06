@@ -263,7 +263,7 @@ def main(config_path: str):
         run_hash = aim_run.hash
 
         # <<<--- FIX: Set the artifacts URI --- >>>
-        artifact_storage_path = "aim_artifacts"
+        artifact_storage_path = os.path.join(aim_repo_path, "aim_artifacts")
         os.makedirs(artifact_storage_path, exist_ok=True)
         # Use an absolute path for reliability
         abs_artifact_path = os.path.abspath(artifact_storage_path)
