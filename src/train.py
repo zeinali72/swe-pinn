@@ -16,7 +16,7 @@ import jax
 import jax.numpy as jnp
 from jax import random
 import optax
-from aim import Repo, Run 
+from aim import Repo, Run, Image, Text # <<<--- Correct imports
 from flax.core import FrozenDict
 import numpy as np 
 
@@ -261,6 +261,14 @@ def main(config_path: str):
         aim_repo = Repo(path=aim_repo_path, init=True)
         aim_run = Run(repo=aim_repo, experiment=trial_name)
         run_hash = aim_run.hash
+
+        # <<<--- FIX: Set the artifacts URI --- >>>
+        artifact_storage_path = "aim_artifacts"
+        os.makedirs(artifact_storage_path, exist_ok=True)
+        # Use an absolute path for reliability
+        abs_artifact_path = os.path.abspath(artifact_storage_path)
+        aim_run.set_artifacts_uri(f"file://{abs_artifact_path}")
+        print(f"Set Aim artifact storage to: {abs_artifact_path}")
         
         hparams_to_log = copy.deepcopy(cfg_dict)
         aim_run["hparams"] = hparams_to_log
@@ -271,6 +279,14 @@ def main(config_path: str):
             "gradnorm_enabled": enable_gradnorm,
             "has_building": has_building
         }
+        
+        # <<<--- NEW: Log config file and model summary --- >>>
+        try:
+            aim_run.log_artifact(config_path, name='run_config.yaml')
+            print("Logged config file and model summary to Aim.")
+        except Exception as e_aim:
+            print(f"  Warning: Failed to log initial artifacts to Aim: {e_aim}")
+            
         print(f"Aim tracking initialized for run: {trial_name} ({run_hash})")
         
     except Exception as e:
@@ -372,19 +388,27 @@ def main(config_path: str):
     print(f"Active Loss Terms: {active_loss_term_keys}")
     print(f"Initial Weights: {current_weights_dict}")
 
-    # --- Metrics Tracking (Points 4 & 5) ---
-    best_nse: float = -jnp.inf
-    best_rmse: float = jnp.inf
-    best_epoch_nse: int = 0
-    best_global_step_nse: int = 0
-    best_nse_time: float = 0.0
-    best_params: Dict = None
-
-    best_total_loss: float = jnp.inf
-    best_epoch_loss: int = 0
-    best_global_step_loss: int = 0
-    best_loss_time: float = 0.0
-    best_losses_at_min_total: Dict = {}
+    # --- Metrics Tracking (NEW: Using dicts for clarity) ---
+    best_nse_stats = {
+        'nse': -jnp.inf,
+        'rmse': jnp.inf,
+        'epoch': 0,
+        'global_step': 0,
+        'time_elapsed_seconds': 0.0,
+        'total_weighted_loss': 0.0,
+        'unweighted_losses': {},
+    }
+    best_params_nse: Dict = None # Store params for the best NSE model
+    
+    best_loss_stats = {
+        'total_weighted_loss': jnp.inf,
+        'epoch': 0,
+        'global_step': 0,
+        'time_elapsed_seconds': 0.0,
+        'nse': -jnp.inf,
+        'rmse': jnp.inf,
+        'unweighted_losses': {},
+    }
     
     log_freq_steps = cfg.get("training", {}).get("log_freq_steps", 100)
     
@@ -509,15 +533,11 @@ def main(config_path: str):
                     epoch_losses_unweighted_sum[k] += float(batch_losses_unweighted.get(k, 0.0))
                 epoch_total_weighted_loss_sum += float(batch_total_weighted_loss)
 
-                # --- Per-Step Logging (Points 1, 2, 4) ---
-                if aim_run and (global_step % log_freq_steps == 0):
+                # --- Per-Step Logging (GradNorm only) ---
+                if aim_run and enable_gradnorm and (global_step % log_freq_steps == 0):
                     step_metrics = {
-                        'batch_losses': batch_losses_unweighted,
-                        'batch_total_weighted_loss': batch_total_weighted_loss
+                        'gradnorm_weights': current_weights_dict
                     }
-                    if enable_gradnorm:
-                        step_metrics['gradnorm_weights'] = current_weights_dict
-                    
                     log_metrics(aim_run, step=global_step, epoch=epoch, metrics=step_metrics)
             
             # --- End of Batch Loop ---
@@ -540,24 +560,28 @@ def main(config_path: str):
                 nse_val = float(nse(h_pred_val_no_building, h_true_val_no_building))
                 rmse_val = float(rmse(h_pred_val_no_building, h_true_val_no_building))
 
-            # --- Update Best NSE/RMSE (Point 5) ---
-            if nse_val > best_nse:
-                best_nse = nse_val
-                best_rmse = rmse_val
-                best_epoch_nse = epoch
-                best_global_step_nse = global_step
-                best_params = copy.deepcopy(params)
-                best_nse_time = time.time() - start_time
+            # --- Update Best NSE Model Stats ---
+            if nse_val > best_nse_stats['nse']:
+                best_nse_stats['nse'] = nse_val
+                best_nse_stats['rmse'] = rmse_val
+                best_nse_stats['epoch'] = epoch
+                best_nse_stats['global_step'] = global_step
+                best_params_nse = copy.deepcopy(params) # Store the params
+                best_nse_stats['time_elapsed_seconds'] = time.time() - start_time
+                best_nse_stats['total_weighted_loss'] = avg_total_weighted_loss
+                best_nse_stats['unweighted_losses'] = {k: float(v) for k, v in avg_losses_unweighted.items()}
                 if nse_val > -jnp.inf:
-                    print(f"    ---> New best NSE: {best_nse:.6f} at epoch {epoch+1}")
+                    print(f"    ---> New best NSE: {best_nse_stats['nse']:.6f} at epoch {epoch+1}")
 
-            # --- Update Best Loss (Point 6) ---
-            if avg_total_weighted_loss < best_total_loss:
-                best_total_loss = avg_total_weighted_loss
-                best_epoch_loss = epoch
-                best_global_step_loss = global_step
-                best_loss_time = time.time() - start_time
-                best_losses_at_min_total = {k: float(v) for k, v in avg_losses_unweighted.items()}
+            # --- Update Best Loss Model Stats ---
+            if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
+                best_loss_stats['total_weighted_loss'] = avg_total_weighted_loss
+                best_loss_stats['epoch'] = epoch
+                best_loss_stats['global_step'] = global_step
+                best_loss_stats['time_elapsed_seconds'] = time.time() - start_time
+                best_loss_stats['unweighted_losses'] = {k: float(v) for k, v in avg_losses_unweighted.items()}
+                best_loss_stats['nse'] = nse_val
+                best_loss_stats['rmse'] = rmse_val
 
 
             # --- Logging and Reporting (Per-Epoch) ---
@@ -577,7 +601,7 @@ def main(config_path: str):
                      print(f"      Current Weights: { {k: f'{v:.2e}' for k, v in current_weights_dict.items()} }")
 
             if aim_run:
-                # --- MODIFIED: Log epoch metrics using the single log_metrics function ---
+                # Log epoch-level metrics
                 epoch_metrics_to_log = {
                     'validation_metrics': {
                         'nse': nse_val, 
@@ -587,18 +611,21 @@ def main(config_path: str):
                     'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
                     'system_metrics': {
                         'epoch_time': epoch_time
+                    },
+                    'training_metrics': {
+                        'learning_rate': float(lr_schedule(global_step))
                     }
                 }
-                # Log against global_step (Point 1)
+                # We still pass global_step for context and for gradnorm
                 log_metrics(aim_run, step=global_step, epoch=epoch, metrics=epoch_metrics_to_log)
 
             # --- Early Stopping Check ---
             min_epochs = cfg.get("device", {}).get("early_stop_min_epochs", float('inf'))
             patience = cfg.get("device", {}).get("early_stop_patience", float('inf'))
 
-            if epoch >= min_epochs and (epoch - best_epoch_nse) >= patience:
+            if epoch >= min_epochs and (epoch - best_nse_stats['epoch']) >= patience:
                 print(f"--- Early stopping triggered at epoch {epoch+1} ---")
-                print(f"Best NSE {best_nse:.6f} achieved at epoch {best_epoch_nse+1}.")
+                print(f"Best NSE {best_nse_stats['nse']:.6f} achieved at epoch {best_nse_stats['epoch']+1}.")
                 break
 
             train_key = key
@@ -613,29 +640,25 @@ def main(config_path: str):
     # --- 11. Final Summary and Saving ---
     finally:
         total_time = time.time() - start_time
-        print_final_summary(total_time, best_epoch_nse, best_nse, best_nse_time)
+        # Call new summary function
+        print_final_summary(total_time, best_nse_stats, best_loss_stats)
 
-        # --- Log Summary Metrics to Aim (Points 5, 6) ---
+        # --- Log Summary Metrics to Aim ---
         if aim_run:
             try:
+                # Prep stats dicts for summary (1-based epoch)
+                summary_best_nse = best_nse_stats.copy()
+                summary_best_nse['epoch'] = best_nse_stats.get('epoch', 0) + 1
+                
+                summary_best_loss = best_loss_stats.copy()
+                summary_best_loss['epoch'] = best_loss_stats.get('epoch', 0) + 1
+                
                 summary_metrics = {
-                    'best_validation': {
-                        'nse': best_nse,
-                        'rmse_at_best_nse': best_rmse,
-                        'epoch': best_epoch_nse + 1,
-                        'step': best_global_step_nse,
-                        'time_elapsed_seconds': best_nse_time
-                    },
-                    'best_loss': {
-                        'total_weighted_loss': best_total_loss,
-                        'epoch': best_epoch_loss + 1,
-                        'step': best_global_step_loss,
-                        'time_elapsed_seconds': best_loss_time,
-                        'unweighted_losses_at_min': best_losses_at_min_total
-                    },
+                    'best_validation_model': summary_best_nse,
+                    'best_loss_model': summary_best_loss,
                     'final_system': {
                         'total_training_time_seconds': total_time,
-                        'total_epochs_run': epoch + 1,
+                        'total_epochs_run': (epoch + 1) if 'epoch' in locals() else 0, # Handle potential early exit
                         'total_steps_run': global_step
                     }
                 }
@@ -652,9 +675,19 @@ def main(config_path: str):
 
         # --- Save Model and Plots ---
         if ask_for_confirmation():
-            if best_params is not None:
+            if best_params_nse is not None:
                 try:
-                    save_model(best_params, model_dir, trial_name)
+                    model_save_path = save_model(best_params_nse, model_dir, trial_name)
+                    print(f"Best model (by NSE) saved to: {model_save_path}")
+
+                    # <<<--- FIX: Use run.log_artifact --- >>>
+                    if aim_run:
+                        try:
+                            aim_run.log_artifact(model_save_path, name='model_weights.pkl')
+                            print(f"  Logged model weights .pkl file to Aim run: {run_hash}")
+                        except Exception as e_aim:
+                            print(f"  Warning: Failed to log model .pkl to Aim: {e_aim}")
+
                     print("Generating final plot...")
                     plot_cfg = cfg.get("plotting", {})
                     eps_plot = cfg.get("numerics", {}).get("eps", 1e-6)
@@ -669,7 +702,7 @@ def main(config_path: str):
                         t_plot = jnp.full_like(xx_plot, t_const_val_plot, dtype=DTYPE)
                         plot_points_mesh = jnp.stack([xx_plot.ravel(), yy_plot.ravel(), t_plot.ravel()], axis=-1)
 
-                        U_plot_pred_mesh = model.apply({'params': best_params['params']}, plot_points_mesh, train=False)
+                        U_plot_pred_mesh = model.apply({'params': best_params_nse['params']}, plot_points_mesh, train=False)
                         h_plot_pred_mesh = U_plot_pred_mesh[..., 0].reshape(resolution, resolution)
                         h_plot_pred_mesh = jnp.where(h_plot_pred_mesh < eps_plot, 0.0, h_plot_pred_mesh)
 
@@ -689,6 +722,13 @@ def main(config_path: str):
                                     x_coords_plot, y_coords_plot, h_true_plot_data,
                                     cfg_dict, plot_path_comp
                                 )
+                                if aim_run:
+                                    try:
+                                        aim_run.track(Image(plot_path_comp), name='validation_plot_2D_comparison', epoch=best_nse_stats['epoch'])
+                                        print(f"  Logged 2D plot to Aim run: {run_hash}")
+                                    except Exception as e_aim:
+                                        print(f"  Warning: Failed to log 2D plot to Aim: {e_aim}")
+                                        
                             except Exception as e_plot:
                                 print(f"  Error generating comparison plot: {e_plot}")
                         else:
@@ -701,20 +741,27 @@ def main(config_path: str):
                         x_val_plot = jnp.linspace(0.0, cfg["domain"]["lx"], nx_val_plot, dtype=DTYPE)
                         plot_points_1d = jnp.stack([x_val_plot, jnp.full_like(x_val_plot, y_const_plot, dtype=DTYPE), jnp.full_like(x_val_plot, t_const_val_plot, dtype=DTYPE)], axis=1)
 
-                        U_plot_pred_1d = model.apply({'params': best_params['params']}, plot_points_1d, train=False)
+                        U_plot_pred_1d = model.apply({'params': best_params_nse['params']}, plot_points_1d, train=False)
                         h_plot_pred_1d = U_plot_pred_1d[..., 0]
                         h_plot_pred_1d = jnp.where(h_plot_pred_1d < eps_plot, 0.0, h_plot_pred_1d)
 
                         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
                         plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d)
 
-                    print(f"Model and comparison plot saved in {model_dir} and {results_dir}")
+                        if aim_run:
+                            try:
+                                aim_run.track(Image(plot_path_1d), name='validation_plot_1D', epoch=best_nse_stats['epoch'])
+                                print(f"  Logged 1D plot to Aim run: {run_hash}")
+                            except Exception as e_aim:
+                                print(f"  Warning: Failed to log 1D plot to Aim: {e_aim}")
+
+                    print(f"Model and comparison plot saved in {model_dir} and {results_dir} (and logged to Aim)")
                 except Exception as e:
                      print(f"Error during saving/plotting: {e}")
                      import traceback
                      traceback.print_exc()
             else:
-                print("Warning: No best model found (best_params is None). Skipping save and plot.")
+                print("Warning: No best model found (best_params_nse is None). Skipping save and plot.")
         else:
             print("Save aborted by user. Deleting artifacts...")
             try:
@@ -731,7 +778,7 @@ def main(config_path: str):
             except Exception as e:
                 print(f"Error during cleanup: {e}")
 
-    return best_nse if best_nse > -jnp.inf else -1.0
+    return best_nse_stats['nse'] if best_nse_stats['nse'] > -jnp.inf else -1.0
 
 
 if __name__ == "__main__":

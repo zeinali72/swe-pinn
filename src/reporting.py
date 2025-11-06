@@ -39,62 +39,71 @@ def _safe_float(val, default=float('nan')):
 
 def log_metrics(aim_run: Run, step: int, epoch: int, metrics: Dict):
     """
-    Logs all provided metrics to Aim against the global_step.
-    This single function handles:
-    - Per-batch losses (from 'batch_losses')
-    - GradNorm weights (from 'gradnorm_weights')
-    - Per-epoch average losses (from 'epoch_avg_losses')
-    - Per-epoch validation metrics (from 'validation_metrics')
-    - Per-epoch system metrics (from 'system_metrics')
-    
-    This ensures all time-series data shares the 'step' axis in Aim.
+    Logs metrics to Aim.
+    - GradNorm metrics are logged against 'step' and 'epoch'.
+    - All other metrics are logged against 'epoch' ONLY.
+    - Batch losses are no longer logged.
     """
     if not aim_run:
         return
     
     try:
-        # 1. Log Per-Batch Losses (if provided)
-        # These are the "noisy" step-by-step losses
-        if 'batch_losses' in metrics:
-            for key, val in metrics.get('batch_losses', {}).items():
-                aim_run.track(_safe_float(val), name=f'losses/batch/unweighted/{key}', step=step, epoch=epoch, context={'subset': 'train'})
-            
-            aim_run.track(_safe_float(metrics.get('batch_total_weighted_loss')), name='losses/batch/total_weighted', step=step, epoch=epoch, context={'subset': 'train'})
-
-        # 2. Log GradNorm Weights (if provided)
+        # 1. Log GradNorm Weights (step and epoch)
         if 'gradnorm_weights' in metrics:
             for key, val in metrics.get('gradnorm_weights', {}).items():
                 aim_run.track(_safe_float(val), name=f'gradnorm/weight_{key}', step=step, epoch=epoch, context={'subset': 'train'})
         
-        # 3. Log Per-Epoch Average Losses (if provided)
-        # These are the "smooth" epoch-average losses
+        # 2. Log Per-Epoch Average Losses (epoch only)
         if 'epoch_avg_losses' in metrics:
             for key, val in metrics.get('epoch_avg_losses', {}).items():
-                aim_run.track(_safe_float(val), name=f'losses/epoch_avg/unweighted/{key}', step=step, epoch=epoch, context={'subset': 'train'})
+                aim_run.track(_safe_float(val), name=f'losses/epoch_avg/unweighted/{key}', epoch=epoch, context={'subset': 'train'})
 
-            aim_run.track(_safe_float(metrics.get('epoch_avg_total_weighted_loss')), name='losses/epoch_avg/total_weighted', step=step, epoch=epoch, context={'subset': 'train'})
+            aim_run.track(_safe_float(metrics.get('epoch_avg_total_weighted_loss')), name='losses/epoch_avg/total_weighted', epoch=epoch, context={'subset': 'train'})
 
-        # 4. Log Per-Epoch Validation Metrics (if provided)
+        # 3. Log Per-Epoch Validation Metrics (epoch only)
         if 'validation_metrics' in metrics:
-            aim_run.track(_safe_float(metrics['validation_metrics'].get('nse'), -float('inf')), name='validation/nse', step=step, epoch=epoch, context={'subset': 'validation'})
-            aim_run.track(_safe_float(metrics['validation_metrics'].get('rmse'), float('inf')), name='validation/rmse', step=step, epoch=epoch, context={'subset': 'validation'})
+            aim_run.track(_safe_float(metrics['validation_metrics'].get('nse'), -float('inf')), name='validation/nse', epoch=epoch, context={'subset': 'validation'})
+            aim_run.track(_safe_float(metrics['validation_metrics'].get('rmse'), float('inf')), name='validation/rmse', epoch=epoch, context={'subset': 'validation'})
         
-        # 5. Log Per-Epoch System Metrics (if provided)
+        # 4. Log Per-Epoch System Metrics (epoch only)
         if 'system_metrics' in metrics:
-            aim_run.track(_safe_float(metrics['system_metrics'].get('epoch_time')), name='system/epoch_time', step=step, epoch=epoch, context={'subset': 'system'})
+            aim_run.track(_safe_float(metrics['system_metrics'].get('epoch_time')), name='system/epoch_time', epoch=epoch, context={'subset': 'system'})
 
     except Exception as e:
-        print(f"Warning: Failed to log metrics to Aim at step {step}: {e}")
+        print(f"Warning: Failed to log metrics to Aim at epoch {epoch}: {e}")
 
 
-def print_final_summary(total_time: float, best_epoch: int, best_nse: float, best_nse_time: float):
-    """Prints the final training summary."""
+def print_final_summary(total_time: float, best_nse_stats: Dict, best_loss_stats: Dict):
+    """Prints the final training summary for both best models."""
     print(f"\n--- Training Summary ---")
     print(f"Total time: {total_time:.2f} seconds.")
-    if isinstance(best_nse, (float, int)) and best_nse > -float('inf'):
-        print(
-            f"Best NSE: {best_nse:.6f} (achieved at epoch {best_epoch+1} around {best_nse_time:.2f}s)"
-        )
+    
+    print("\n--- Best NSE Model (Saved) ---")
+    if best_nse_stats and best_nse_stats.get('nse', -float('inf')) > -float('inf'):
+        print(f"  NSE:           {best_nse_stats['nse']:.6f}")
+        print(f"  Epoch:         {best_nse_stats['epoch'] + 1}")
+        print(f"  Time Elapsed:  {best_nse_stats['time_elapsed_seconds']:.2f}s")
+        print(f"  RMSE:          {best_nse_stats['rmse']:.4f}")
+        print(f"  Total Loss:    {best_nse_stats['total_weighted_loss']:.4e}")
+        print(f"  Losses (unweighted):")
+        for k, v in best_nse_stats.get('unweighted_losses', {}).items():
+            if v > 1e-9 or v < -1e-9: # Only print non-zero losses
+                print(f"    - {k:<12}: {v:.4e}")
     else:
-        print(f"No valid best NSE achieved during training (Best NSE: {best_nse}).")
+        print("  No valid best NSE model was found.")
+
+    print("\n--- Best Total Loss Model ---")
+    if best_loss_stats and best_loss_stats.get('total_weighted_loss', float('inf')) < float('inf'):
+        print(f"  Total Loss:    {best_loss_stats['total_weighted_loss']:.4e}")
+        print(f"  Epoch:         {best_loss_stats['epoch'] + 1}")
+        print(f"  Time Elapsed:  {best_loss_stats['time_elapsed_seconds']:.2f}s")
+        print(f"  NSE:           {best_loss_stats['nse']:.6f}")
+        print(f"  RMSE:          {best_loss_stats['rmse']:.4f}")
+        print(f"  Losses (unweighted):")
+        for k, v in best_loss_stats.get('unweighted_losses', {}).items():
+            if v > 1e-9 or v < -1e-9: # Only print non-zero losses
+                print(f"    - {k:<12}: {v:.4e}")
+    else:
+        print("  No valid best loss model was found.")
+    
     print(f"------------------------")

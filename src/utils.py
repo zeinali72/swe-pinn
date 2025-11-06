@@ -35,12 +35,13 @@ def generate_trial_name(config_filename):
     now = datetime.datetime.now()
     return f"{now.strftime('%Y-%m-%d_%H-%M')}_{config_filename}"
 
-def save_model(params: Dict[str, Any], save_dir: str, trial_name: str) -> None:
-    """Save model parameters to a pickle file."""
+def save_model(params: Dict[str, Any], save_dir: str, trial_name: str) -> str:
+    """Save model parameters to a pickle file and return the path."""
     os.makedirs(save_dir, exist_ok=True)
     model_path = os.path.join(save_dir, f"{trial_name}_params.pkl")
     with open(model_path, "wb") as f:
         pickle.dump(params, f)
+    return model_path # <<<--- FIX: Added the missing return statement
 
 def plot_h_vs_x(x_line: jnp.ndarray, h_pred_line: jnp.ndarray, t_const: float, y_const: float,
                 config: Dict[str, Any], filename: str = None) -> None:
