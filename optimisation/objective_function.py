@@ -40,8 +40,6 @@ def objective(trial: optuna.trial.Trial,
     if model_name == "FourierPINN":
         trial_params["ff_dims"] = trial.suggest_categorical("ff_dims", [128, 256, 512])
         trial_params["fourier_scale"] = trial.suggest_float("fourier_scale", 5.0, 20.0)
-    elif model_name == "SIREN":
-        trial_params["w0"] = trial.suggest_float("w0", 1.0, 30.0)
 
     # === Grid Hyperparameters (MODIFIED AS REQUESTED) ===
     # 1. PDE (Base)
@@ -150,8 +148,6 @@ def objective(trial: optuna.trial.Trial,
     if model_name == "FourierPINN":
         trial_config_dict["model"]["ff_dims"] = trial_params["ff_dims"]
         trial_config_dict["model"]["fourier_scale"] = trial_params["fourier_scale"]
-    elif model_name == "SIREN":
-        trial_config_dict["model"]["w0"] = trial_params["w0"]
 
     trial_config_dict["grid"] = trial_params["grid"]
     trial_config_dict["ic_bc_grid"] = trial_params["ic_bc_grid"]
