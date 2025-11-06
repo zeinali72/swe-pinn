@@ -3,10 +3,10 @@ import time
 from typing import Dict
 from aim import Run # Keep Aim import
 
-# --- Updated signature to include data_loss ---
-def print_epoch_stats(epoch: int, start_time: float, total_loss: float,
+# --- Updated signature to include global_step ---
+def print_epoch_stats(epoch: int, global_step: int, start_time: float, total_loss: float,
                       pde_loss: float, ic_loss: float, bc_loss: float,
-                      neg_h_loss: float, building_bc_loss: float, data_loss: float, # Added data_loss
+                      building_bc_loss: float, data_loss: float, neg_h_loss: float, # Reordered for consistency
                       nse: float, rmse: float,
                       epoch_time: float):
     """Prints the training statistics for the current epoch."""
@@ -14,13 +14,11 @@ def print_epoch_stats(epoch: int, start_time: float, total_loss: float,
 
     # Conditional strings for optional losses
     building_loss_str = f"BldgBC: {building_bc_loss:.3e} | " if building_bc_loss > 1e-9 else ""
-    # --- NEW: Conditional string for data loss ---
     data_loss_str = f"Data: {data_loss:.3e} | " if data_loss > 1e-9 else ""
-    # --- END NEW ---
     neg_h_loss_str = f"NegH: {neg_h_loss:.3e} | " if neg_h_loss > 1e-9 else ""
 
     print(
-        f"Epoch {epoch+1:5d} | "
+        f"Epoch {epoch+1:5d} | Step {global_step:7d} | " # Added Step
         f"Elapsed: {elapsed_time:.1f}s | "
         f"Epoch Time: {epoch_time:.2f}s | "
         f"Total Loss: {total_loss:.4e} | "
@@ -34,40 +32,46 @@ def print_epoch_stats(epoch: int, start_time: float, total_loss: float,
         f"RMSE: {rmse:.4f}"
     )
 
-def log_metrics(aim_run: Run, metrics: Dict, epoch: int):
-    """Logs metrics to Aim."""
+def _safe_float(val, default=float('nan')):
+    """Helper to convert JAX/Numpy arrays/scalars to standard Python floats."""
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+def log_step_metrics(aim_run: Run, step: int, epoch: int, metrics: Dict):
+    """Logs metrics that are tracked per-step (e.g., losses, gradnorm weights)."""
     if not aim_run:
         return
     try:
-        # Helper to safely get metrics, using float('nan') as default
-        def _get_metric(name, default=float('nan')):
-            val = metrics.get(name, default)
-            # Ensure value is a standard float, handle potential JAX types
-            try:
-                 return float(val)
-            except (TypeError, ValueError):
-                 return default # Return default if conversion fails
+        # Log all unweighted losses
+        for key, val in metrics.get('unweighted_losses', {}).items():
+            aim_run.track(_safe_float(val), name=f'losses/unweighted/{key}', step=step, epoch=epoch, context={'subset': 'train'})
+        
+        # Log total weighted loss
+        aim_run.track(_safe_float(metrics.get('total_loss_weighted')), name='losses/total_weighted', step=step, epoch=epoch, context={'subset': 'train'})
 
-        aim_run.track(_get_metric('total_loss'), name='total_loss', step=epoch, context={'subset': 'train'})
-        aim_run.track(_get_metric('pde_loss'), name='pde_loss', step=epoch, context={'subset': 'train'})
-        aim_run.track(_get_metric('ic_loss'), name='ic_loss', step=epoch, context={'subset': 'train'})
-        aim_run.track(_get_metric('bc_loss'), name='bc_loss', step=epoch, context={'subset': 'train'})
-        # Use 0.0 as default for optional losses if they weren't computed
-        aim_run.track(_get_metric('building_bc_loss', 0.0), name='building_bc_loss', step=epoch, context={'subset': 'train'})
-        # --- NEW: Log data loss ---
-        aim_run.track(_get_metric('data_loss', 0.0), name='data_loss', step=epoch, context={'subset': 'train'})
-        # --- END NEW ---
-        aim_run.track(_get_metric('nse', -float('inf')), name='nse', step=epoch, context={'subset': 'validation'}) # Use -inf default for NSE
-        aim_run.track(_get_metric('rmse', float('inf')), name='rmse', step=epoch, context={'subset': 'validation'}) # Use inf default for RMSE
-        aim_run.track(_get_metric('epoch_time'), name='epoch_time', step=epoch, context={'subset': 'system'})
-
-        # --- NEW: Log dynamic weights ---
-        for key in metrics:
-            if key.startswith('weight_'):
-                 aim_run.track(_get_metric(key, 1.0), name=key, step=epoch, context={'subset': 'gradnorm'})
+        # Log dynamic weights (if present)
+        for key, val in metrics.get('gradnorm_weights', {}).items():
+            aim_run.track(_safe_float(val), name=f'gradnorm/weight_{key}', step=step, epoch=epoch, context={'subset': 'train'})
 
     except Exception as e:
-        print(f"Warning: Failed to log metrics to Aim in epoch {epoch}: {e}")
+        print(f"Warning: Failed to log step metrics to Aim at step {step}: {e}")
+
+def log_epoch_metrics(aim_run: Run, epoch: int, metrics: Dict):
+    """Logs metrics that are tracked per-epoch (e.g., validation, system)."""
+    if not aim_run:
+        return
+    try:
+        # Log validation metrics
+        aim_run.track(_safe_float(metrics.get('nse'), -float('inf')), name='validation/nse', step=epoch, context={'subset': 'validation'})
+        aim_run.track(_safe_float(metrics.get('rmse'), float('inf')), name='validation/rmse', step=epoch, context={'subset': 'validation'})
+        
+        # Log system metrics
+        aim_run.track(_safe_float(metrics.get('epoch_time')), name='system/epoch_time', step=epoch, context={'subset': 'system'})
+
+    except Exception as e:
+        print(f"Warning: Failed to log epoch metrics to Aim at epoch {epoch}: {e}")
 
 
 def print_final_summary(total_time: float, best_epoch: int, best_nse: float, best_nse_time: float):
@@ -82,3 +86,6 @@ def print_final_summary(total_time: float, best_epoch: int, best_nse: float, bes
     else:
         print(f"No valid best NSE achieved during training (Best NSE: {best_nse}).")
     print(f"------------------------")
+
+# --- REMOVED old log_metrics function ---
+# The new functions log_step_metrics and log_epoch_metrics replace it.

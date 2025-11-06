@@ -68,39 +68,8 @@ class FourierPINN(nn.Module):
 
         return self.output_layer(x_features)
 
-class SirenLayer(nn.Module):
-    """A single layer of a SIREN model."""
-    features: int
-    config: FrozenDict
-    is_first: bool = False
-
-    @nn.compact
-    def __call__(self, x):
-        model_cfg = self.config["model"]
-        input_dim = x.shape[-1]
-
-        if self.is_first:
-            w_std = 1.0 / input_dim
-        else:
-            w_std = jnp.sqrt(6.0 / input_dim) / model_cfg["w0"]
-
-        w_init = jax.nn.initializers.uniform(scale=w_std)
-        w = self.param('kernel', w_init, (input_dim, self.features))
-        b = self.param('bias', jax.nn.initializers.zeros, (self.features,))
-
-        # Make w0 trainable only in the first layer
-        if self.is_first:
-            w0_init_fn = lambda key, shape, dtype=jnp.float32: jnp.full(shape, model_cfg["w0"], dtype=dtype)
-            w0 = self.param('w0', w0_init_fn, (1,))
-        else:
-            w0 = model_cfg["w0"]
-
-
-        y = x @ w + b
-        return jnp.sin(w0 * y)
-
-class SIREN(nn.Module):
-    """SIREN model with trainable w0."""
+class MLP(nn.Module):
+    """Standard Multi-Layer Perceptron."""
     config: FrozenDict
 
     @nn.compact
@@ -108,19 +77,26 @@ class SIREN(nn.Module):
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
 
+        # Normalize input
         x = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x)
 
-        # Input layer
-        x = SirenLayer(features=model_cfg["width"], is_first=True, config=self.config)(x)
-
-        # Hidden layers
-        for _ in range(model_cfg["depth"] - 1):
-            x = SirenLayer(features=model_cfg["width"], is_first=False, config=self.config)(x)
+        # Hidden layers with tanh activation
+        for _ in range(model_cfg["depth"]):
+            x = nn.Dense(
+                model_cfg["width"],
+                kernel_init=nn.initializers.glorot_uniform(),
+                bias_init=nn.initializers.constant(model_cfg.get("bias_init", 0.0))
+            )(x)
+            x = nn.tanh(x)
 
         # Output layer
-        # The output layer of SIREN is typically linear
-        output_layer = nn.Dense(features=model_cfg["output_dim"])
-        return output_layer(x)
+        x = nn.Dense(
+            model_cfg["output_dim"],
+            kernel_init=nn.initializers.glorot_uniform(),
+            bias_init=nn.initializers.constant(model_cfg.get("bias_init", 0.0))
+        )(x)
+
+        return x
     
     
 # --- Add the DGMLayer Class ---
