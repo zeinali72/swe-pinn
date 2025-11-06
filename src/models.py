@@ -94,7 +94,8 @@ class MLP(nn.Module):
             model_cfg["output_dim"],
             kernel_init=nn.initializers.glorot_uniform(),
             bias_init=nn.initializers.constant(model_cfg.get("bias_init", 0.0))
-        )(x)
+            ,name='output_layer'
+            )(x)
 
         return x
     
@@ -182,7 +183,7 @@ class DGMNetwork(nn.Module):
             # Note: The paper passes the original input 'x' to each layer.
 
         # Final output layer (Linear transformation, Equation 4.2 in PDF)
-        output = nn.Dense(output_dim, name='OutputDense', kernel_init=nn.initializers.glorot_uniform())(s_current)
+        output = nn.Dense(output_dim, name='output_layer', kernel_init=nn.initializers.glorot_uniform())(s_current)
 
         return output
 

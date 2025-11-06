@@ -15,8 +15,6 @@ from src.losses import (
     compute_neg_h_loss
 )
 from src.config import DTYPE
-from src.models import FourierPINN, SIREN, DGMNetwork
-
 
 @flax.struct.dataclass
 class GradNormState:
@@ -39,14 +37,11 @@ def init_gradnorm(loss_keys: List[str], initial_losses: Dict[str, float], gradno
     )
 
 def _get_shared_layer_name(model: Any) -> str:
-    """Determines the name of the final output layer for GradNorm."""
-    if isinstance(model, DGMNetwork):
-        return 'OutputDense'
-    elif isinstance(model, (FourierPINN, SIREN)):
-        return 'output_layer'
-    else:
-        print(f"Warning: Unknown model type '{type(model)}' for GradNorm. Defaulting to 'OutputDense'.")
-        return 'OutputDense'
+    """
+    Returns the standardized name of the shared output layer used for GradNorm.
+    All models (MLP, FourierPINN, DGMNetwork) must name this layer 'output_layer'.
+    """
+    return 'output_layer'
 
 def _get_shared_layer_params(params: FrozenDict, shared_layer_name: str) -> chex.ArrayTree:
     """Extracts parameters of the specified shared layer."""
