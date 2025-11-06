@@ -1,7 +1,13 @@
-# src/train_unified.py
-# Unified training script handling scenarios with and without buildings,
-# with optional GradNorm for dynamic loss weighting.
-# Based on the robust logic from optimisation/optimization_train_loop.py
+"""
+Unified training script for the Shallow Water Equation (SWE) PINN model.
+
+This script handles training for scenarios both with and without building
+structures. It supports dynamic loss weighting using GradNorm and provides
+comprehensive logging and result visualization through Aim.
+
+The training loop is designed to be robust and flexible, accommodating
+different configurations specified in YAML files.
+"""
 
 import os
 import time
@@ -16,20 +22,18 @@ import jax
 import jax.numpy as jnp
 from jax import random
 import optax
-from aim import Repo, Run, Image, Text # <<<--- Correct imports
+from aim import Repo, Run, Image, Text
 from flax.core import FrozenDict
 import numpy as np 
 
-# --- Use DTYPE from config ---
+# Local application imports
 from src.config import load_config, DTYPE
 from src.data import sample_points, get_batches
 from src.models import init_model
-# --- Updated losses import ---
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
     compute_building_bc_loss, compute_data_loss, compute_neg_h_loss
 )
-# --- Import GradNorm components ---
 from src.gradnorm import (
     init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP,
     get_initial_losses
@@ -40,14 +44,14 @@ from src.utils import (
     plot_h_prediction_vs_true_2d
 )
 from src.physics import h_exact
-# --- Import NEW single logging function ---
 from src.reporting import (
     print_epoch_stats, log_metrics, print_final_summary
 )
 
-#jax.config.update('jax_enable_x64', True)
+# To enable 64-bit precision, uncomment the following line:
+# jax.config.update('jax_enable_x64', True)
 
-# --- Define Training Step (based on optimization_train_loop.py) ---
+
 def train_step(model: Any, params: FrozenDict, opt_state: Any,
                all_batches: Dict[str, Any],
                weights_dict: Dict[str, float],
@@ -56,8 +60,24 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
                data_free: bool = True
                ) -> Tuple[FrozenDict, Any, Dict[str, jnp.ndarray], jnp.ndarray]:
     """
-    Perform a single training step.
-    Returns new params, new opt_state, INDIVIDUAL loss terms (unweighted), and TOTAL weighted loss.
+    Performs a single training step, including loss calculation and parameter updates.
+
+    Args:
+        model: The Flax model.
+        params: Current model parameters.
+        opt_state: Current state of the optimizer.
+        all_batches: A dictionary containing batches of training points for different loss terms.
+        weights_dict: A dictionary of weights for each loss component.
+        optimiser: The Optax optimizer.
+        config: The experiment configuration.
+        data_free: Boolean flag indicating if the training is data-free.
+
+    Returns:
+        A tuple containing:
+        - new_params: The updated model parameters.
+        - new_opt_state: The updated optimizer state.
+        - individual_losses: A dictionary of unweighted loss values for each component.
+        - total_weighted_loss: The total weighted loss for this step.
     """
     has_building = "building" in config
     active_loss_keys_base = list(weights_dict.keys())
@@ -109,7 +129,8 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
     new_params = optax.apply_updates(params, updates)
     return new_params, new_opt_state, individual_terms_val, total_loss_val
 
-# JIT the training step
+# JIT compile the training step for performance.
+# Static arguments are those that do not change between calls and allow for more efficient compilation.
 train_step_jitted = jax.jit(
     train_step,
     static_argnames=('model', 'optimiser', 'config', 'data_free')
@@ -117,8 +138,20 @@ train_step_jitted = jax.jit(
 
 
 def main(config_path: str):
-    """Main training loop for the PINN (Handles building/no-building, data-driven/data-free, and optional GradNorm)."""
-    # --- 1. Load Config and Init Model ---
+    """
+    Main training function.
+
+    Sets up the experiment, runs the training loop, and handles final saving
+    and logging of results.
+
+    Args:
+        config_path: Path to the YAML configuration file for the experiment.
+
+    Returns:
+        The best Nash-Sutcliffe Efficiency (NSE) score achieved on the
+        validation set, or -1.0 if the run is aborted or fails.
+    """
+    # --- 1. Load Config and Initialize Model ---
     cfg_dict = load_config(config_path)
     cfg = FrozenDict(cfg_dict)
     has_building = "building" in cfg
@@ -140,7 +173,7 @@ def main(config_path: str):
     model_key, init_key, train_key = random.split(key, 3)
     model, params = init_model(model_class, model_key, cfg)
 
-    # --- 2. Setup Directories ---
+    # --- 2. Setup Directories for Results and Models ---
     config_base = os.path.splitext(os.path.basename(cfg['CONFIG_PATH']))[0]
     trial_name = generate_trial_name(config_base)
     results_dir = os.path.join("results", trial_name)
@@ -148,7 +181,7 @@ def main(config_path: str):
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    # --- 3. Optimizer Setup ---
+    # --- 3. Setup Optimizer and Learning Rate Schedule ---
     lr_schedule = optax.piecewise_constant_schedule(
         init_value=cfg["training"]["learning_rate"],
         boundaries_and_scales=cfg.get("training", {}).get("lr_boundaries", {15000: 0.1, 30000: 0.1})
@@ -159,7 +192,8 @@ def main(config_path: str):
     )
     opt_state = optimiser.init(params)
 
-    # --- 4. Prepare Initial Weights and GradNorm Config ---
+    # --- 4. Prepare Loss Weights and GradNorm Configuration ---
+    # Static weights are loaded from the config file.
     static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
     gradnorm_cfg = cfg.get("gradnorm", {})
     enable_gradnorm = gradnorm_cfg.get("enable", False) 
@@ -168,12 +202,13 @@ def main(config_path: str):
     gradnorm_update_freq = gradnorm_cfg.get("update_freq", 100)
     gradnorm_state = None
 
-    # --- 5. Load Data (Validation and Training) ---
+    # --- 5. Load Validation and Training Data ---
     val_points, h_true_val = None, None
     data_points_full = None
     scenario_name = cfg.get('scenario', 'default_scenario') 
     base_data_path = os.path.join("data", scenario_name)
 
+    # Determine if the run is data-free based on config or data weight.
     data_free_flag = cfg.get("data_free", None)
     
     if data_free_flag is True:
@@ -189,6 +224,7 @@ def main(config_path: str):
         has_data_loss = 'data' in static_weights_dict and static_weights_dict['data'] > 0
         data_free = not has_data_loss
 
+    # Load training data if data loss is active.
     training_data_file = os.path.join(base_data_path, "training_dataset_sample.npy")
     if has_data_loss:
         if os.path.exists(training_data_file):
@@ -211,8 +247,10 @@ def main(config_path: str):
             print("Data loss term cannot be computed and will be disabled.")
             has_data_loss = False
     
-    data_free = not has_data_loss # Final definitive flag
+    # Final determination of the data-free flag.
+    data_free = not has_data_loss 
 
+    # Load validation data for calculating metrics like NSE and RMSE.
     validation_data_file = os.path.join(base_data_path, "validation_sample.npy")
     validation_data_loaded = False
     if os.path.exists(validation_data_file):
@@ -250,7 +288,7 @@ def main(config_path: str):
         else:
             print("Validation metrics (NSE/RMSE) will use analytical solution (if PDE points exist).")
 
-    # --- 6. Initialize Aim Run & Log HParams (Point 7) ---
+    # --- 6. Initialize Aim Run for Experiment Tracking ---
     aim_repo = None
     aim_run = None
     run_hash = None
@@ -262,14 +300,15 @@ def main(config_path: str):
         aim_run = Run(repo=aim_repo, experiment=trial_name)
         run_hash = aim_run.hash
 
-        # <<<--- FIX: Set the artifacts URI --- >>>
+        # Set the local storage path for artifacts like models and plots.
         artifact_storage_path = os.path.join(aim_repo_path, "aim_artifacts")
         os.makedirs(artifact_storage_path, exist_ok=True)
-        # Use an absolute path for reliability
+        # Use an absolute path for reliability.
         abs_artifact_path = os.path.abspath(artifact_storage_path)
         aim_run.set_artifacts_uri(f"file://{abs_artifact_path}")
         print(f"Set Aim artifact storage to: {abs_artifact_path}")
         
+        # Log hyperparameters and run flags to Aim.
         hparams_to_log = copy.deepcopy(cfg_dict)
         aim_run["hparams"] = hparams_to_log
         
@@ -280,7 +319,7 @@ def main(config_path: str):
             "has_building": has_building
         }
         
-        # <<<--- NEW: Log config file and model summary --- >>>
+        # Log the configuration file itself as an artifact.
         try:
             aim_run.log_artifact(config_path, name='run_config.yaml')
             print("Logged config file and model summary to Aim.")
@@ -292,7 +331,7 @@ def main(config_path: str):
     except Exception as e:
         print(f"Warning: Failed to initialize Aim tracking: {e}. Training will continue without Aim.")
 
-    # --- 7. Determine Active Loss Keys ---
+    # --- 7. Determine Active Loss Terms for the Run ---
     active_loss_term_keys = []
     for k, v in static_weights_dict.items():
         if v > 0:
@@ -302,9 +341,10 @@ def main(config_path: str):
     
     current_weights_dict = {k: static_weights_dict[k] for k in active_loss_term_keys}
 
-    # --- 8. GradNorm Initialization (if enabled) ---
+    # --- 8. Initialize GradNorm if Enabled ---
     if enable_gradnorm:
         print("GradNorm enabled. Initializing dynamic weights...")
+        # Generate keys and sample initial batches to compute initial losses.
         key, pde_key, ic_key, bc_keys, bldg_keys, data_key_init = random.split(init_key, 6)
         l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
         batch_size_init = cfg["training"]["batch_size"]
@@ -346,6 +386,7 @@ def main(config_path: str):
                  init_data_sample = data_points_full[np.random.choice(data_points_full.shape[0], batch_size_init, replace=False)]
                  init_batches['data'] = get_batches(data_key_init, init_data_sample, batch_size_init)[0]
         
+        # Filter for batches that are relevant to the active loss terms.
         relevant_init_batches = {}
         for k in active_loss_term_keys:
             batch_key = LOSS_FN_MAP[k]['batch_key'] # Find the required batch (e.g., 'neg_h' needs 'pde')
@@ -360,9 +401,11 @@ def main(config_path: str):
         active_loss_term_keys = list(relevant_init_batches.keys())
         print(f"GradNorm active keys for init: {active_loss_term_keys}")
 
+        # Compute initial losses on the sampled batches without JIT to avoid recompilation.
         with jax.disable_jit():
             initial_losses = get_initial_losses(model, params, relevant_init_batches, cfg)
 
+        # Initialize the GradNorm state with initial losses.
         gradnorm_state = init_gradnorm(
             loss_keys=list(initial_losses.keys()),
             initial_losses=initial_losses,
@@ -377,7 +420,7 @@ def main(config_path: str):
     else:
          print(f"GradNorm disabled. Using Static Weights: {current_weights_dict}")
     
-    # --- 9. Training Initialization ---
+    # --- 9. Pre-Training Summary ---
     print(f"\n--- Training Started: {trial_name} ---")
     print(f"Model: {cfg['model']['name']}, Epochs: {cfg['training']['epochs']}, Batch Size: {cfg['training']['batch_size']}")
     print(f"Scenario: {'Building' if has_building else 'No Building'}")
@@ -388,7 +431,8 @@ def main(config_path: str):
     print(f"Active Loss Terms: {active_loss_term_keys}")
     print(f"Initial Weights: {current_weights_dict}")
 
-    # --- Metrics Tracking (NEW: Using dicts for clarity) ---
+    # --- Metrics Tracking Dictionaries ---
+    # Track the model with the best NSE score.
     best_nse_stats = {
         'nse': -jnp.inf,
         'rmse': jnp.inf,
@@ -398,8 +442,9 @@ def main(config_path: str):
         'total_weighted_loss': 0.0,
         'unweighted_losses': {},
     }
-    best_params_nse: Dict = None # Store params for the best NSE model
+    best_params_nse: Dict = None # Store parameters for the best NSE model.
     
+    # Track the model with the lowest total loss.
     best_loss_stats = {
         'total_weighted_loss': jnp.inf,
         'epoch': 0,
@@ -420,7 +465,7 @@ def main(config_path: str):
         for epoch in range(cfg["training"]["epochs"]):
             epoch_start_time = time.time()
 
-            # --- Dynamic Sampling ---
+            # --- Dynamic Point Sampling for Each Epoch ---
             key, pde_key, ic_key, bc_keys, bldg_keys, data_key_epoch = random.split(key, 6)
             l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
             domain_cfg = cfg["domain"]; grid_cfg = cfg["grid"]; ic_bc_grid_cfg = cfg["ic_bc_grid"]
@@ -441,7 +486,7 @@ def main(config_path: str):
                 building_points['bottom'] = sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_min"], b_cfg["y_min"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_b_key)
                 building_points['top'] = sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_max"], b_cfg["y_max"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_t_key)
 
-            # --- Create Batches ---
+            # --- Create Batches from Sampled Points ---
             batch_size = cfg["training"]["batch_size"]
             key, pde_b_key, ic_b_key, bc_b_keys, bldg_b_keys, data_b_key_epoch = random.split(key, 6)
             l_b_key, r_b_key, b_b_key, t_b_key = random.split(bc_b_keys, 4)
@@ -472,6 +517,7 @@ def main(config_path: str):
                  print(f"Warning: Epoch {epoch+1} - No batches generated for active terms. Skipping epoch.")
                  continue
 
+            # Create iterators that cycle through the batches for the epoch.
             pde_batch_iter = itertools.cycle(pde_batches) if pde_batches else iter(())
             ic_batch_iter = itertools.cycle(ic_batches) if ic_batches else iter(())
             left_batch_iter = itertools.cycle(left_batches) if left_batches else iter(())
@@ -487,10 +533,11 @@ def main(config_path: str):
             epoch_losses_unweighted_sum = {k: 0.0 for k in active_loss_term_keys}
             epoch_total_weighted_loss_sum = 0.0
 
-            # --- Training Steps within Epoch ---
+            # --- Iterate Through Batches for One Epoch ---
             for i in range(num_batches):
                 global_step += 1
 
+                # Get the next batch for each loss term.
                 pde_batch_data = next(pde_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
                 ic_batch_data = next(ic_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
                 left_batch_data = next(left_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
@@ -511,6 +558,7 @@ def main(config_path: str):
                     'data': data_batch_data,
                 }
                 
+                # Update GradNorm weights periodically if enabled.
                 if enable_gradnorm and global_step % gradnorm_update_freq == 0:
                     active_batches_for_gradnorm = {
                         k: current_all_batches[LOSS_FN_MAP[k]['batch_key']] 
@@ -522,6 +570,7 @@ def main(config_path: str):
                               cfg, gradnorm_alpha, gradnorm_lr
                          )
 
+                # Perform a single training step.
                 params, opt_state, batch_losses_unweighted, batch_total_weighted_loss = train_step_jitted(
                     model, params, opt_state,
                     current_all_batches,
@@ -533,19 +582,20 @@ def main(config_path: str):
                     epoch_losses_unweighted_sum[k] += float(batch_losses_unweighted.get(k, 0.0))
                 epoch_total_weighted_loss_sum += float(batch_total_weighted_loss)
 
-                # --- Per-Step Logging (GradNorm only) ---
+                # Log GradNorm weights at specified step intervals.
                 if aim_run and enable_gradnorm and (global_step % log_freq_steps == 0):
                     step_metrics = {
                         'gradnorm_weights': current_weights_dict
                     }
                     log_metrics(aim_run, step=global_step, epoch=epoch, metrics=step_metrics)
             
-            # --- End of Batch Loop ---
+            # --- End of Epoch ---
 
-            # --- Epoch End Calculation & Validation (Points 3, 5, 6) ---
+            # Calculate average losses for the epoch.
             avg_losses_unweighted = {k: v / num_batches for k, v in epoch_losses_unweighted_sum.items()}
             avg_total_weighted_loss = epoch_total_weighted_loss_sum / num_batches
 
+            # Calculate validation metrics (NSE, RMSE).
             nse_val, rmse_val = -jnp.inf, jnp.inf
             
             if validation_data_loaded:
@@ -560,7 +610,8 @@ def main(config_path: str):
                 nse_val = float(nse(h_pred_val_no_building, h_true_val_no_building))
                 rmse_val = float(rmse(h_pred_val_no_building, h_true_val_no_building))
 
-            # --- Update Best NSE Model Stats ---
+            # --- Update Best Model Statistics ---
+            # Check if the current model is the best based on NSE.
             if nse_val > best_nse_stats['nse']:
                 best_nse_stats['nse'] = nse_val
                 best_nse_stats['rmse'] = rmse_val
@@ -573,7 +624,7 @@ def main(config_path: str):
                 if nse_val > -jnp.inf:
                     print(f"    ---> New best NSE: {best_nse_stats['nse']:.6f} at epoch {epoch+1}")
 
-            # --- Update Best Loss Model Stats ---
+            # Check if the current model is the best based on total loss.
             if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
                 best_loss_stats['total_weighted_loss'] = avg_total_weighted_loss
                 best_loss_stats['epoch'] = epoch
@@ -584,7 +635,7 @@ def main(config_path: str):
                 best_loss_stats['rmse'] = rmse_val
 
 
-            # --- Logging and Reporting (Per-Epoch) ---
+            # --- Per-Epoch Logging and Reporting ---
             epoch_time = time.time() - epoch_start_time
             if (epoch + 1) % 100 == 0:
                 print_epoch_stats(
@@ -601,7 +652,7 @@ def main(config_path: str):
                      print(f"      Current Weights: { {k: f'{v:.2e}' for k, v in current_weights_dict.items()} }")
 
             if aim_run:
-                # Log epoch-level metrics
+                # Log epoch-level metrics to Aim.
                 epoch_metrics_to_log = {
                     'validation_metrics': {
                         'nse': nse_val, 
@@ -616,7 +667,7 @@ def main(config_path: str):
                         'learning_rate': float(lr_schedule(global_step))
                     }
                 }
-                # We still pass global_step for context and for gradnorm
+                # We pass both global_step and epoch for comprehensive tracking.
                 log_metrics(aim_run, step=global_step, epoch=epoch, metrics=epoch_metrics_to_log)
 
             # --- Early Stopping Check ---
@@ -637,16 +688,16 @@ def main(config_path: str):
         import traceback
         traceback.print_exc()
 
-    # --- 11. Final Summary and Saving ---
+    # --- 11. Final Summary and Artifact Saving ---
     finally:
         total_time = time.time() - start_time
-        # Call new summary function
+        # Print a final summary of the training run to the console.
         print_final_summary(total_time, best_nse_stats, best_loss_stats)
 
-        # --- Log Summary Metrics to Aim ---
+        # Log a final summary dictionary to Aim.
         if aim_run:
             try:
-                # Prep stats dicts for summary (1-based epoch)
+                # Prepare stats dicts for summary (using 1-based epoch for readability).
                 summary_best_nse = best_nse_stats.copy()
                 summary_best_nse['epoch'] = best_nse_stats.get('epoch', 0) + 1
                 
@@ -673,14 +724,14 @@ def main(config_path: str):
             except Exception as e:
                  print(f"Warning: Error closing Aim run: {e}")
 
-        # --- Save Model and Plots ---
+        # --- Save Model and Generate Final Plots ---
         if ask_for_confirmation():
             if best_params_nse is not None:
                 try:
                     model_save_path = save_model(best_params_nse, model_dir, trial_name)
                     print(f"Best model (by NSE) saved to: {model_save_path}")
 
-                    # <<<--- FIX: Use run.log_artifact --- >>>
+                    # Log the saved model file as an artifact in Aim.
                     if aim_run:
                         try:
                             aim_run.log_artifact(model_save_path, name='model_weights.pkl')
@@ -765,12 +816,12 @@ def main(config_path: str):
         else:
             print("Save aborted by user. Deleting artifacts...")
             try:
-                # First, delete the run from Aim's database
+                # Delete the run from Aim's database.
                 if aim_run and run_hash and aim_repo:
                     aim_repo.delete_run(run_hash)
                     print("Aim run deleted.")
                 
-                # Then, clean up the local directories
+                # Clean up the local directories.
                 if os.path.exists(results_dir):
                     shutil.rmtree(results_dir)
                     print(f"Deleted results directory: {results_dir}")
@@ -778,7 +829,7 @@ def main(config_path: str):
                     shutil.rmtree(model_dir)
                     print(f"Deleted model directory: {model_dir}")
 
-                # Explicitly delete the run's artifact directory if it exists
+                # Explicitly delete the run's artifact directory.
                 if run_hash:
                     run_artifact_dir = os.path.join("aim_repo", "aim_artifacts", run_hash)
                     if os.path.exists(run_artifact_dir):
