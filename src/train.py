@@ -718,12 +718,6 @@ def main(config_path: str):
             except Exception as e:
                  print(f"Warning: Error logging summary metrics to Aim: {e}")
 
-            try:
-                aim_run.close()
-                print("Aim run closed.")
-            except Exception as e:
-                 print(f"Warning: Error closing Aim run: {e}")
-
         # --- Save Model and Generate Final Plots ---
         if ask_for_confirmation():
             if best_params_nse is not None:
@@ -877,6 +871,14 @@ def main(config_path: str):
                 print("Cleanup complete.")
             except Exception as e:
                 print(f"Error during cleanup: {e}")
+
+        # Close the Aim run at the very end of the script's execution.
+        if aim_run:
+            try:
+                aim_run.close()
+                print("Aim run closed.")
+            except Exception as e:
+                 print(f"Warning: Error closing Aim run: {e}")
 
     return best_nse_stats['nse'] if best_nse_stats['nse'] > -jnp.inf else -1.0
 
