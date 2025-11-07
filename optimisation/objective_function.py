@@ -152,6 +152,7 @@ def objective(trial: optuna.trial.Trial,
     # --- Update sections with suggested hyperparameters ---
     trial_config_dict["training"]["learning_rate"] = trial_params["learning_rate"]
     trial_config_dict["training"]["batch_size"] = trial_params["batch_size"]
+    trial_config_dict["training"]["lr_boundaries"] = trial_params["lr_boundaries"]
     # 'opt_epochs' is already in trial_config_dict['training'] from run_optimization.py
 
     trial_config_dict["model"]["width"] = trial_params["model_width"]

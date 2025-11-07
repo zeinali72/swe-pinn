@@ -138,10 +138,16 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         print(f"Trial {trial.number}: ERROR during model initialization: {e}")
         return -1.0 # Return poor value
 
-    # Optuna may benefit from simpler LR schedules, but using piecewise allows testing that too
+    # Get the boundaries dict, which has string keys from the config
+    raw_boundaries = trial_cfg["training"].get("lr_boundaries", {15000: 0.1, 30000: 0.1})
+    
+    # --- FIX: Convert string keys to int keys for Optax ---
+    boundaries_and_scales_int_keys = {int(k): v for k, v in raw_boundaries.items()}
+    # --- END FIX ---
+
     lr_schedule = optax.piecewise_constant_schedule(
         init_value=trial_cfg["training"]["learning_rate"],
-        boundaries_and_scales=trial_cfg["training"].get("lr_boundaries", {15000: 0.1, 30000: 0.1}) # Use default if not in config
+        boundaries_and_scales=boundaries_and_scales_int_keys # Use the converted dict
     )
     optimiser = optax.chain(
         optax.clip_by_global_norm(trial_cfg["training"].get("clip_norm", 1.0)), # Use default if not in config
