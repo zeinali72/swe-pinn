@@ -41,7 +41,7 @@ from src.gradnorm import (
 from src.utils import ( 
     nse, rmse, generate_trial_name, save_model, ask_for_confirmation,
     mask_points_inside_building, plot_h_vs_x,
-    plot_h_prediction_vs_true_2d
+    plot_comparison_scatter_2d
 )
 from src.physics import h_exact
 from src.reporting import (
@@ -745,43 +745,81 @@ def main(config_path: str):
                     t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
 
                     if has_building:
-                        print("  Generating meshgrid predictions...")
-                        resolution = plot_cfg.get("plot_resolution", 100)
-                        x_plot = jnp.linspace(0, cfg["domain"]["lx"], resolution, dtype=DTYPE)
-                        y_plot = jnp.linspace(0, cfg["domain"]["ly"], resolution, dtype=DTYPE)
-                        xx_plot, yy_plot = jnp.meshgrid(x_plot, y_plot)
-                        t_plot = jnp.full_like(xx_plot, t_const_val_plot, dtype=DTYPE)
-                        plot_points_mesh = jnp.stack([xx_plot.ravel(), yy_plot.ravel(), t_plot.ravel()], axis=-1)
-
-                        U_plot_pred_mesh = model.apply({'params': best_params_nse['params']}, plot_points_mesh, train=False)
-                        h_plot_pred_mesh = U_plot_pred_mesh[..., 0].reshape(resolution, resolution)
-                        h_plot_pred_mesh = jnp.where(h_plot_pred_mesh < eps_plot, 0.0, h_plot_pred_mesh)
-
                         print("  Loading plotting data for comparison...")
                         plot_data_time = t_const_val_plot
                         plot_data_file = os.path.join(base_data_path, f"validation_plotting_t_{int(plot_data_time)}s.npy")
+                        
                         if os.path.exists(plot_data_file):
                             try:
+                                # 1. Load the scattered data
+                                # This file contains [t, x, y, h, u, v]
                                 plot_data = np.load(plot_data_file)
+                                
+                                # 2. Extract coordinates and true values
+                                # Input points for model (x, y, t)
+                                plot_points_scatter = jnp.array(plot_data[:, [1, 2, 0]], dtype=DTYPE) 
                                 x_coords_plot = jnp.array(plot_data[:, 1], dtype=DTYPE) # x
                                 y_coords_plot = jnp.array(plot_data[:, 2], dtype=DTYPE) # y
-                                h_true_plot_data = jnp.array(plot_data[:, 3], dtype=DTYPE) # h
+                                
+                                # True values
+                                h_true_plot = jnp.array(plot_data[:, 3], dtype=DTYPE)
+                                u_true_plot = jnp.array(plot_data[:, 4], dtype=DTYPE)
+                                v_true_plot = jnp.array(plot_data[:, 5], dtype=DTYPE)
+                                
+                                # Calculate true hu and hv
+                                h_true_safe = jnp.maximum(h_true_plot, eps_plot)
+                                hu_true_plot = h_true_safe * u_true_plot
+                                hv_true_plot = h_true_safe * v_true_plot
 
-                                plot_path_comp = os.path.join(results_dir, f"final_comparison_plot_t{int(plot_data_time)}s.png")
-                                plot_h_prediction_vs_true_2d(
-                                    xx_plot, yy_plot, h_plot_pred_mesh,
-                                    x_coords_plot, y_coords_plot, h_true_plot_data,
-                                    cfg_dict, plot_path_comp
+                                print(f"  Running inference on {plot_points_scatter.shape[0]} scattered validation points...")
+                                # 3. Run model inference ONCE on these scattered points
+                                U_plot_pred_scatter = model.apply({'params': best_params_nse['params']}, plot_points_scatter, train=False)
+                                
+                                # 4. Extract predicted values
+                                h_pred_plot = U_plot_pred_scatter[..., 0]
+                                hu_pred_plot = U_plot_pred_scatter[..., 1]
+                                hv_pred_plot = U_plot_pred_scatter[..., 2]
+
+                                # 5. Call the new plotting function 3 times
+                                
+                                # --- Plot for h ---
+                                plot_path_h = os.path.join(results_dir, f"final_comparison_plot_t{int(plot_data_time)}s_h.png")
+                                plot_comparison_scatter_2d(
+                                    x_coords_plot, y_coords_plot, 
+                                    h_pred_plot, h_true_plot, 
+                                    'h', cfg_dict, plot_path_h
                                 )
+                                
+                                # --- Plot for hu ---
+                                plot_path_hu = os.path.join(results_dir, f"final_comparison_plot_t{int(plot_data_time)}s_hu.png")
+                                plot_comparison_scatter_2d(
+                                    x_coords_plot, y_coords_plot, 
+                                    hu_pred_plot, hu_true_plot, 
+                                    'hu', cfg_dict, plot_path_hu
+                                )
+
+                                # --- Plot for hv ---
+                                plot_path_hv = os.path.join(results_dir, f"final_comparison_plot_t{int(plot_data_time)}s_hv.png")
+                                plot_comparison_scatter_2d(
+                                    x_coords_plot, y_coords_plot, 
+                                    hv_pred_plot, hv_true_plot, 
+                                    'hv', cfg_dict, plot_path_hv
+                                )
+
+                                # Log plots to Aim
                                 if aim_run:
                                     try:
-                                        aim_run.track(Image(plot_path_comp), name='validation_plot_2D_comparison', epoch=best_nse_stats['epoch'])
-                                        print(f"  Logged 2D plot to Aim run: {run_hash}")
+                                        aim_run.track(Image(plot_path_h), name='validation_plot_h', epoch=best_nse_stats['epoch'])
+                                        aim_run.track(Image(plot_path_hu), name='validation_plot_hu', epoch=best_nse_stats['epoch'])
+                                        aim_run.track(Image(plot_path_hv), name='validation_plot_hv', epoch=best_nse_stats['epoch'])
+                                        print(f"  Logged all 3 comparison plots to Aim run: {run_hash}")
                                     except Exception as e_aim:
-                                        print(f"  Warning: Failed to log 2D plot to Aim: {e_aim}")
+                                        print(f"  Warning: Failed to log 2D plots to Aim: {e_aim}")
                                         
                             except Exception as e_plot:
-                                print(f"  Error generating comparison plot: {e_plot}")
+                                print(f"  Error generating comparison plots: {e_plot}")
+                                import traceback
+                                traceback.print_exc()
                         else:
                              print(f"  Warning: Plotting data file {plot_data_file} not found. Skipping comparison plot.")
 

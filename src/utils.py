@@ -6,7 +6,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches # Import patches for building rectangle
 import matplotlib.tri as tri # Needed for tricontourf
-from mpl_toolkits.axes_grid1 import make_axes_locatable # For better colorbar placement
+import seaborn as sns  # <<<--- ADD THIS IMPORT
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from typing import Dict, Any
 import sys
 import queue
@@ -85,126 +86,158 @@ def mask_points_inside_building(points: jnp.ndarray, building_config: Dict[str, 
 
 
 # <<<--- REVISED FUNCTION for Stacked Comparison --- >>>
-def plot_h_prediction_vs_true_2d(xx_pred: jnp.ndarray, yy_pred: jnp.ndarray, h_pred_mesh: jnp.ndarray,
-                                 x_true: jnp.ndarray, y_true: jnp.ndarray, h_true_scatter: jnp.ndarray,
-                                 config: Dict[str, Any], filename: str = None) -> None:
+def plot_comparison_scatter_2d(
+    x_coords: jnp.ndarray, 
+    y_coords: jnp.ndarray, 
+    pred_data: jnp.ndarray, 
+    true_data: jnp.ndarray,
+    var_name: str, 
+    config: Dict[str, Any], 
+    filename: str = None
+) -> None:
     """
-    Generates and saves a stacked 2D contour plot comparing predicted (top)
-    and true (bottom) water depth `h`. Aims for a professional look for papers.
+    Generates and saves a stacked 2D comparison plot (Prediction, True, Error)
+    using scattered data for a specific variable (h, hu, or hv).
+    
+    - Uses seaborn styling for a professional look.
+    - Sets building area in 'Predicted' and 'Error' plots to 0.0.
+    - 'True' plot (middle) is NOT masked.
+    - Uses horizontal color bars and a tight layout.
+    - Uses 'vlag' colormap for data and 'coolwarm' for error.
     """
-    print("Generating 2D prediction vs true comparison plot...")
+    sns.set_style("whitegrid") # Use seaborn styling
+    print(f"Generating 2D comparison plot for variable: {var_name}...")
     plot_cfg = config.get("plotting", {})
     building_cfg = config.get("building")
     domain_cfg = config.get("domain", {})
     t_const = plot_cfg.get("t_const_val", 1800.0)
 
-    # --- Adjust Figure Size and Subplot Spacing ---
-    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True, sharey=True, gridspec_kw={'hspace': 0.1}) # Reduced hspace significantly
+    # --- 1. Create Building Mask (for data points) ---
+    building_mask_pts = jnp.zeros_like(x_coords, dtype=bool) # Default to False (no mask)
+    if building_cfg:
+        x_min, x_max = building_cfg["x_min"], building_cfg["x_max"]
+        y_min, y_max = building_cfg["y_min"], building_cfg["y_max"]
+        
+        # Mask is True for points *inside* the building
+        building_mask_pts = (
+            (x_coords >= x_min) & (x_coords <= x_max) &
+            (y_coords >= y_min) & (y_coords <= y_max)
+        )
+    
+    # --- 2. Apply Mask and Calculate Error ---
+    # Set predicted data inside building to 0.0 for plotting
+    pred_data_masked = jnp.where(building_mask_pts, 0.0, pred_data)
+    
+    # Set true data inside building to 0.0 *for error calculation only*
+    true_data_masked_for_error = jnp.where(building_mask_pts, 0.0, true_data)
 
-    # Determine common color scale based on the maximum of both datasets
-    h_max_pred = jnp.max(h_pred_mesh) if h_pred_mesh.size > 0 else 0
-    h_max_true = jnp.max(h_true_scatter) if h_true_scatter.size > 0 else 0
-    h_max = max(h_max_pred, h_max_true, 0.1) # Use max, ensure at least 0.1 range
-    h_min = 0
-    levels = jnp.linspace(h_min, h_max, 51) # Increase levels for smoother contours
-    cmap = 'viridis'
+    # Calculate error (this will be 0.0 inside the building)
+    error_data = pred_data_masked - true_data_masked_for_error
+    
+    # --- 3. Create Base Triangulation ---
+    triang = None
+    if len(x_coords) > 3:
+        try:
+            triang = tri.Triangulation(x_coords, y_coords)
+        except Exception as e:
+            print(f"  Warning: Could not create triangulation for '{var_name}' plot: {e}")
+            return
+    else:
+        print(f"  Warning: Not enough points ({len(x_coords)}) to plot '{var_name}'.")
+        return
+        
+    # --- 4. Determine Color Ranges & Labels ---
+    
+    # Define labels with units (Request 2)
+    label_map = {
+        'h': 'h (m)',
+        'hu': 'hu (m²/s)',
+        'hv': 'hv (m²/s)',
+    }
+    cbar_label = label_map.get(var_name, var_name) # Get label with unit
+    
+    # Use diverging map 'vlag' for all data plots (Request 3)
+    cmap_val = 'vlag' 
+    vmax_abs = max(jnp.abs(pred_data).max(), jnp.abs(true_data).max(), 1e-9)
+    # Special case for 'h': use [0, max] as range, but still with 'vlag' map
+    # This will result in a map from white-to-red, as requested.
+    if var_name == 'h':
+        vmin_val = 0.0
+        vmax_val = max(jnp.max(pred_data), jnp.max(true_data), 1e-9)
+        extend_val = 'max'
+    else:
+        vmin_val, vmax_val = -vmax_abs, vmax_abs
+        extend_val = 'both'
+        
+    levels_val = jnp.linspace(vmin_val, vmax_val, 51)
 
-    # Common plot settings
-    common_kwargs = {
-        'cmap': cmap,
-        'levels': levels,
-        'vmin': h_min,
-        'vmax': h_max,
-        'extend': 'max' # Show values exceeding the range
+    # Error plot is always diverging 'coolwarm'
+    v_err_max = jnp.max(jnp.abs(error_data)) # Error is already masked
+    v_err_max = max(v_err_max, 1e-9)
+    levels_err = jnp.linspace(-v_err_max, v_err_max, 51)
+    cmap_err = 'coolwarm'
+
+    # --- 5. Create 3 Subplots (Tighter layout) ---
+    # Reduced figsize height and hspace (Request 1)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10.5), sharex=True, sharey=True, gridspec_kw={'hspace': 0.3})
+    (ax1, ax2, ax3) = axes
+
+    # Common colorbar args (Horizontal)
+    cbar_kwargs = {
+        'orientation': 'horizontal',
+        'pad': 0.2, 
+        'aspect': 40,
+        'shrink': 0.8
     }
 
-    # --- Top Plot: Predicted h (using meshgrid) ---
-    ax1 = axes[0]
-    contour1 = ax1.contourf(xx_pred, yy_pred, h_pred_mesh, **common_kwargs)
-    ax1.set_title(f"Predicted Water Depth (h) at t = {t_const:.0f}s", fontsize=12) # Slightly smaller title
+    # --- Plot 1: Predicted (Masked to 0.0) ---
+    contour1 = ax1.tricontourf(triang, pred_data_masked, levels=levels_val, cmap=cmap_val, vmin=vmin_val, vmax=vmax_val, extend=extend_val)
+    ax1.set_title(f"Predicted {var_name} at t = {t_const:.0f}s", fontsize=12) # (Masked) removed
     ax1.set_ylabel("y (m)", fontsize=11)
-    ax1.grid(True, linestyle='--', linewidth=0.5, alpha=0.5) # Thinner grid lines
-    ax1.set_aspect('equal', adjustable='box')
-    ax1.set_ylim(0, domain_cfg.get('ly', 100.0))
-    # ax1.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False) # Hide x-axis ticks/labels on top plot
+    fig.colorbar(contour1, ax=ax1, label=cbar_label, **cbar_kwargs) # Use label with unit
 
-    building_patches = [] # To store patches for a single legend
-
-    if building_cfg:
-        rect1 = patches.Rectangle(
-            (building_cfg["x_min"], building_cfg["y_min"]),
-            building_cfg["x_max"] - building_cfg["x_min"],
-            building_cfg["y_max"] - building_cfg["y_min"],
-            linewidth=1.2, edgecolor='r', facecolor=(0.5, 0.5, 0.5, 0.7), label='Building Footprint'
-        )
-        ax1.add_patch(rect1)
-        building_patches.append(rect1) # Add to list
-
-
-    # --- Bottom Plot: True h (using scattered data via tricontourf) ---
-    ax2 = axes[1]
-    contour2 = None
-    if len(x_true) > 3:
-        try:
-            triang = tri.Triangulation(x_true, y_true)
-            contour2 = ax2.tricontourf(triang, h_true_scatter, **common_kwargs)
-        except Exception as e:
-            print(f"  Warning: Could not create triangulation for true data plot: {e}")
-    else:
-        print("  Warning: Not enough points in true data to create contour plot.")
-
-    ax2.set_title(f"True Water Depth (h) at t = {t_const:.0f}s", fontsize=12)
-    ax2.set_xlabel("x (m)", fontsize=11)
+    # --- Plot 2: True (Unmasked) ---
+    contour2 = ax2.tricontourf(triang, true_data, levels=levels_val, cmap=cmap_val, vmin=vmin_val, vmax=vmax_val, extend=extend_val)
+    ax2.set_title(f"True {var_name} at t = {t_const:.0f}s", fontsize=12)
     ax2.set_ylabel("y (m)", fontsize=11)
-    ax2.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
-    ax2.set_aspect('equal', adjustable='box')
-    ax2.tick_params(axis='both', labelsize=10) # Ensure ticks are visible
+    fig.colorbar(contour2, ax=ax2, label=cbar_label, **cbar_kwargs) # Use label with unit
 
-    if building_cfg:
-        rect2 = patches.Rectangle(
-            (building_cfg["x_min"], building_cfg["y_min"]),
-            building_cfg["x_max"] - building_cfg["x_min"],
-            building_cfg["y_max"] - building_cfg["y_min"],
-            linewidth=1.2, edgecolor='r', facecolor=(0.5, 0.5, 0.5, 0.7) # No label here
-        )
-        ax2.add_patch(rect2)
+    # --- Plot 3: Error (Pred_Masked - True_Masked) ---
+    contour3 = ax3.tricontourf(triang, error_data, levels=levels_err, cmap=cmap_err, vmin=-v_err_max, vmax=v_err_max, extend='both')
+    ax3.set_title(f"Error (Predicted - True) for {var_name}", fontsize=12) # (Masked) removed
+    ax3.set_xlabel("x (m)", fontsize=11)
+    ax3.set_ylabel("y (m)", fontsize=11)
+    fig.colorbar(contour3, ax=ax3, label=f"Error", **cbar_kwargs)
 
-
-    # Make axes look more professional
+    # --- Add Building Patches and Styling ---
+    building_patch_handle = None
     for ax in axes:
-        ax.spines['top'].set_visible(True)
-        ax.spines['right'].set_visible(True)
-        ax.spines['bottom'].set_visible(True)
-        ax.spines['left'].set_visible(True)
-        ax.set_facecolor('white')
+        if building_cfg:
+            rect = patches.Rectangle(
+                (building_cfg["x_min"], building_cfg["y_min"]),
+                building_cfg["x_max"] - building_cfg["x_min"],
+                building_cfg["y_max"] - building_cfg["y_min"],
+                linewidth=1.5, edgecolor='black', facecolor='none', linestyle='--', label='Building Footprint'
+            )
+            ax.add_patch(rect)
+            if building_patch_handle is None:
+                building_patch_handle = rect
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_ylim(0, domain_cfg.get('ly', 100.0))
+        ax.set_xlim(0, domain_cfg.get('lx', 1200.0))
         ax.tick_params(labelsize=10)
 
+    # Add a single legend for the building at the top (Tighter layout)
+    if building_patch_handle:
+         fig.legend(handles=[building_patch_handle], loc='upper center', bbox_to_anchor=(0.5, 0.98), ncol=1, fontsize=10, frameon=True)
 
-    # --- Add Colorbar ---
-    # Create an axes for the colorbar to the right of the plots
-    # Adjust the fraction and pad as needed
-    if contour1: # Only add colorbar if contour plots were successful
-        cbar_ax = fig.add_axes([0.88, 0.15, 0.03, 0.7]) # [left, bottom, width, height] relative to figure
-        cbar = fig.colorbar(contour1, cax=cbar_ax, label='Water Depth h (m)')
-        cbar.ax.tick_params(labelsize=10)
-        cbar.set_label('Water Depth h (m)', size=11)
-
-    # --- Add Building Legend Outside ---
-    # Add legend to the figure, anchored outside the top right plot area
-    if building_patches:
-         fig.legend(handles=building_patches, loc='upper right', bbox_to_anchor=(0.87, 0.88), fontsize=10)
-
-    # Adjust overall layout slightly to prevent overlap and reduce whitespace
-    fig.subplots_adjust(left=0.1, right=0.85, top=0.92, bottom=0.1) # Leave space for colorbar on right
-
-    # Remove the automatic suptitle as individual titles are clear enough
-    # plt.suptitle(f"Comparison of Predicted vs True Water Depth at t = {t_const:.0f}s", fontsize=16, y=0.98)
-
+    # Adjust layout (tightened top margin)
+    fig.subplots_adjust(left=0.1, right=0.9, top=0.94, bottom=0.08)
 
     if filename:
-        plt.savefig(filename, dpi=200, bbox_inches='tight') # Increase DPI, use bbox_inches
-        print(f"Stacked comparison plot saved as {filename}")
-    plt.close()
+        plt.savefig(filename, dpi=200, bbox_inches='tight')
+        print(f"  Comparison plot saved as {filename}")
+    plt.close(fig)
 # <<<--- END REVISED FUNCTION --- >>>
 
 

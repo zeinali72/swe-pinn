@@ -1,4 +1,5 @@
 # Configuration and Constants
+data_free: true
 training:
   learning_rate: 0.0007891912931084699 # Learning rate for the optimizer
   epochs: 20_000                   # Number of training epochs
