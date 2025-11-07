@@ -35,7 +35,7 @@ def objective(trial: optuna.trial.Trial,
     # opt_epochs comes from base_cfg['training']['opt_epochs']
 
     # === Model Hyperparameters ===
-    trial_params["model_width"] = trial.suggest_categorical("model_width", [256, 512, 1024])
+    trial_params["model_width"] = trial.suggest_categorical("model_width", [128, 256, 512, 1024])
     trial_params["model_depth"] = trial.suggest_int("model_depth", 3, 6)
     if model_name == "FourierPINN":
         trial_params["ff_dims"] = trial.suggest_categorical("ff_dims", [128, 256, 512])
@@ -95,7 +95,7 @@ def objective(trial: optuna.trial.Trial,
         print(f"Trial {trial.number}: Configuring for GradNorm (data_free={data_free}).")
         trial_params["gradnorm_alpha"] = trial.suggest_float("gradnorm_alpha", 0.1, 3.0)
         trial_params["gradnorm_update_freq"] = trial.suggest_categorical("gradnorm_update_freq", [50, 100, 200, 500])
-        trial_params["gradnorm_lr"] = trial.suggest_float("gradnorm_lr", 1e-3, 1e-1, log=True)
+        trial_params["gradnorm_lr"] = trial.suggest_float("gradnorm_lr", 1e-4, 1e-1, log=True)
 
         # Set initial weights to 1.0; GradNorm adjusts them
         trial_params["loss_weights"]["pde_weight"] = 1.0
@@ -114,7 +114,7 @@ def objective(trial: optuna.trial.Trial,
 
     else: # Static weights mode
         print(f"Trial {trial.number}: Configuring static weights (data_free={data_free}).")
-        trial_params["loss_weights"]["pde_weight"] = 1.0 # Fixed reference
+        trial_params["loss_weights"]["pde_weight"] = 100.0 # Fixed reference
         # Suggest factors, calculate absolute weights
         ic_factor = trial.suggest_float("ic_weight_factor", 1e-4, 1e3, log=True)
         bc_factor = trial.suggest_float("bc_weight_factor", 1e-4, 1e3, log=True)
