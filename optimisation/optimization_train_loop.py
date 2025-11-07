@@ -22,7 +22,7 @@ from src.config import DTYPE
 from src.data import sample_points, get_batches
 from src.models import init_model
 from src.losses import (
-    compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
+    compute_neg_h_loss, compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
     compute_building_bc_loss, compute_data_loss
 )
 # Note: get_initial_losses is specifically for GradNorm setup
@@ -53,6 +53,10 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
         pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
         if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
             terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config)
+            
+            if 'neg_h' in active_loss_keys_base:
+                # compute_neg_h_loss uses the pde_batch_data
+                terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data)
 
         ic_batch_data = all_batches.get('ic', jnp.empty((0,3), dtype=DTYPE))
         if 'ic' in active_loss_keys_base and ic_batch_data.shape[0] > 0:
@@ -204,6 +208,8 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
 
         if 'pde' in active_loss_term_keys and pde_points_init.shape[0] > 0:
             init_batches['pde'] = get_batches(pde_b_key, pde_points_init, batch_size_init)[0]
+            if 'neg_h' in active_loss_term_keys:
+                init_batches['neg_h'] = init_batches['pde']
         if 'ic' in active_loss_term_keys and ic_points_init.shape[0] > 0:
             init_batches['ic'] = get_batches(ic_b_key, ic_points_init, batch_size_init)[0]
         if 'bc' in active_loss_term_keys:
@@ -311,7 +317,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         ic_bc_grid_cfg = trial_cfg["ic_bc_grid"]
 
         # Sample points only needed for active terms
-        pde_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key) if 'pde' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+        pde_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key) if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
         ic_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., 0., ic_bc_grid_cfg["nx_ic"], ic_bc_grid_cfg["ny_ic"], 1, ic_key) if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
         left_wall = sample_points(0., 0., 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_left"], ic_bc_grid_cfg["nt_bc_left"], l_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
         right_wall = sample_points(domain_cfg["lx"], domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_right"], ic_bc_grid_cfg["nt_bc_right"], r_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)

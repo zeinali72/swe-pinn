@@ -101,6 +101,7 @@ def objective(trial: optuna.trial.Trial,
         trial_params["loss_weights"]["pde_weight"] = 1.0
         trial_params["loss_weights"]["ic_weight"] = 1.0
         trial_params["loss_weights"]["bc_weight"] = 1.0
+        trial_params["loss_weights"]["neg_h_weight"] = 1.0 # <<<--- ADD THIS LINE
         if has_building: trial_params["loss_weights"]["building_bc_weight"] = 1.0
         trial_params["loss_weights"]["data_weight"] = 1.0 if not data_free else 0.0 # Set based on data_free flag
 
@@ -108,6 +109,7 @@ def objective(trial: optuna.trial.Trial,
         trial.set_user_attr("ic_weight_factor", None)
         trial.set_user_attr("bc_weight_factor", None)
         if has_building: trial.set_user_attr("building_bc_weight_factor", None)
+        trial.set_user_attr("neg_h_weight_factor", None) # <<<--- ADD THIS LINE
         trial.set_user_attr("data_weight_factor", None)
 
     else: # Static weights mode
@@ -121,6 +123,8 @@ def objective(trial: optuna.trial.Trial,
         if has_building:
             bldg_factor = trial.suggest_float("building_bc_weight_factor", 1e-4, 1e3, log=True)
             trial_params["loss_weights"]["building_bc_weight"] = bldg_factor * trial_params["loss_weights"]["pde_weight"]
+        neg_h_factor = trial.suggest_float("neg_h_weight_factor", 1e-4, 1e3, log=True)
+        trial_params["loss_weights"]["neg_h_weight"] = neg_h_factor * trial_params["loss_weights"]["pde_weight"]
 
         if not data_free:
             data_factor = trial.suggest_float("data_weight_factor", 1e-4, 1e3, log=True)
