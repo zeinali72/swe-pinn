@@ -97,7 +97,7 @@ def main():
         storage=storage_path,
         direction="maximize", # Maximize NSE
         load_if_exists=True,
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=10, interval_steps=10)
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=20, n_warmup_steps=200, interval_steps=50)
     )
 
     # Use partial to pass static args AND the determined flags to the objective
