@@ -32,7 +32,14 @@ def objective(trial: optuna.trial.Trial,
     # === Training Hyperparameters ===
     trial_params["learning_rate"] = trial.suggest_float("learning_rate", 1e-6, 1e-2, log=True)
     trial_params["batch_size"] = trial.suggest_categorical("batch_size", [256, 512, 1024])
-    # opt_epochs comes from base_cfg['training']['opt_epochs']
+
+    # --- Define LR Scheduler Boundaries ---
+    # Get total epochs and calculate boundaries at 60% and 80%
+    opt_epochs = base_config_dict.get("training", {}).get("epochs", 2000)
+    boundary1 = int(opt_epochs * 0.6)
+    boundary2 = int(opt_epochs * 0.8)
+    # Use string keys to be compatible with Flax serialization
+    trial_params["lr_boundaries"] = {str(boundary1): 0.1, str(boundary2): 0.1}
 
     # === Model Hyperparameters ===
     trial_params["model_width"] = trial.suggest_categorical("model_width", [128, 256, 512, 1024])
