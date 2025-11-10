@@ -65,3 +65,8 @@ device: # Fixed
 
 numerics: # Fixed
   eps: 1e-6
+
+validation_grid:
+  nx_val: 101
+  ny_val: 21
+  nt_val: 21
