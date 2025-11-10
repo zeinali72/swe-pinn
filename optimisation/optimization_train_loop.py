@@ -223,7 +223,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
                  'left': get_batches(l_b_key, left_wall_init, batch_size_init)[0] if left_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
                  'right': get_batches(r_b_key, right_wall_init, batch_size_init)[0] if right_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
                  'bottom': get_batches(b_b_key, bottom_wall_init, batch_size_init)[0] if bottom_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
-                 'top': get_batches(t_b_key, top_wall_init, batch_size_init)[0] if top_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
+                 'top': get_batches(t_b_key, top_wall, batch_size_init)[0] if top_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
              }
         if has_building and 'building_bc' in active_loss_term_keys:
              bldg_l_b_key, bldg_r_b_key, bldg_b_b_key, bldg_t_b_key = random.split(bldg_b_keys, 4)
@@ -237,8 +237,18 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
 
         # Calculate L_i(0) - Ensure this runs without JIT issues
         with jax.disable_jit():
-             # Make sure only relevant batches are passed
-             relevant_init_batches = {k: init_batches.get(k) for k in active_loss_term_keys if init_batches.get(k) is not None}
+             # Build relevant_init_batches with loss term keys (not batch keys)
+             # For loss terms that share batches (like neg_h uses pde batch),
+             # we need to map the loss key to the appropriate batch
+             relevant_init_batches = {}
+             for loss_key in active_loss_term_keys:
+                 # Get the batch key for this loss term from LOSS_FN_MAP
+                 batch_key = LOSS_FN_MAP.get(loss_key, {}).get('batch_key', loss_key)
+                 # Get the actual batch data from init_batches
+                 batch_data = init_batches.get(batch_key)
+                 if batch_data is not None:
+                     relevant_init_batches[loss_key] = batch_data
+             
              initial_losses = get_initial_losses(model, params, relevant_init_batches, trial_cfg)
 
         active_initial_losses = {k: initial_losses.get(k, 1e-8) for k in active_loss_term_keys}

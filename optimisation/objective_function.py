@@ -121,20 +121,20 @@ def objective(trial: optuna.trial.Trial,
 
     else: # Static weights mode
         print(f"Trial {trial.number}: Configuring static weights (data_free={data_free}).")
-        trial_params["loss_weights"]["pde_weight"] = 100.0 # Fixed reference
+        trial_params["loss_weights"]["pde_weight"] = 1.0 # Fixed reference
         # Suggest factors, calculate absolute weights
-        ic_factor = trial.suggest_float("ic_weight_factor", 1e-4, 1e3, log=True)
-        bc_factor = trial.suggest_float("bc_weight_factor", 1e-4, 1e3, log=True)
+        ic_factor = trial.suggest_float("ic_weight_factor", 1e-3, 1e2, log=True)
+        bc_factor = trial.suggest_float("bc_weight_factor", 1e-3, 1e2, log=True)
         trial_params["loss_weights"]["ic_weight"] = ic_factor * trial_params["loss_weights"]["pde_weight"]
         trial_params["loss_weights"]["bc_weight"] = bc_factor * trial_params["loss_weights"]["pde_weight"]
         if has_building:
-            bldg_factor = trial.suggest_float("building_bc_weight_factor", 1e-4, 1e3, log=True)
+            bldg_factor = trial.suggest_float("building_bc_weight_factor", 1e-3, 1e2, log=True)
             trial_params["loss_weights"]["building_bc_weight"] = bldg_factor * trial_params["loss_weights"]["pde_weight"]
-        neg_h_factor = trial.suggest_float("neg_h_weight_factor", 1e-4, 1e3, log=True)
+        neg_h_factor = trial.suggest_float("neg_h_weight_factor", 1e-3, 1e2, log=True)
         trial_params["loss_weights"]["neg_h_weight"] = neg_h_factor * trial_params["loss_weights"]["pde_weight"]
 
         if not data_free:
-            data_factor = trial.suggest_float("data_weight_factor", 1e-4, 1e3, log=True)
+            data_factor = trial.suggest_float("data_weight_factor", 1e-3, 1e2, log=True)
             trial_params["loss_weights"]["data_weight"] = data_factor * trial_params["loss_weights"]["pde_weight"]
         else:
             trial_params["loss_weights"]["data_weight"] = 0.0 # Explicitly zero
