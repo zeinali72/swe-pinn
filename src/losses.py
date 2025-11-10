@@ -213,6 +213,9 @@ def total_loss(terms: Dict[str, jnp.ndarray], weights: Dict[str, float]) -> jnp.
     # --- NEW: Conditionally add data loss ---
     if 'data' in terms and 'data' in weights:
         loss += weights['data'] * terms.get('data', 0.0)
-    # --- END NEW ---
+        
+    if 'neg_h' in terms and 'neg_h' in weights:
+        loss += weights['neg_h'] * terms.get('neg_h', 0.0)
+
 
     return loss
