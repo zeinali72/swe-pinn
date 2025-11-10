@@ -1,9 +1,9 @@
 data_free: true
-  enable_gradnorm: false
-  opt_epochs: 20000
+enable_gradnorm: false
+opt_epochs: 20000
 training:
   seed: 42
-  epochs: 20_000
+  epochs: 20000
   learning_rate: 0.0032659720145241655
   batch_size: 1024
 scenario: one_building_DEM_zero
@@ -49,6 +49,7 @@ loss_weights:
   bc_weight: 44.544026237093846
   building_bc_weight: 1.1104102708123706
   data_weight: 0.0
+  h_neg_weight: 10.0
 gradnorm:
   learning_rate: 0.01
   enable: false
