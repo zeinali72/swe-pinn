@@ -127,7 +127,12 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
 
     # --- 1. Setup Model, Optimizer, Keys ---
     key = random.PRNGKey(trial_cfg["training"]["seed"])
-    model_key, init_key, train_key = random.split(key, 3)
+    
+    # --- MODIFICATION: Split key for validation sampling ---
+    model_key, init_key_main, train_key = random.split(key, 3)
+    init_key, val_key = random.split(init_key_main, 2) # Split init_key for gradnorm and val sampling
+    # --- END MODIFICATION ---
+
     model_name = trial_cfg["model"]["name"]
 
     try:
@@ -262,6 +267,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         print(f"Trial {trial.number}: GradNorm Initial Weights: {current_weights_dict}")
 
     # --- 3. Load Validation Data ---
+    # --- MODIFICATION: This block is replaced to add the analytical validation set logic ---
     val_points, h_true_val = None, None
     validation_data_loaded = False
     scenario_name_val = trial_cfg.get('scenario', 'default_scenario')
@@ -269,15 +275,21 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
     validation_data_file = os.path.join(base_data_path_val, "validation_sample.npy")
 
     if os.path.exists(validation_data_file):
+        # --- Case 1: validation_sample.npy file exists (standard case) ---
         try:
+            print(f"Trial {trial.number}: Loading validation data from: {validation_data_file}")
             loaded_val_data = np.load(validation_data_file).astype(DTYPE)
-            val_points_all = loaded_val_data[:, [1, 2, 0]]
-            h_true_val_all = loaded_val_data[:, 3]
+            val_points_all = loaded_val_data[:, [1, 2, 0]] # (x, y, t)
+            h_true_val_all = loaded_val_data[:, 3]       # (h)
+            
             if has_building:
+                # Apply building mask if building scenario
+                print(f"Trial {trial.number}: Applying building mask to validation points.")
                 mask_val = mask_points_inside_building(val_points_all, trial_cfg["building"])
                 val_points = val_points_all[mask_val]
                 h_true_val = h_true_val_all[mask_val]
             else:
+                 # No building, use all loaded points
                  val_points = val_points_all
                  h_true_val = h_true_val_all
 
@@ -285,15 +297,51 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
                  validation_data_loaded = True
                  print(f"Trial {trial.number}: Loaded {val_points.shape[0]} validation points.")
             else:
-                 print(f"Trial {trial.number}: WARNING - No validation points remain after masking.")
+                 print(f"Trial {trial.number}: WARNING - No validation points remain after loading/masking.")
         except Exception as e:
             print(f"Trial {trial.number}: WARNING - Error loading validation data {validation_data_file}: {e}.")
+            
+    elif not has_building and "validation_grid" in trial_cfg:
+        # --- Case 2: No file, but NO building and validation_grid exists ---
+        print(f"Trial {trial.number}: INFO - {validation_data_file} not found. Creating analytical validation set from 'validation_grid' config.")
+        try:
+            val_grid_cfg = trial_cfg["validation_grid"]
+            domain_cfg = trial_cfg["domain"]
+            
+            # Sample points based on the validation grid
+            val_points = sample_points(
+                0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"],
+                val_grid_cfg["nx_val"], val_grid_cfg["ny_val"], val_grid_cfg["nt_val"],
+                val_key # Use the dedicated key we split earlier
+            )
+            
+            # Calculate the exact solution for these points
+            h_true_val = h_exact(
+                val_points[:, 0], # x
+                val_points[:, 2], # t
+                trial_cfg["physics"]["n_manning"],
+                trial_cfg["physics"]["u_const"]
+            )
+            
+            if val_points.shape[0] > 0:
+                validation_data_loaded = True
+                print(f"Trial {trial.number}: Created analytical validation set with {val_points.shape[0]} points.")
+            else:
+                print(f"Trial {trial.number}: WARNING - Analytical validation set is empty (check validation_grid config).")
+                
+        except Exception as e:
+            print(f"Trial {trial.number}: WARNING - Error creating analytical validation set: {e}.")
+            val_points, h_true_val = None, None
+            
     else:
+        # --- Case 3: No file AND (it's a building scenario OR no validation_grid) ---
         print(f"Trial {trial.number}: WARNING - Validation file {validation_data_file} not found.")
-
-    if not validation_data_loaded and not has_building:
-         print(f"Trial {trial.number}: INFO - No-building scenario without validation file. NSE will use analytical solution on PDE points.")
-         # NSE will be calculated later using pde_points if they exist
+        if has_building:
+            print(f"Trial {trial.number}: WARNING - Building scenario, NSE/RMSE will not be calculated.")
+        else:
+            print(f"Trial {trial.number}: WARNING - No-building scenario, but 'validation_grid' not found in config. NSE/RMSE will not be calculated.")
+        # In this case, validation_data_loaded remains False
+    # --- END MODIFICATION ---
 
 
     # --- Load Training Data (if not data_free) ---
@@ -461,7 +509,9 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         if (epoch + 1) % validation_freq == 0:
             current_nse = -jnp.inf # Default if validation fails/skipped
 
-            if validation_data_loaded: # Use loaded validation data
+            # --- MODIFICATION: Simplified validation block ---
+            # This single block now handles both loaded .npy data and pre-computed analytical data
+            if validation_data_loaded: 
                 try:
                     U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
                     h_pred_val = U_pred_val[..., 0]
@@ -469,16 +519,11 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
                 except Exception as e_val:
                     print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - NSE calculation error: {e_val}")
                     current_nse = -jnp.inf
-            elif not has_building and pde_points.shape[0] > 0: # No building, no validation file -> use analytical on PDE points
-                try:
-                    U_pred_val_no_building = model.apply({'params': params['params']}, pde_points, train=False)
-                    h_pred_val_no_building = U_pred_val_no_building[..., 0]
-                    h_true_val_no_building = h_exact(pde_points[:, 0], pde_points[:, 2], trial_cfg["physics"]["n_manning"], trial_cfg["physics"]["u_const"])
-                    current_nse = float(nse(h_pred_val_no_building, h_true_val_no_building))
-                except Exception as e_val:
-                    print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - Analytical NSE calculation error: {e_val}")
-                    current_nse = -jnp.inf
-            # Else (building case with no validation data), current_nse remains -inf
+            
+            # (REMOVED) elif not has_building and pde_points.shape[0] > 0: ...
+            
+            # Else (e.g., building case with no validation data), current_nse remains -inf
+            # --- END MODIFICATION ---
 
             if jnp.isnan(current_nse):
                  print(f"Trial {trial.number}, Epoch {epoch+1}: NaN NSE detected. Pruning.")
