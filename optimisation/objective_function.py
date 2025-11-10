@@ -121,21 +121,28 @@ def objective(trial: optuna.trial.Trial,
 
     else: # Static weights mode
         print(f"Trial {trial.number}: Configuring static weights (data_free={data_free}).")
-        trial_params["loss_weights"]["pde_weight"] = 1.0 # Fixed reference
-        # Suggest factors, calculate absolute weights
-        ic_factor = trial.suggest_float("ic_weight_factor", 1e-3, 1e2, log=True)
-        bc_factor = trial.suggest_float("bc_weight_factor", 1e-3, 1e2, log=True)
-        trial_params["loss_weights"]["ic_weight"] = ic_factor * trial_params["loss_weights"]["pde_weight"]
-        trial_params["loss_weights"]["bc_weight"] = bc_factor * trial_params["loss_weights"]["pde_weight"]
+        
+        # --- FIX: Let PDE weight be the large, suggested value ---
+        pde_factor = trial.suggest_float("pde_weight_factor", 1e2, 1e7, log=True) # e.g., 100 to 10,000,000
+        trial_params["loss_weights"]["pde_weight"] = pde_factor
+        
+        # --- FIX: Set IC as the reference, and make others relative to it ---
+        trial_params["loss_weights"]["ic_weight"] = 1.0 # Fixed reference
+        
+        bc_factor = trial.suggest_float("bc_weight_factor", 1e-2, 1e2, log=True) # e.g., 0.01 to 100
+        trial_params["loss_weights"]["bc_weight"] = bc_factor * trial_params["loss_weights"]["ic_weight"]
+        
         if has_building:
-            bldg_factor = trial.suggest_float("building_bc_weight_factor", 1e-3, 1e2, log=True)
-            trial_params["loss_weights"]["building_bc_weight"] = bldg_factor * trial_params["loss_weights"]["pde_weight"]
-        neg_h_factor = trial.suggest_float("neg_h_weight_factor", 1e-3, 1e2, log=True)
-        trial_params["loss_weights"]["neg_h_weight"] = neg_h_factor * trial_params["loss_weights"]["pde_weight"]
+            bldg_factor = trial.suggest_float("building_bc_weight_factor", 1e-2, 1e2, log=True)
+            trial_params["loss_weights"]["building_bc_weight"] = bldg_factor * trial_params["loss_weights"]["ic_weight"]
+
+        # Keep neg_h relative to IC, or give it its own small range
+        neg_h_factor = trial.suggest_float("neg_h_weight_factor", 1e-2, 1e2, log=True)
+        trial_params["loss_weights"]["neg_h_weight"] = neg_h_factor * trial_params["loss_weights"]["ic_weight"]
 
         if not data_free:
-            data_factor = trial.suggest_float("data_weight_factor", 1e-3, 1e2, log=True)
-            trial_params["loss_weights"]["data_weight"] = data_factor * trial_params["loss_weights"]["pde_weight"]
+            data_factor = trial.suggest_float("data_weight_factor", 1e-2, 1e2, log=True)
+            trial_params["loss_weights"]["data_weight"] = data_factor * trial_params["loss_weights"]["ic_weight"]
         else:
             trial_params["loss_weights"]["data_weight"] = 0.0 # Explicitly zero
             trial.set_user_attr("data_weight_factor", None) # Log as None
