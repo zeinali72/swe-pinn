@@ -1,0 +1,67 @@
+# HPO base for DGMNetwork, data-free, static weights, NO building.
+
+hpo_settings:
+  data_free: true
+  enable_gradnorm: false
+  opt_epochs: 2000
+
+training:
+  seed: 42
+
+model:
+  name: "DGMNetwork"
+  output_dim: 3
+  # Optuna will suggest width, depth
+  width: 256
+  depth: 4
+
+domain: # Fixed
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+
+grid: # Optuna will suggest sampling densities
+  nx: 40
+  ny: 20
+  nt: 20
+
+ic_bc_grid: # Optuna will suggest sampling densities
+  nx_ic: 40
+  ny_ic: 40
+  ny_bc_left: 20
+  nt_bc_left: 20
+  ny_bc_right: 20
+  nt_bc_right: 20
+  nx_bc_bottom: 40
+  nt_bc_other: 20
+  nx_bc_top: 40
+
+physics: # Fixed
+  u_const: 0.29
+  n_manning: 0.03
+  inflow: null
+  g: 9.81
+
+loss_weights: # Static weights (Optuna will suggest factors relative to PDE)
+  pde_weight: 1.0
+  ic_weight: 1.0
+  bc_weight: 1.0
+  neg_h_weight: 1.0
+  data_weight: 0.0 # data_free is true
+
+gradnorm: # Ignored
+  learning_rate: 0.01
+
+plotting: # Fixed
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 0
+  plot_resolution: 150
+
+device: # Fixed
+  dtype: "float32"
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+
+numerics: # Fixed
+  eps: 1e-6

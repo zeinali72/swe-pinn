@@ -1,5 +1,6 @@
-# optimisation/configs/hpo_fourier_static_building.yaml
-# HPO base for FourierPINN, data-free, static weights, with building.
+# HPO base for FourierPINN, data-free, static weights, WITH building.
+# This is based on your provided 'hpo_fourier_static_datafree_BUILDING.yaml'
+# but ensures neg_h_weight is present.
 
 hpo_settings:
   data_free: true
@@ -28,20 +29,20 @@ domain: # Fixed
   t_final: 3600.0
 
 grid: # Optuna will suggest sampling densities
-  nx: 48
-  ny: 23
-  nt: 21
+  nx: 40
+  ny: 20
+  nt: 20
 
 ic_bc_grid: # Optuna will suggest sampling densities
-  nx_ic: 39
-  ny_ic: 33
-  ny_bc_left: 24
-  nt_bc_left: 18
-  ny_bc_right: 33
-  nt_bc_right: 11
-  nx_bc_bottom: 70
-  nt_bc_other: 15
-  nx_bc_top: 69
+  nx_ic: 40
+  ny_ic: 40
+  ny_bc_left: 20
+  nt_bc_left: 20
+  ny_bc_right: 20
+  nt_bc_right: 20
+  nx_bc_bottom: 40
+  nt_bc_other: 20
+  nx_bc_top: 40
 
 building: # Fixed geometry, Optuna suggests sampling density
   x_min: 325.0
@@ -63,12 +64,11 @@ loss_weights: # Static weights (Optuna will suggest factors relative to PDE)
   ic_weight: 1.0
   bc_weight: 1.0
   building_bc_weight: 1.0
+  neg_h_weight: 1.0
   data_weight: 0.0 # data_free is true
 
-gradnorm: # Ignored since enable_gradnorm is false
+gradnorm: # Ignored
   learning_rate: 0.01
-  alpha: 1.5
-  update_freq: 100
 
 plotting: # Fixed
   nx_val: 101
