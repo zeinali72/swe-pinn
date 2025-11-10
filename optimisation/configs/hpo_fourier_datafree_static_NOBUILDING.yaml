@@ -74,3 +74,8 @@ validation_grid:
   nx_val: 101
   ny_val: 21
   nt_val: 21
+
+train_grid: # This is for your new data_free=false mode
+  nx: 100   # Your fixed number of points
+  ny: 50    # Your fixed number of points
+  nt: 50    # Your fixed number of points
