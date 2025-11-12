@@ -1,0 +1,65 @@
+training:
+  seed: 42
+  epochs: 2000
+  learning_rate: 0.0009697132005141631
+  batch_size: 256
+  lr_boundaries:
+    '1200': 0.1
+    '1600': 0.1
+model:
+  name: MLP
+  output_dim: 3
+  width: 1024
+  depth: 4
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+grid:
+  nx: 56
+  ny: 32
+  nt: 38
+ic_bc_grid:
+  nx_ic: 57
+  ny_ic: 32
+  ny_bc_left: 6
+  nt_bc_left: 7
+  ny_bc_right: 37
+  nt_bc_right: 44
+  nx_bc_bottom: 71
+  nt_bc_other: 48
+  nx_bc_top: 71
+physics:
+  u_const: 0.29
+  n_manning: 0.03
+  inflow: null
+  g: 9.81
+loss_weights:
+  pde_weight: 928701.9132031311
+  ic_weight: 1.0
+  bc_weight: 9.136846851810708
+  neg_h_weight: 0.5686111628161404
+  data_weight: 0.0
+gradnorm:
+  learning_rate: 0.01
+  enable: false
+plotting:
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 0
+  plot_resolution: 150
+device:
+  dtype: float32
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+numerics:
+  eps: 1.0e-06
+validation_grid:
+  nx_val: 101
+  ny_val: 21
+  nt_val: 21
+train_grid:
+  nx: 100
+  ny: 50
+  nt: 50
+CONFIG_PATH: optimisation/configs/hpo_mlp_datafree_static_NOBUILDING.yaml
