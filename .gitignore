@@ -156,3 +156,5 @@ optimisation_logs/
 aim_repo/
 
 run_all_hpo.sh
+
+.fuse_*
