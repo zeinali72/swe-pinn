@@ -21,21 +21,12 @@
    "runArgs": [ "--gpus=all", "--restart", "unless-stopped" ],
 
    "mounts": [
-  {
-    "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig",
-    "target": "/root/.gitconfig",
-    "type": "bind"
-  },
-  // --- ADD THIS BLOCK ---
-  {
-    "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.ssh",
-    "target": "/root/.ssh",
-    "type": "bind",
-    "consistency": "cached",
-    "readonly": true 
-  }
-  // --- END OF BLOCK ---
-],
+     {
+       "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig",
+       "target": "/root/.gitconfig",
+       "type": "bind"
+     }
+   ],
 
    "containerUser": "root",
 
