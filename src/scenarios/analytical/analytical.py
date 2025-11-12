@@ -8,6 +8,7 @@ logging and result visualization through Aim.
 """
 
 import os
+import sys
 import time
 import copy
 import argparse
@@ -140,9 +141,16 @@ def main(config_path: str):
     os.makedirs(model_dir, exist_ok=True)
 
     # --- 3. Setup Optimizer ---
+    # Get the boundaries dict, which might have string keys from the config
+    raw_boundaries = cfg.get("training", {}).get("lr_boundaries", {15000: 0.1, 30000: 0.1})
+
+    # --- FIX: Convert string keys to int keys for Optax ---
+    boundaries_and_scales_int_keys = {int(k): v for k, v in raw_boundaries.items()}
+    # --- END FIX ---
+
     lr_schedule = optax.piecewise_constant_schedule(
         init_value=cfg["training"]["learning_rate"],
-        boundaries_and_scales=cfg.get("training", {}).get("lr_boundaries", {15000: 0.1, 30000: 0.1})
+        boundaries_and_scales=boundaries_and_scales_int_keys # Use the converted dict
     )
     optimiser = optax.chain(
         optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)),
