@@ -154,3 +154,5 @@ venv-*/
 optimisation_logs/
 # aim_repo/
 aim_repo/
+
+run_all_hpo.sh
