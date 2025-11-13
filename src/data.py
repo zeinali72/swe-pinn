@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from src.config import DTYPE
+from typing import Dict, Tuple, Callable # <-- Added imports
 
 def sample_points(x_start: float, x_end: float, y_start: float, y_end: float,
                   t_start: float, t_end: float, nx: int, ny: int, nt: int, key) -> jnp.ndarray:
@@ -35,16 +36,6 @@ def get_batches(key: jax.random.PRNGKey, data: jnp.ndarray, batch_size: int) -> 
 def sample_parameters(key: jax.random.PRNGKey, param_bounds: dict[str, tuple[float, float]], n_samples: int) -> tuple[jnp.ndarray, tuple[str, ...]]:
     """
     Samples parameters from given bounds using a dictionary.
-
-    Args:
-        key: JAX PRNGKey.
-        param_bounds: Dictionary mapping parameter names to (min, max) bounds.
-        n_samples: The number of parameter sets to sample.
-
-    Returns:
-        A tuple of (samples_array, param_names):
-        - samples_array: A (n_samples, n_params) array of sampled values.
-        - param_names: A tuple of parameter names in the order of the array columns.
     """
     if not param_bounds:
         raise ValueError("param_bounds must contain at least one parameter.")
@@ -57,10 +48,58 @@ def sample_parameters(key: jax.random.PRNGKey, param_bounds: dict[str, tuple[flo
     
     for (lower, upper), subkey in zip(param_bounds.values(), subkeys):
         if lower == upper:
-            # Handle fixed parameter
             columns.append(jnp.full((n_samples, 1), lower, dtype=DTYPE))
         else:
-            # Sample from uniform distribution
             columns.append(random.uniform(subkey, (n_samples, 1), minval=lower, maxval=upper, dtype=DTYPE))
             
     return jnp.hstack(columns), names
+
+# <<<--- NEW FUNCTION (Moved from train_deeponet.py) --->>>
+def create_operator_dataset(
+    key: jax.random.PRNGKey, 
+    config: FrozenDict, 
+    n_funcs: int, 
+    n_points_per_func: int,
+    solver: Callable,
+    param_names: Tuple[str, ...]
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Creates a paired dataset of (parameters, coordinates, true_solution_h)
+    for a single epoch or validation.
+    """
+    key_params, key_points = random.split(key)
+    
+    param_bounds = config["physics"]["param_bounds"]
+    domain_cfg = config["domain"]
+    
+    # 1. Sample Branch Inputs (Parameters) - (n_funcs, n_params)
+    branch_inputs, _ = sample_parameters(key_params, param_bounds, n_funcs)
+    
+    # 2. Sample Trunk Inputs (Coordinates) - (n_funcs * n_points, 3)
+    trunk_inputs_flat = sample_points(
+        0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"],
+        n_funcs * n_points_per_func, 1, 1, key_points
+    )
+    
+    # 3. Create paired dataset
+    # branch_inputs becomes (n_funcs * n_points, n_params)
+    branch_inputs_paired = jnp.repeat(branch_inputs, n_points_per_func, axis=0)
+    trunk_inputs_paired = trunk_inputs_flat # (n_funcs * n_points, 3)
+    
+    # 4. Compute True Outputs (Analytical Solution for h)
+    param_map = {name: i for i, name in enumerate(param_names)}
+    n_manning_idx = param_map.get('n_manning')
+    u_const_idx = param_map.get('u_const')
+    
+    n_manning_default = config["physics"]["n_manning"]
+    u_const_default = config["physics"]["u_const"]
+
+    n_manning = branch_inputs_paired[..., n_manning_idx] if n_manning_idx is not None else jnp.full(branch_inputs_paired.shape[0], n_manning_default, dtype=DTYPE)
+    u_const = branch_inputs_paired[..., u_const_idx] if u_const_idx is not None else jnp.full(branch_inputs_paired.shape[0], u_const_default, dtype=DTYPE)
+    
+    x_coords = trunk_inputs_paired[..., 0]
+    t_coords = trunk_inputs_paired[..., 2]
+    
+    true_outputs_h = solver(x_coords, t_coords, n_manning, u_const)
+    
+    return branch_inputs_paired, trunk_inputs_paired, true_outputs_h[..., None] # Shape (N, 1)
