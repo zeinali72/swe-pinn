@@ -247,26 +247,26 @@ def neg_h_loss_fn_op(params, model, batch, config):
     return compute_neg_h_loss_op(model, params, batch['branch'], batch['trunk'], config)
 
 # Map for OperatorNet losses
-OPERATORNET_LOSS_FN_MAP = {
+OPERATOR_LOSS_FN_MAP = {
     'pde': {'func': pde_loss_fn_op, 'batch_key': 'pde'},
     'ic': {'func': ic_loss_fn_op, 'batch_key': 'ic'},
     'bc': {'func': bc_loss_fn_op, 'batch_key': 'bc'}, 
     'neg_h': {'func': neg_h_loss_fn_op, 'batch_key': 'pde'}
 }
 
-def get_initial_losses_operatornet(model: Any, params: FrozenDict, all_batches: Dict[str, Any], config: FrozenDict) -> Dict[str, float]:
+def get_initial_losses_operator(model: Any, params: FrozenDict, all_batches: Dict[str, Any], config: FrozenDict) -> Dict[str, float]:
     """Computes the initial value for each loss term (L_i(0)) for OperatorNet."""
     initial_losses = {}
     active_loss_keys = list(all_batches.keys())
     
     print("Calculating initial losses (L_i(0)) for OperatorNet...")
     for loss_key in active_loss_keys:
-        if loss_key not in OPERATORNET_LOSS_FN_MAP:
+        if loss_key not in OPERATOR_LOSS_FN_MAP:
             if loss_key in config.get('loss_weights', {}):
-                print(f"Warning: Loss key '{loss_key}' has a weight but is not in OPERATORNET_LOSS_FN_MAP. Skipping.")
+                print(f"Warning: Loss key '{loss_key}' has a weight but is not in OPERATOR_LOSS_FN_MAP. Skipping.")
             continue
 
-        loss_info = OPERATORNET_LOSS_FN_MAP[loss_key]
+        loss_info = OPERATOR_LOSS_FN_MAP[loss_key]
         loss_func = loss_info['func']
         batch_key = loss_info['batch_key']
         batch_data = all_batches.get(batch_key)
@@ -318,11 +318,11 @@ def update_gradnorm_weights_operatornet(
     shared_layer_params = _get_shared_layer_params(model_params, shared_layer_name)
 
     for key in loss_keys: 
-        if key not in OPERATORNET_LOSS_FN_MAP:
-            print(f"Internal Warning: Loss key '{key}' from GradNorm state not found in OPERATORNET_LOSS_FN_MAP. Skipping.")
+        if key not in OPERATOR_LOSS_FN_MAP:
+            print(f"Internal Warning: Loss key '{key}' from GradNorm state not found in OPERATOR_LOSS_FN_MAP. Skipping.")
             continue
 
-        loss_info = OPERATORNET_LOSS_FN_MAP[key]
+        loss_info = OPERATOR_LOSS_FN_MAP[key]
         loss_func = loss_info['func']
         batch_key = loss_info['batch_key']
         batch_data = all_batches.get(batch_key)

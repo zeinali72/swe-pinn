@@ -41,9 +41,9 @@ from src.operator_learning.losses_op import ( # <-- Using _op.py file
 from src.operator_learning.physics_op import h_exact # <-- Using _op.py file
 from src.gradnorm import (
     init_gradnorm, 
-    get_initial_losses_deeponet,
-    update_gradnorm_weights_deeponet,
-    DEEPONET_LOSS_FN_MAP # <-- Using DeepONet specific map
+    get_initial_losses_operator,
+    update_gradnorm_weights_operator,
+    OPERATOR_LOSS_FN_MAP # <-- Using DeepONet specific map
 )
 from src.utils import ( 
     nse, rmse, generate_trial_name, save_model, ask_for_confirmation
@@ -308,7 +308,7 @@ def main(config_path: str):
         n_init_funcs = min(n_init_funcs, batch_size_init)
         
         domain_cfg = cfg["domain"]
-        phys_sampling_cfg = cfg["physics_sampling"] # Use new config section
+        phys_sampling_cfg = cfg["grid"] # Use new config section
         ic_bc_grid_cfg = cfg["ic_bc_grid"]
         param_bounds = cfg["physics"]["param_bounds"]
         
@@ -361,7 +361,7 @@ def main(config_path: str):
         print(f"GradNorm active keys for init: {active_loss_term_keys}")
 
         with jax.disable_jit():
-            initial_losses = get_initial_losses_deeponet(model, params, relevant_init_batches, cfg)
+            initial_losses = get_initial_losses_operator(model, params, relevant_init_batches, cfg)
 
         gradnorm_state = init_gradnorm(
             loss_keys=list(initial_losses.keys()),
@@ -411,7 +411,7 @@ def main(config_path: str):
             key, pde_param_key, ic_param_key, bc_param_key = random.split(key, 4)
             
             domain_cfg = cfg["domain"]
-            phys_sampling_cfg = cfg["physics_sampling"] # Physics points
+            phys_sampling_cfg = cfg["grid"] # Physics points
             ic_bc_grid_cfg = cfg["ic_bc_grid"]     # IC/BC points
             param_bounds = cfg["physics"]["param_bounds"]
             batch_size = cfg["training"]["batch_size"]
@@ -522,11 +522,11 @@ def main(config_path: str):
                 # --- GradNorm Update ---
                 if enable_gradnorm and global_step % gradnorm_update_freq == 0:
                     active_batches_for_gradnorm = {
-                        k: current_all_batches[DEEPONET_LOSS_FN_MAP[k]['batch_key']] 
-                        for k in active_loss_term_keys if k in DEEPONET_LOSS_FN_MAP
+                        k: current_all_batches[OPERATOR_LOSS_FN_MAP[k]['batch_key']] 
+                        for k in active_loss_term_keys if k in OPERATOR_LOSS_FN_MAP
                     }
                     with jax.disable_jit():
-                         gradnorm_state, current_weights_dict = update_gradnorm_weights_deeponet(
+                         gradnorm_state, current_weights_dict = update_gradnorm_weights_operator(
                               gradnorm_state, params, model, 
                               active_batches_for_gradnorm,
                               cfg, gradnorm_alpha, gradnorm_lr
