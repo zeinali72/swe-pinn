@@ -49,51 +49,13 @@ def objective(trial: optuna.trial.Trial,
         trial_params["fourier_scale"] = trial.suggest_float("fourier_scale", 5.0, 20.0)
 
     # === Grid Hyperparameters (MODIFIED AS REQUESTED) ===
-    # 1. PDE (Base)
-    nx_base = trial.suggest_int("nx_base", 20, 80, step=4)
-    ny_base = trial.suggest_int("ny_base", 10, 40, step=2)
-    nt_base = trial.suggest_int("nt_base", 10, 40, step=2)
-    trial_params["grid"] = {"nx": nx_base, "ny": ny_base, "nt": nt_base}
-
-    # 2. IC (One factor)
-    ic_factor = trial.suggest_float("ic_factor", 0.2, 1.5)
-    
-    # 3. Left BC (Inflow)
-    left_bc_factor = trial.suggest_float("left_bc_factor", 0.2, 1.5)
-    
-    # 4. Right BC (Outlet)
-    right_bc_factor = trial.suggest_float("right_bc_factor", 0.2, 1.5)
-
-    # 5. Horizontal BCs (Top/Bottom Walls)
-    horizontal_bc_factor = trial.suggest_float("horizontal_bc_factor", 0.2, 1.5)
-    
-    trial_params["ic_bc_grid"] = {
-        # Use ic_factor for both nx_ic and ny_ic
-        "nx_ic": max(5, int(ic_factor * nx_base)),
-        "ny_ic": max(5, int(ic_factor * ny_base)),
-        
-        # Use left_bc_factor for both ny_bc_left and nt_bc_left
-        "ny_bc_left": max(5, int(left_bc_factor * ny_base)),
-        "nt_bc_left": max(5, int(left_bc_factor * nt_base)),
-        
-        # Use right_bc_factor for both ny_bc_right and nt_bc_right
-        "ny_bc_right": max(5, int(right_bc_factor * ny_base)),
-        "nt_bc_right": max(5, int(right_bc_factor * nt_base)),
-        
-        # Use horizontal_bc_factor for top and bottom (nx and nt)
-        "nx_bc_bottom": max(5, int(horizontal_bc_factor * nx_base)),
-        "nt_bc_other": max(5, int(horizontal_bc_factor * nt_base)), # This name is from the original config
-        "nx_bc_top": max(5, int(horizontal_bc_factor * nx_base)),
+    trial_params["sampling"] = {
+        "n_points_pde": trial.suggest_int("n_points_pde", 10000, 100000, log=True),
+        "n_points_ic": trial.suggest_int("n_points_ic", 1000, 20000, log=True),
+        "n_points_bc_domain": trial.suggest_int("n_points_bc_domain", 1000, 20000, log=True)
     }
-    
     if has_building:
-         # 6. Building BCs (One factor)
-         building_bc_factor = trial.suggest_float("building_bc_factor", 0.2, 1.5)
-         trial_params["building_grid"] = {
-             "nx": max(5, int(building_bc_factor * nx_base)),
-             "ny": max(5, int(building_bc_factor * ny_base)),
-             "nt": max(5, int(building_bc_factor * nt_base)),
-         }
+        trial_params["sampling"]["n_points_bc_building"] = trial.suggest_int("n_points_bc_building", 1000, 20000, log=True)
 
     # === Loss Weights / GradNorm Hyperparameters (Conditional Suggestion) ===
     trial_params["loss_weights"] = {} # Initialize weights dict
@@ -168,13 +130,7 @@ def objective(trial: optuna.trial.Trial,
         trial_config_dict["model"]["ff_dims"] = trial_params["ff_dims"]
         trial_config_dict["model"]["fourier_scale"] = trial_params["fourier_scale"]
 
-    trial_config_dict["grid"] = trial_params["grid"]
-    trial_config_dict["ic_bc_grid"] = trial_params["ic_bc_grid"]
-    if has_building:
-         if "building" not in trial_config_dict: trial_config_dict["building"] = {}
-         trial_config_dict["building"]["nx"] = trial_params["building_grid"]["nx"]
-         trial_config_dict["building"]["ny"] = trial_params["building_grid"]["ny"]
-         trial_config_dict["building"]["nt"] = trial_params["building_grid"]["nt"]
+    trial_config_dict["sampling"] = trial_params["sampling"]
 
     # Update loss weights (already contains suggested values)
     trial_config_dict["loss_weights"] = trial_params["loss_weights"]
