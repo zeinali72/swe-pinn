@@ -187,9 +187,106 @@ class DGMNetwork(nn.Module):
 
         return output
 
-
 def init_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
     """Initialize the PINN model and parameters."""
     model = model_class(config=config)
     variables = model.init(key, jnp.zeros((1, 3), dtype=DTYPE))
+    return model, {'params': variables['params']}
+
+class DeepONet(nn.Module):
+    """
+    DeepONet architecture for mapping parameters to solutions.
+    - Branch net processes parameters (e.g., n_manning, u_const).
+    - Trunk net processes coordinates (x, y, t).
+    - Output dimension must match PINN models (e.g., 3 for [h, hu, hv])
+      to be compatible with the physics loss functions.
+    """
+    config: FrozenDict
+
+    @nn.compact
+    def __call__(self, x_branch: jnp.ndarray, x_trunk: jnp.ndarray, train: bool = True) -> jnp.ndarray:
+        """
+        Forward pass for the DeepONet.
+
+        Args:
+            x_branch: Branch inputs (physical parameters), shape (batch, n_params)
+            x_trunk: Trunk inputs (coordinates x, y, t), shape (batch, 3)
+            train: (Unused) Kept for compatibility with some loss function calls.
+
+        Returns:
+            Predicted output U(x,y,t), shape (batch, output_dim)
+        """
+        model_cfg = self.config["model"]
+        domain_cfg = self.config["domain"]
+        
+        # Latent dimension
+        p_dim = model_cfg["latent_dim"]
+        output_dim = model_cfg["output_dim"] # e.g., 3 for [h, hu, hv]
+        kernel_init = nn.initializers.glorot_uniform()
+        bias_init = nn.initializers.constant(model_cfg.get("bias_init", 0.0))
+
+        # --- Branch Network (processes parameters) ---
+        b = x_branch
+        for _ in range(model_cfg["branch_depth"]):
+            b = nn.Dense(model_cfg["branch_width"], kernel_init=kernel_init, bias_init=bias_init)(b)
+            b = nn.tanh(b)
+        # Branch output, shape (batch, p_dim * output_dim)
+        # We need p_dim outputs for *each* output variable (h, hu, hv)
+        branch_out = nn.Dense(p_dim * output_dim, name="branch_output", kernel_init=kernel_init, bias_init=bias_init)(b)
+        # Reshape to (batch, output_dim, p_dim)
+        branch_out = branch_out.reshape(-1, output_dim, p_dim)
+
+        # --- Trunk Network (processes coordinates [x, y, t]) ---
+        # Normalize coordinates first
+        t = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x_trunk)
+        for _ in range(model_cfg["trunk_depth"]):
+            t = nn.Dense(model_cfg["trunk_width"], kernel_init=kernel_init, bias_init=bias_init)(t)
+            t = nn.tanh(t)
+        # Trunk output, shape (batch, p_dim)
+        trunk_out = nn.Dense(p_dim, name="trunk_output", kernel_init=kernel_init, bias_init=bias_init)(t)
+
+        # --- Add bias term (as in the original DeepONet paper) ---
+        # One bias per output dimension
+        bias_t = self.param('bias_t', nn.initializers.zeros, (output_dim,))
+
+        # --- Combine outputs ---
+        # (batch, output_dim, p_dim) * (batch, 1, p_dim) -> (batch, output_dim, p_dim)
+        # Then sum over the latent dimension (axis=-1)
+        # Resulting shape: (batch, output_dim)
+        output = jnp.sum(branch_out * trunk_out[:, None, :], axis=-1)
+        
+        # Add trunk bias
+        output = output + bias_t
+        
+        # This is the "shared layer" for GradNorm. We rename the trunk_output.
+        # This is a trick: GradNorm will compute gradients w.r.t. the trunk_output layer,
+        # which is a good representation of the shared computation.
+        s = nn.Dense(output_dim, name='output_layer', kernel_init=kernel_init, bias_init=bias_init)(trunk_out) 
+        
+        # Final combination
+        # (batch, output_dim, p_dim) * (batch, 1, p_dim) -> sum -> (batch, output_dim)
+        output = jnp.sum(branch_out * trunk_out[:, None, :], axis=-1) + bias_t
+        return output
+
+
+def init_deeponet_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
+    """
+    Initialize the DeepONet model and parameters.
+    This is separate from init_model to avoid changing the original function.
+    """
+    model = model_class(config=config)
+    
+    # DeepONet needs two dummy inputs for initialization
+    param_names = tuple(config["physics"]["param_bounds"].keys())
+    n_params = len(param_names)
+    if n_params == 0:
+        raise ValueError("Config 'physics.param_bounds' is empty. DeepONet branch net has no inputs.")
+        
+    dummy_input_branch = jnp.zeros((1, n_params), dtype=DTYPE)
+    dummy_input_trunk = jnp.zeros((1, 3), dtype=DTYPE) # (x, y, t)
+    
+    print(f"Initializing DeepONet with branch input shape: {dummy_input_branch.shape} (params: {param_names})")
+    print(f"Initializing DeepONet with trunk input shape: {dummy_input_trunk.shape} (coords: x, y, t)")
+    
+    variables = model.init(key, dummy_input_branch, dummy_input_trunk)
     return model, {'params': variables['params']}

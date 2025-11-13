@@ -31,3 +31,36 @@ def get_batches(key: jax.random.PRNGKey, data: jnp.ndarray, batch_size: int) -> 
     """Shuffle and split data into batches."""
     data = jax.random.permutation(key, data, axis=0)
     return [data[i:i + batch_size].astype(DTYPE) for i in range(0, data.shape[0], batch_size)]
+
+def sample_parameters(key: jax.random.PRNGKey, param_bounds: dict[str, tuple[float, float]], n_samples: int) -> tuple[jnp.ndarray, tuple[str, ...]]:
+    """
+    Samples parameters from given bounds using a dictionary.
+
+    Args:
+        key: JAX PRNGKey.
+        param_bounds: Dictionary mapping parameter names to (min, max) bounds.
+        n_samples: The number of parameter sets to sample.
+
+    Returns:
+        A tuple of (samples_array, param_names):
+        - samples_array: A (n_samples, n_params) array of sampled values.
+        - param_names: A tuple of parameter names in the order of the array columns.
+    """
+    if not param_bounds:
+        raise ValueError("param_bounds must contain at least one parameter.")
+    
+    names = tuple(param_bounds.keys())
+    subkeys = random.split(key, len(names))
+    columns = []
+    
+    print(f"[Data] Sampling {n_samples} sets for parameters: {names}")
+    
+    for (lower, upper), subkey in zip(param_bounds.values(), subkeys):
+        if lower == upper:
+            # Handle fixed parameter
+            columns.append(jnp.full((n_samples, 1), lower, dtype=DTYPE))
+        else:
+            # Sample from uniform distribution
+            columns.append(random.uniform(subkey, (n_samples, 1), minval=lower, maxval=upper, dtype=DTYPE))
+            
+    return jnp.hstack(columns), names
