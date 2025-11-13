@@ -325,41 +325,44 @@ def main(config_path: str):
     # --- 8. Initialize GradNorm if Enabled ---
     if enable_gradnorm:
         print("GradNorm enabled. Initializing dynamic weights...")
+        # Generate keys and sample initial batches to compute initial losses.
         key, pde_key, ic_key, bc_keys, bldg_keys, data_key_init = random.split(init_key, 6)
         l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
         batch_size_init = cfg["training"]["batch_size"]
 
-        domain_cfg = cfg["domain"]; grid_cfg = cfg["grid"]; ic_bc_grid_cfg = cfg["ic_bc_grid"]
+        domain_cfg = cfg["domain"]
+        # --- Use the new 'sampling' config section ---
+        sampling_cfg = cfg.get("sampling", {}) 
         init_batches = {} 
 
+        # --- 1. PDE Init Batch ---
         if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys:
-            pde_points_init = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key)
+            n_pde_init = sampling_cfg.get("n_points_pde", 1000) # Get point count
+            pde_points_init = sample_domain(pde_key, n_pde_init,
+                                            (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
             if pde_points_init.shape[0] > 0: 
                 init_batches['pde'] = get_batches(pde_key, pde_points_init, batch_size_init)[0]
                 if 'neg_h' in active_loss_term_keys:
                     init_batches['neg_h'] = init_batches['pde']
         
+        # --- 2. IC Init Batch ---
         if 'ic' in active_loss_term_keys:
-            ic_points_init = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., 0., ic_bc_grid_cfg["nx_ic"], ic_bc_grid_cfg["ny_ic"], 1, ic_key)
-            if ic_points_init.shape[0] > 0: init_batches['ic'] = get_batches(ic_key, ic_points_init, batch_size_init)[0]
+            n_ic_init = sampling_cfg.get("n_points_ic", 100) # Get point count
+            ic_points_init = sample_domain(ic_key, n_ic_init,
+                                           (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
+            if ic_points_init.shape[0] > 0: 
+                init_batches['ic'] = get_batches(ic_key, ic_points_init, batch_size_init)[0]
 
+        # --- 3. Domain BC Init Batch ---
         if 'bc' in active_loss_term_keys:
+            n_bc_init = sampling_cfg.get("n_points_bc_domain", 100) # Get point count
+            n_bc_per_wall_init = max(5, n_bc_init // 4)
             bc_batches_init = {}
-            bc_batches_init['left'] = get_batches(l_key, sample_points(0., 0., 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_left"], ic_bc_grid_cfg["nt_bc_left"], l_key), batch_size_init)[0]
-            bc_batches_init['right'] = get_batches(r_key, sample_points(domain_cfg["lx"], domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_right"], ic_bc_grid_cfg["nt_bc_right"], r_key), batch_size_init)[0]
-            bc_batches_init['bottom'] = get_batches(b_key, sample_points(0., domain_cfg["lx"], 0., 0., 0., domain_cfg["t_final"], ic_bc_grid_cfg["nx_bc_bottom"], 1, ic_bc_grid_cfg["nt_bc_other"], b_key), batch_size_init)[0]
-            bc_batches_init['top'] = get_batches(t_key, sample_points(0., domain_cfg["lx"], domain_cfg["ly"], domain_cfg["ly"], 0., domain_cfg["t_final"], ic_bc_grid_cfg["nx_bc_top"], 1, ic_bc_grid_cfg["nt_bc_other"], t_key), batch_size_init)[0]
+            bc_batches_init['left'] = get_batches(l_key, sample_domain(l_key, n_bc_per_wall_init, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])), batch_size_init)[0]
+            bc_batches_init['right'] = get_batches(r_key, sample_domain(r_key, n_bc_per_wall_init, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])), batch_size_init)[0]
+            bc_batches_init['bottom'] = get_batches(b_key, sample_domain(b_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"])), batch_size_init)[0]
+            bc_batches_init['top'] = get_batches(t_key, sample_domain(t_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"])), batch_size_init)[0]
             init_batches['bc'] = {k: (v if v.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE)) for k, v in bc_batches_init.items() if v.shape[0] > 0}
-
-        if has_building and 'building_bc' in active_loss_term_keys:
-            bldg_l_key, bldg_r_key, bldg_b_key, bldg_t_key = random.split(bldg_keys, 4)
-            b_cfg = cfg["building"]
-            bldg_batches_init = {}
-            bldg_batches_init['left'] = get_batches(bldg_l_key, sample_points(b_cfg["x_min"], b_cfg["x_min"], b_cfg["y_min"], b_cfg["y_max"], 0., domain_cfg["t_final"], 1, b_cfg["ny"], b_cfg["nt"], bldg_l_key), batch_size_init)[0]
-            bldg_batches_init['right'] = get_batches(bldg_r_key, sample_points(b_cfg["x_max"], b_cfg["x_max"], b_cfg["y_min"], b_cfg["y_max"], 0., domain_cfg["t_final"], 1, b_cfg["ny"], b_cfg["nt"], bldg_r_key), batch_size_init)[0]
-            bldg_batches_init['bottom'] = get_batches(bldg_b_key, sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_min"], b_cfg["y_min"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_b_key), batch_size_init)[0]
-            bldg_batches_init['top'] = get_batches(bldg_t_key, sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_max"], b_cfg["y_max"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_t_key), batch_size_init)[0]
-            init_batches['building_bc'] = {k: (v if v.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE)) for k, v in bldg_batches_init.items() if v.shape[0] > 0}
 
         if not data_free and 'data' in active_loss_term_keys: 
              if data_points_full is not None and data_points_full.shape[0] > 0:
@@ -432,23 +435,41 @@ def main(config_path: str):
             # --- Dynamic Point Sampling ---
             key, pde_key, ic_key, bc_keys, bldg_keys, data_key_epoch = random.split(key, 6)
             l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
-            domain_cfg = cfg["domain"]; grid_cfg = cfg["grid"]; ic_bc_grid_cfg = cfg["ic_bc_grid"]
+            domain_cfg = cfg["domain"]
+            sampling_cfg = cfg["sampling"] # The new config section
 
-            pde_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key) if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            ic_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., 0., ic_bc_grid_cfg["nx_ic"], ic_bc_grid_cfg["ny_ic"], 1, ic_key) if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            left_wall = sample_points(0., 0., 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_left"], ic_bc_grid_cfg["nt_bc_left"], l_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            right_wall = sample_points(domain_cfg["lx"], domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_right"], ic_bc_grid_cfg["nt_bc_right"], r_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            bottom_wall = sample_points(0., domain_cfg["lx"], 0., 0., 0., domain_cfg["t_final"], ic_bc_grid_cfg["nx_bc_bottom"], 1, ic_bc_grid_cfg["nt_bc_other"], b_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            top_wall = sample_points(0., domain_cfg["lx"], domain_cfg["ly"], domain_cfg["ly"], 0., domain_cfg["t_final"], ic_bc_grid_cfg["nx_bc_top"], 1, ic_bc_grid_cfg["nt_bc_other"], t_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+            # 1. PDE Points
+            n_pde = sampling_cfg.get("n_points_pde", 1000)
+            pde_points = sample_domain(pde_key, n_pde, 
+                                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) \
+                                    if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
 
+            # 2. IC Points
+            n_ic = sampling_cfg.get("n_points_ic", 100)
+            ic_points = sample_domain(ic_key, n_ic, 
+                                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.)) \
+                                    if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+
+            # 3. Domain BC Points
+            n_bc = sampling_cfg.get("n_points_bc_domain", 100)
+            n_bc_per_wall = max(5, n_bc // 4)
+            left_wall = sample_domain(l_key, n_bc_per_wall, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+            right_wall = sample_domain(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+            bottom_wall = sample_domain(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+            top_wall = sample_domain(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+
+            # 4. Building BC Points
             building_points = {}
-            if 'building_bc' in active_loss_term_keys:
+            if has_building and 'building_bc' in active_loss_term_keys:
                 bldg_l_key, bldg_r_key, bldg_b_key, bldg_t_key = random.split(bldg_keys, 4)
-                b_cfg = cfg["building"]
-                building_points['left'] = sample_points(b_cfg["x_min"], b_cfg["x_min"], b_cfg["y_min"], b_cfg["y_max"], 0., domain_cfg["t_final"], 1, b_cfg["ny"], b_cfg["nt"], bldg_l_key)
-                building_points['right'] = sample_points(b_cfg["x_max"], b_cfg["x_max"], b_cfg["y_min"], b_cfg["y_max"], 0., domain_cfg["t_final"], 1, b_cfg["ny"], b_cfg["nt"], bldg_r_key)
-                building_points['bottom'] = sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_min"], b_cfg["y_min"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_b_key)
-                building_points['top'] = sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_max"], b_cfg["y_max"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_t_key)
+                b_cfg = cfg["building"] # Get building geometry
+                n_bldg = sampling_cfg.get("n_points_bc_building", 100)
+                n_bldg_per_wall = max(5, n_bldg // 4)
+                
+                building_points['left'] = sample_domain(bldg_l_key, n_bldg_per_wall, (b_cfg["x_min"], b_cfg["x_min"]), (b_cfg["y_min"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
+                building_points['right'] = sample_domain(bldg_r_key, n_bldg_per_wall, (b_cfg["x_max"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
+                building_points['bottom'] = sample_domain(bldg_b_key, n_bldg_per_wall, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_min"]), (0., domain_cfg["t_final"]))
+                building_points['top'] = sample_domain(bldg_t_key, n_bldg_per_wall, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_max"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
 
             # --- Create Batches ---
             batch_size = cfg["training"]["batch_size"]

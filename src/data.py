@@ -5,26 +5,29 @@ from jax import random
 from src.config import DTYPE
 from typing import Dict, Tuple, Callable # <-- Added imports
 
-def sample_points(x_start: float, x_end: float, y_start: float, y_end: float,
-                  t_start: float, t_end: float, nx: int, ny: int, nt: int, key) -> jnp.ndarray:
-    """Sample points uniformly in a 3D domain, handling degenerate (singular) dimensions."""
-    n_total = nx * ny * nt
+def sample_domain(key: jax.random.PRNGKey, 
+                  n_total: int, 
+                  x_range: Tuple[float, float], 
+                  y_range: Tuple[float, float], 
+                  t_range: Tuple[float, float]) -> jnp.ndarray:
+    """Samples n_total points uniformly in a 3D domain."""
     key_x, key_y, key_t = jax.random.split(key, 3)
-
-    if x_start == x_end:
-        x_coords = jnp.full((n_total, 1), x_start, dtype=DTYPE)
+    
+    # Handle singular dimensions (like t_start=t_end for IC)
+    if x_range[0] == x_range[1]:
+        x_coords = jnp.full((n_total, 1), x_range[0], dtype=DTYPE)
     else:
-        x_coords = random.uniform(key_x, (n_total, 1), minval=x_start, maxval=x_end, dtype=DTYPE)
+        x_coords = random.uniform(key_x, (n_total, 1), minval=x_range[0], maxval=x_range[1], dtype=DTYPE)
 
-    if y_start == y_end:
-        y_coords = jnp.full((n_total, 1), y_start, dtype=DTYPE)
+    if y_range[0] == y_range[1]:
+        y_coords = jnp.full((n_total, 1), y_range[0], dtype=DTYPE)
     else:
-        y_coords = random.uniform(key_y, (n_total, 1), minval=y_start, maxval=y_end, dtype=DTYPE)
+        y_coords = random.uniform(key_y, (n_total, 1), minval=y_range[0], maxval=y_range[1], dtype=DTYPE)
         
-    if t_start == t_end:
-        t_coords = jnp.full((n_total, 1), t_start, dtype=DTYPE)
+    if t_range[0] == t_range[1]:
+        t_coords = jnp.full((n_total, 1), t_range[0], dtype=DTYPE)
     else:
-        t_coords = random.uniform(key_t, (n_total, 1), minval=t_start, maxval=t_end, dtype=DTYPE)
+        t_coords = random.uniform(key_t, (n_total, 1), minval=t_range[0], maxval=t_range[1], dtype=DTYPE)
     
     return jnp.hstack([x_coords, y_coords, t_coords])
 
