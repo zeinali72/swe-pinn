@@ -11,6 +11,11 @@ def sample_domain(key: jax.random.PRNGKey,
                   y_range: Tuple[float, float], 
                   t_range: Tuple[float, float]) -> jnp.ndarray:
     """Samples n_total points uniformly in a 3D domain."""
+    
+    # Handle zero-point requests cleanly
+    if n_total == 0:
+        return jnp.empty((0, 3), dtype=DTYPE)
+        
     key_x, key_y, key_t = jax.random.split(key, 3)
     
     # Handle singular dimensions (like t_start=t_end for IC)
