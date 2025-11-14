@@ -4,16 +4,19 @@ import jax.numpy as jnp
 import jax.nn
 from flax import linen as nn
 from flax.core import FrozenDict
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from src.physics import SWEPhysics, h_exact
 from src.utils import mask_points_inside_building # <-- Import the masking function
 
-def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray, config: FrozenDict) -> jnp.ndarray:
+def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray,
+                     config: FrozenDict, pde_mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
     """Compute the PDE residual mean squared error (MSE) for the SWE."""
     # Ensure pde_batch has the correct shape (N, 3) for model input
     if pde_batch.shape[-1] != 3:
         raise ValueError(f"PDE batch requires shape (N, 3), but got {pde_batch.shape}")
+    if pde_mask is None:
+        pde_mask = jnp.ones((pde_batch.shape[0],), dtype=bool)
     U_pred = model.apply({'params': params['params']}, pde_batch, train=True)
     def U_fn(pts):
         # Ensure input points for jacfwd also have shape (N, 3)
@@ -40,19 +43,7 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
 
     # --- NEW: EFFICIENT MASKING INSIDE JIT-COMPILED FUNCTION ---
-    # Check if a building is defined in the config
-    if "building" in config:
-        # Create a boolean mask (True for points OUTSIDE the building)
-        # We need to reshape it to (batch_size, 1) to allow broadcasting with the residual
-        building_mask = mask_points_inside_building(pde_batch, config["building"])[..., None]
-
-        # Apply both the water depth mask and the building mask.
-        # The residual for points inside the building will become zero.
-        final_residual = residual * h_mask[..., None] * building_mask
-    else:
-        # If no building, just apply the water depth mask
-        final_residual = residual * h_mask[..., None]
-
+    final_residual = residual * h_mask[..., None]* pde_mask[..., None]
     return jnp.mean(final_residual ** 2)
 
 def compute_neg_h_loss(model: nn.Module, params: Dict[str, Any], pde_points: jnp.ndarray) -> jnp.ndarray:
