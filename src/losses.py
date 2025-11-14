@@ -46,7 +46,8 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     final_residual = residual * h_mask[..., None]* pde_mask[..., None]
     return jnp.mean(final_residual ** 2)
 
-def compute_neg_h_loss(model: nn.Module, params: Dict[str, Any], pde_points: jnp.ndarray) -> jnp.ndarray:
+def compute_neg_h_loss(model: nn.Module, params: Dict[str, Any], pde_points: jnp.ndarray,
+                     pde_mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
     """
     Compute a penalty for negative water height (h_pred < 0).
     Uses a quadratic penalty on the negative part: mean(relu(-h_pred)^2)
@@ -54,11 +55,17 @@ def compute_neg_h_loss(model: nn.Module, params: Dict[str, Any], pde_points: jnp
     # We use the pde_batch as it covers the whole domain/time
     U_pred = model.apply({'params': params['params']}, pde_points, train=False)
     h_pred = U_pred[..., 0]
-    
+
     # jnp.relu(-h_pred) is equivalent to max(0, -h_pred)
     # This is 0 if h_pred is positive, and |-h_pred| if h_pred is negative.
+    if pde_mask is None:
+        pde_mask = jnp.ones((pde_points.shape[0],), dtype=bool)
+
+    # Apply the mask *before* the relu
+    h_pred = h_pred * pde_mask
+
     neg_h_penalty = jax.nn.relu(-h_pred)
-    
+
     # Return the mean squared penalty
     return jnp.mean(neg_h_penalty ** 2)
 
