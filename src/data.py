@@ -29,9 +29,20 @@ def sample_points(x_start: float, x_end: float, y_start: float, y_end: float,
     return jnp.hstack([x_coords, y_coords, t_coords])
 
 def get_batches(key: jax.random.PRNGKey, data: jnp.ndarray, batch_size: int) -> list:
-    """Shuffle and split data into batches."""
+    """Shuffle and split data into batches, dropping the remainder."""
     data = jax.random.permutation(key, data, axis=0)
-    return [data[i:i + batch_size].astype(DTYPE) for i in range(0, data.shape[0], batch_size)]
+    
+    # Calculate the number of full batches using integer division
+    num_batches = data.shape[0] // batch_size
+    
+    # If no full batches can be made, return an empty list
+    if num_batches == 0:
+        return []
+
+    # Iterate only up to the last full batch
+    # This guarantees every batch is of size `batch_size`
+    return [data[i * batch_size : (i + 1) * batch_size].astype(DTYPE) 
+            for i in range(num_batches)]
 
 def sample_domain(key: jax.random.PRNGKey, n_points: int,
                   x_bounds: tuple, y_bounds: tuple, t_bounds: tuple) -> jnp.ndarray:
