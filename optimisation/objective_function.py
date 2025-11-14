@@ -51,9 +51,9 @@ def objective(trial: optuna.trial.Trial,
     # === Grid Hyperparameters (MODIFIED AS REQUESTED) ===
     # Replaced grid/ic_bc_grid with sampling section
     trial_params["sampling"] = {
-        "n_points_pde": trial.suggest_int("n_points_pde", 10000, 100000, step=1000, log=True),
-        "n_points_ic": trial.suggest_int("n_points_ic", 1000, 20000, step=1000, log=True),
-        "n_points_bc_domain": trial.suggest_int("n_points_bc_domain", 1000, 20000, step=1000, log=True)
+        "n_points_pde": trial.suggest_int("n_points_pde", 10000, 100000, log=True),
+        "n_points_ic": trial.suggest_int("n_points_ic", 1000, 20000, log=True),
+        "n_points_bc_domain": trial.suggest_int("n_points_bc_domain", 1000, 20000, log=True)
     }
     if has_building:
         trial_params["sampling"]["n_points_bc_building"] = trial.suggest_int("n_points_bc_building", 1000, 20000, log=True)
@@ -83,37 +83,41 @@ def objective(trial: optuna.trial.Trial,
         trial.set_user_attr("data_weight_factor", None)
 
     else: # Static weights mode
-        print(f"Trial {trial.number}: Configuring static weights (data_free={data_free}).")
+        print(f"Trial {trial.number}: Configuring independent static weights (data_free={data_free}).")
         
-        # --- FIX: Let PDE weight be the large, suggested value ---
-        trial_params["loss_weights"]["pde_weight"] = 1.0 # Fixed reference
+        # --- NEW: Suggest each weight independently ---
+        # Define a common range for all weights.
+        # You can adjust this range based on your sensitivity analysis needs.
+        min_weight = 1e-2
+        max_weight = 1e3
         
-        # --- FIX: Set IC as the reference, and make others relative to it ---
-        ic_factor = trial.suggest_float("ic_weight_factor", 1e-2, 1e2, log=True) # e.g., 100 to 10,000,000
-        trial_params["loss_weights"]["ic_weight"] = ic_factor *trial_params["loss_weights"]["pde_weight"]
-        
-        bc_factor = trial.suggest_float("bc_weight_factor", 1e-2, 1e2, log=True) # e.g., 0.01 to 100
-        trial_params["loss_weights"]["bc_weight"] = bc_factor * trial_params["loss_weights"]["pde_weight"]
-        
-        if has_building:
-            bldg_factor = trial.suggest_float("building_bc_weight_factor", 1e-2, 1e2, log=True)
-            trial_params["loss_weights"]["building_bc_weight"] = bldg_factor * trial_params["loss_weights"]["pde_weight"]
-        # Keep neg_h relative to IC, or give it its own small range
-        neg_h_factor = trial.suggest_float("neg_h_weight_factor", 1e-2, 1e2, log=True)
-        trial_params["loss_weights"]["neg_h_weight"] = neg_h_factor * trial_params["loss_weights"]["pde_weight"]
+        trial_params["loss_weights"]["pde_weight"] = trial.suggest_float("pde_weight", 1.0, 1e6, log=True)
+        trial_params["loss_weights"]["ic_weight"] = trial.suggest_float("ic_weight", min_weight, max_weight, log=True)
+        trial_params["loss_weights"]["bc_weight"] = trial.suggest_float("bc_weight", min_weight, max_weight, log=True)
+        trial_params["loss_weights"]["neg_h_weight"] = trial.suggest_float("neg_h_weight", min_weight, max_weight, log=True)
 
+        if has_building:
+            trial_params["loss_weights"]["building_bc_weight"] = trial.suggest_float("building_bc_weight", min_weight, max_weight, log=True)
+        
         if not data_free:
-            data_factor = trial.suggest_float("data_weight_factor", 1e-2, 1e2, log=True)
-            trial_params["loss_weights"]["data_weight"] = data_factor * trial_params["loss_weights"]["pde_weight"]
+            trial_params["loss_weights"]["data_weight"] = trial.suggest_float("data_weight", min_weight, max_weight, log=True)
         else:
             trial_params["loss_weights"]["data_weight"] = 0.0 # Explicitly zero
-            trial.set_user_attr("data_weight_factor", None) # Log as None
+            # Log as None since this param is not suggested in this branch
+            trial.set_user_attr("data_weight", None) 
+
+        # --- Log irrelevant factors as None ---
+        trial.set_user_attr("ic_weight_factor", None)
+        trial.set_user_attr("bc_weight_factor", None)
+        if has_building: trial.set_user_attr("building_bc_weight_factor", None)
+        trial.set_user_attr("neg_h_weight_factor", None)
+        trial.set_user_attr("data_weight_factor", None)
 
         # Log irrelevant GradNorm params as None
         trial.set_user_attr("gradnorm_alpha", None)
         trial.set_user_attr("gradnorm_update_freq", None)
         trial.set_user_attr("gradnorm_lr", None)
-
+        
     # === Construct FULL Trial Configuration Dictionary ===
     # Start with a deep copy of the base config (which is already a dict)
     trial_config_dict = copy.deepcopy(base_config_dict)
