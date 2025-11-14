@@ -72,6 +72,8 @@ def mask_points_inside_building(points: jnp.ndarray, building_config) -> jnp.nda
     Points shape: (N, 3) where columns are (x, y, t)
     Returns: Boolean array of shape (N,), True for points OUTSIDE.
     """
+    if not isinstance(building_config, dict) or not building_config:
+        return jnp.ones((points.shape[0],), dtype=bool)
 
     x_coords = points[:, 0]
     y_coords = points[:, 1]

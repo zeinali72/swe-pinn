@@ -68,8 +68,7 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
         # --- PDE Residual Loss (and optional Negative Height penalty) ---
         pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
         if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
-            pde_mask = jnp.ones(pde_batch_data.shape[0], dtype=bool) 
-            terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config, pde_mask)
+            terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config)
             if 'neg_h' in active_loss_keys_base:
                 terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data)
 
