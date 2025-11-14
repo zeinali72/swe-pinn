@@ -48,11 +48,7 @@ device:
 numerics:
   eps: 1.0e-06
 validation_grid:
-  nx_val: 101
-  ny_val: 21
-  nt_val: 21
+  n_points_val: 42000
 train_grid:
-  nx: 100
-  ny: 50
-  nt: 50
+  n_points_train: 2000
 CONFIG_PATH: optimisation/configs/hpo_mlp_datafree_static_NOBUILDING.yaml
