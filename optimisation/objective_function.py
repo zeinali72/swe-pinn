@@ -5,7 +5,7 @@ builds the trial configuration, stores it, and calls the training loop.
 """
 import jax
 import optuna
-from flax.core import FrozenDict
+from flax.core import FrozenDict, unfreeze
 import numpy as np
 import jax.numpy as jnp
 from typing import Dict, Any
@@ -49,10 +49,11 @@ def objective(trial: optuna.trial.Trial,
         trial_params["fourier_scale"] = trial.suggest_float("fourier_scale", 5.0, 20.0)
 
     # === Grid Hyperparameters (MODIFIED AS REQUESTED) ===
+    # Replaced grid/ic_bc_grid with sampling section
     trial_params["sampling"] = {
         "n_points_pde": trial.suggest_int("n_points_pde", 10000, 100000, log=True),
         "n_points_ic": trial.suggest_int("n_points_ic", 1000, 20000, log=True),
-        "n_points_bc": trial.suggest_int("n_points_bc", 1000, 20000, log=True)
+        "n_points_bc_domain": trial.suggest_int("n_points_bc_domain", 1000, 20000, log=True)
     }
     if has_building:
         trial_params["sampling"]["n_points_bc_building"] = trial.suggest_int("n_points_bc_building", 1000, 20000, log=True)
@@ -129,7 +130,17 @@ def objective(trial: optuna.trial.Trial,
         trial_config_dict["model"]["ff_dims"] = trial_params["ff_dims"]
         trial_config_dict["model"]["fourier_scale"] = trial_params["fourier_scale"]
 
+    # --- MODIFICATION: Assign new sampling dict ---
     trial_config_dict["sampling"] = trial_params["sampling"]
+    
+    # --- MODIFICATION: Remove old grid config keys ---
+    trial_config_dict.pop("grid", None)
+    trial_config_dict.pop("ic_bc_grid", None)
+    # Also remove them from the building config if it exists
+    if has_building and "building" in trial_config_dict:
+        trial_config_dict["building"].pop("nx", None)
+        trial_config_dict["building"].pop("ny", None)
+        trial_config_dict["building"].pop("nt", None)
 
     # Update loss weights (already contains suggested values)
     trial_config_dict["loss_weights"] = trial_params["loss_weights"]
@@ -155,26 +166,20 @@ def objective(trial: optuna.trial.Trial,
     # --- Convert final config to FrozenDict for JAX functions ---
     trial_cfg_frozen = FrozenDict(trial_config_dict)
 
-# <<<--- START: ADD PRINT STATEMENTS HERE --- >>>
     print("-" * 50)
     print(f"Starting Trial {trial.number}")
     print("Suggested Hyperparameters:")
     # Print the parameters Optuna actually suggested for this trial
     for key, value in trial.params.items():
-         # Check if the parameter exists (it might be None if not suggested in that trial branch)
          if value is not None:
              if isinstance(value, float):
                   print(f"  {key:<25}: {value:.6e}" if abs(value) < 1e-2 or abs(value) > 1e3 else f"  {key:<25}: {value:.6f}")
              else:
                   print(f"  {key:<25}: {value}")
-         # else: You could optionally print "Not suggested" here too
 
     print("\nFull Configuration for this Trial:")
-    # Use yaml.dump for a readable, multi-line output of the dictionary
-    # Make sure to use the regular dict (config_to_store), not the FrozenDict
     print(yaml.dump(config_to_store, default_flow_style=False, sort_keys=False, indent=2))
     print("-" * 50)
-    # <<<--- END: ADD PRINT STATEMENTS HERE --- >>>
 
     # --- Run the training trial ---
     try:

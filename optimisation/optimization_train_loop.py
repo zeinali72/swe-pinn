@@ -19,7 +19,7 @@ import optuna
 # --- Imports from project src directory ---
 # This assumes run_optimization.py adds the project root to sys.path
 from src.config import DTYPE
-from src.data import sample_points, get_batches
+from src.data import sample_domain, get_batches # <<<--- MODIFIED: Using sample_domain
 from src.models import init_model
 from src.losses import (
     compute_neg_h_loss, compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
@@ -186,27 +186,36 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
         batch_size_init = trial_cfg["training"]["batch_size"]
 
-        # --- Sample points ONLY for active loss terms needed for init ---
+        # --- MODIFICATION: Sample points using sample_domain and sampling config ---
         domain_cfg = trial_cfg["domain"]
-        grid_cfg = trial_cfg["grid"]
-        ic_bc_grid_cfg = trial_cfg["ic_bc_grid"]
+        sampling_cfg = trial_cfg.get("sampling", {}) # Use new sampling section
 
-        pde_points_init = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key) if 'pde' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-        ic_points_init = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., 0., ic_bc_grid_cfg["nx_ic"], ic_bc_grid_cfg["ny_ic"], 1, ic_key) if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+        n_pde_init = sampling_cfg.get("n_points_pde", 1000)
+        pde_points_init = sample_domain(pde_key, n_pde_init, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
 
-        left_wall_init = sample_points(0., 0., 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_left"], ic_bc_grid_cfg["nt_bc_left"], l_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-        right_wall_init = sample_points(domain_cfg["lx"], domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_right"], ic_bc_grid_cfg["nt_bc_right"], r_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-        bottom_wall_init = sample_points(0., domain_cfg["lx"], 0., 0., 0., domain_cfg["t_final"], ic_bc_grid_cfg["nx_bc_bottom"], 1, ic_bc_grid_cfg["nt_bc_other"], b_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-        top_wall_init = sample_points(0., domain_cfg["lx"], domain_cfg["ly"], domain_cfg["ly"], 0., domain_cfg["t_final"], ic_bc_grid_cfg["nx_bc_top"], 1, ic_bc_grid_cfg["nt_bc_other"], t_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+        n_ic_init = sampling_cfg.get("n_points_ic", 100)
+        ic_points_init = sample_domain(ic_key, n_ic_init, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.)) if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+
+        left_wall_init, right_wall_init, bottom_wall_init, top_wall_init = [jnp.empty((0,3), dtype=DTYPE)] * 4
+        if 'bc' in active_loss_term_keys:
+            n_bc_init = sampling_cfg.get("n_points_bc_domain", 100)
+            n_bc_per_wall_init = max(5, n_bc_init // 4)
+            left_wall_init = sample_domain(l_key, n_bc_per_wall_init, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            right_wall_init = sample_domain(r_key, n_bc_per_wall_init, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            bottom_wall_init = sample_domain(b_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"]))
+            top_wall_init = sample_domain(t_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"]))
 
         building_points_init = {}
         if has_building and 'building_bc' in active_loss_term_keys:
             bldg_l_key, bldg_r_key, bldg_b_key, bldg_t_key = random.split(bldg_keys, 4)
-            b_cfg = trial_cfg["building"] # Use trial config here
-            building_points_init['left'] = sample_points(b_cfg["x_min"], b_cfg["x_min"], b_cfg["y_min"], b_cfg["y_max"], 0., domain_cfg["t_final"], 1, b_cfg["ny"], b_cfg["nt"], bldg_l_key)
-            building_points_init['right'] = sample_points(b_cfg["x_max"], b_cfg["x_max"], b_cfg["y_min"], b_cfg["y_max"], 0., domain_cfg["t_final"], 1, b_cfg["ny"], b_cfg["nt"], bldg_r_key)
-            building_points_init['bottom'] = sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_min"], b_cfg["y_min"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_b_key)
-            building_points_init['top'] = sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_max"], b_cfg["y_max"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_t_key)
+            b_cfg = trial_cfg["building"]
+            n_bldg_init = sampling_cfg.get("n_points_bc_building", 100)
+            n_bldg_per_wall_init = max(5, n_bldg_init // 4)
+            building_points_init['left'] = sample_domain(bldg_l_key, n_bldg_per_wall_init, (b_cfg["x_min"], b_cfg["x_min"]), (b_cfg["y_min"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
+            building_points_init['right'] = sample_domain(bldg_r_key, n_bldg_per_wall_init, (b_cfg["x_max"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
+            building_points_init['bottom'] = sample_domain(bldg_b_key, n_bldg_per_wall_init, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_min"]), (0., domain_cfg["t_final"]))
+            building_points_init['top'] = sample_domain(bldg_t_key, n_bldg_per_wall_init, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_max"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
+        # --- END MODIFICATION ---
 
         data_points_init = None
         if not data_free and 'data' in active_loss_term_keys:
@@ -236,7 +245,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
                  'left': get_batches(l_b_key, left_wall_init, batch_size_init)[0] if left_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
                  'right': get_batches(r_b_key, right_wall_init, batch_size_init)[0] if right_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
                  'bottom': get_batches(b_b_key, bottom_wall_init, batch_size_init)[0] if bottom_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
-                 'top': get_batches(t_b_key, top_wall, batch_size_init)[0] if top_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
+                 'top': get_batches(t_b_key, top_wall_init, batch_size_init)[0] if top_wall_init.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE),
              }
         if has_building and 'building_bc' in active_loss_term_keys:
              bldg_l_b_key, bldg_r_b_key, bldg_b_b_key, bldg_t_b_key = random.split(bldg_b_keys, 4)
@@ -250,14 +259,9 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
 
         # Calculate L_i(0) - Ensure this runs without JIT issues
         with jax.disable_jit():
-             # Build relevant_init_batches with loss term keys (not batch keys)
-             # For loss terms that share batches (like neg_h uses pde batch),
-             # we need to map the loss key to the appropriate batch
              relevant_init_batches = {}
              for loss_key in active_loss_term_keys:
-                 # Get the batch key for this loss term from LOSS_FN_MAP
                  batch_key = LOSS_FN_MAP.get(loss_key, {}).get('batch_key', loss_key)
-                 # Get the actual batch data from init_batches
                  batch_data = init_batches.get(batch_key)
                  if batch_data is not None:
                      relevant_init_batches[loss_key] = batch_data
@@ -275,7 +279,6 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         print(f"Trial {trial.number}: GradNorm Initial Weights: {current_weights_dict}")
 
     # --- 3. Load Validation Data ---
-    # --- MODIFICATION: This block is replaced to add the analytical validation set logic ---
     val_points, h_true_val = None, None
     validation_data_loaded = False
     scenario_name_val = trial_cfg.get('scenario', 'default_scenario')
@@ -309,6 +312,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         except Exception as e:
             print(f"Trial {trial.number}: WARNING - Error loading validation data {validation_data_file}: {e}.")
             
+    # --- MODIFICATION: Use sample_domain for analytical validation ---
     elif not has_building and "validation_grid" in trial_cfg:
         # --- Case 2: No file, but NO building and validation_grid exists ---
         print(f"Trial {trial.number}: INFO - {validation_data_file} not found. Creating analytical validation set from 'validation_grid' config.")
@@ -316,11 +320,20 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
             val_grid_cfg = trial_cfg["validation_grid"]
             domain_cfg = trial_cfg["domain"]
             
-            # Sample points based on the validation grid
-            val_points = sample_points(
-                0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"],
-                val_grid_cfg["nx_val"], val_grid_cfg["ny_val"], val_grid_cfg["nt_val"],
-                val_key # Use the dedicated key we split earlier
+            # Check for n_points_val first, otherwise compute from nx/ny/nt
+            if "n_points_val" in val_grid_cfg:
+                n_val_points = val_grid_cfg["n_points_val"]
+            else:
+                n_val_points = val_grid_cfg.get("nx_val", 10) * val_grid_cfg.get("ny_val", 10) * val_grid_cfg.get("nt_val", 10)
+            
+            print(f"Trial {trial.number}: Sampling {n_val_points} analytical validation points...")
+            # Sample points based on the validation grid using sample_domain
+            val_points = sample_domain(
+                val_key, # Use the dedicated key
+                n_val_points,
+                (0., domain_cfg["lx"]), 
+                (0., domain_cfg["ly"]), 
+                (0., domain_cfg["t_final"])
             )
             
             # Calculate the exact solution for these points
@@ -340,6 +353,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         except Exception as e:
             print(f"Trial {trial.number}: WARNING - Error creating analytical validation set: {e}.")
             val_points, h_true_val = None, None
+    # --- END MODIFICATION ---
             
     else:
         # --- Case 3: No file AND (it's a building scenario OR no validation_grid) ---
@@ -349,7 +363,6 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         else:
             print(f"Trial {trial.number}: WARNING - No-building scenario, but 'validation_grid' not found in config. NSE/RMSE will not be calculated.")
         # In this case, validation_data_loaded remains False
-    # --- END MODIFICATION ---
 
 
     # --- Load Training Data (if not data_free) ---
@@ -381,29 +394,39 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         epoch_start_time = time.time()
         key = train_key # Use the training key for this epoch's sampling
 
-        # --- Dynamic Sampling ---
+        # --- MODIFICATION: Dynamic Sampling using sample_domain ---
         key, pde_key, ic_key, bc_keys, bldg_keys, data_key_epoch = random.split(key, 6)
         l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
         domain_cfg = trial_cfg["domain"]
-        grid_cfg = trial_cfg["grid"]
-        ic_bc_grid_cfg = trial_cfg["ic_bc_grid"]
+        sampling_cfg = trial_cfg["sampling"] # <-- Use new config section
 
         # Sample points only needed for active terms
-        pde_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], grid_cfg["nx"], grid_cfg["ny"], grid_cfg["nt"], pde_key) if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-        ic_points = sample_points(0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., 0., ic_bc_grid_cfg["nx_ic"], ic_bc_grid_cfg["ny_ic"], 1, ic_key) if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-        left_wall = sample_points(0., 0., 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_left"], ic_bc_grid_cfg["nt_bc_left"], l_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-        right_wall = sample_points(domain_cfg["lx"], domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"], 1, ic_bc_grid_cfg["ny_bc_right"], ic_bc_grid_cfg["nt_bc_right"], r_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-        bottom_wall = sample_points(0., domain_cfg["lx"], 0., 0., 0., domain_cfg["t_final"], ic_bc_grid_cfg["nx_bc_bottom"], 1, ic_bc_grid_cfg["nt_bc_other"], b_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-        top_wall = sample_points(0., domain_cfg["lx"], domain_cfg["ly"], domain_cfg["ly"], 0., domain_cfg["t_final"], ic_bc_grid_cfg["nx_bc_top"], 1, ic_bc_grid_cfg["nt_bc_other"], t_key) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+        n_pde = sampling_cfg.get("n_points_pde", 1000)
+        pde_points = sample_domain(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+        
+        n_ic = sampling_cfg.get("n_points_ic", 100)
+        ic_points = sample_domain(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.)) if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
+
+        left_wall, right_wall, bottom_wall, top_wall = [jnp.empty((0,3), dtype=DTYPE)] * 4
+        if 'bc' in active_loss_term_keys:
+            n_bc = sampling_cfg.get("n_points_bc_domain", 100)
+            n_bc_per_wall = max(5, n_bc // 4)
+            left_wall = sample_domain(l_key, n_bc_per_wall, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            right_wall = sample_domain(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            bottom_wall = sample_domain(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"]))
+            top_wall = sample_domain(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"]))
 
         building_points = {}
         if has_building and 'building_bc' in active_loss_term_keys:
             bldg_l_key, bldg_r_key, bldg_b_key, bldg_t_key = random.split(bldg_keys, 4)
             b_cfg = trial_cfg["building"]
-            building_points['left'] = sample_points(b_cfg["x_min"], b_cfg["x_min"], b_cfg["y_min"], b_cfg["y_max"], 0., domain_cfg["t_final"], 1, b_cfg["ny"], b_cfg["nt"], bldg_l_key)
-            building_points['right'] = sample_points(b_cfg["x_max"], b_cfg["x_max"], b_cfg["y_min"], b_cfg["y_max"], 0., domain_cfg["t_final"], 1, b_cfg["ny"], b_cfg["nt"], bldg_r_key)
-            building_points['bottom'] = sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_min"], b_cfg["y_min"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_b_key)
-            building_points['top'] = sample_points(b_cfg["x_min"], b_cfg["x_max"], b_cfg["y_max"], b_cfg["y_max"], 0., domain_cfg["t_final"], b_cfg["nx"], 1, b_cfg["nt"], bldg_t_key)
+            n_bldg = sampling_cfg.get("n_points_bc_building", 100)
+            n_bldg_per_wall = max(5, n_bldg // 4)
+            building_points['left'] = sample_domain(bldg_l_key, n_bldg_per_wall, (b_cfg["x_min"], b_cfg["x_min"]), (b_cfg["y_min"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
+            building_points['right'] = sample_domain(bldg_r_key, n_bldg_per_wall, (b_cfg["x_max"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
+            building_points['bottom'] = sample_domain(bldg_b_key, n_bldg_per_wall, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_min"]), (0., domain_cfg["t_final"]))
+            building_points['top'] = sample_domain(bldg_t_key, n_bldg_per_wall, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_max"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
+        # --- END MODIFICATION ---
 
         # --- Batch Creation ---
         key, pde_b_key, ic_b_key, bc_b_keys, bldg_b_keys, data_b_key_epoch = random.split(key, 6)
@@ -496,8 +519,11 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
 
             # --- GradNorm Update ---
             if enable_gradnorm and global_step % gradnorm_update_freq == 0:
-                 active_batch_keys_gn = [LOSS_FN_MAP[k]['batch_key'] for k in gradnorm_state.initial_losses.keys() if k in LOSS_FN_MAP]
-                 gradnorm_update_batches = {k: current_all_batches[k] for k in active_batch_keys_gn if k in current_all_batches}
+                 # Find the batch keys required by the active loss terms
+                 relevant_batch_keys = set(LOSS_FN_MAP[k]['batch_key'] for k in gradnorm_state.initial_losses.keys() if k in LOSS_FN_MAP)
+                 gradnorm_update_batches = {
+                     k: current_all_batches[k] for k in relevant_batch_keys if k in current_all_batches
+                 }
                  with jax.disable_jit(): # Ensure GradNorm update runs without JIT
                       gradnorm_state, current_weights_dict = update_gradnorm_weights(
                            gradnorm_state, params, model, gradnorm_update_batches,
@@ -517,7 +543,6 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
         if (epoch + 1) % validation_freq == 0:
             current_nse = -jnp.inf # Default if validation fails/skipped
 
-            # --- MODIFICATION: Simplified validation block ---
             # This single block now handles both loaded .npy data and pre-computed analytical data
             if validation_data_loaded: 
                 try:
@@ -528,10 +553,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
                     print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - NSE calculation error: {e_val}")
                     current_nse = -jnp.inf
             
-            # (REMOVED) elif not has_building and pde_points.shape[0] > 0: ...
-            
             # Else (e.g., building case with no validation data), current_nse remains -inf
-            # --- END MODIFICATION ---
 
             if jnp.isnan(current_nse):
                  print(f"Trial {trial.number}, Epoch {epoch+1}: NaN NSE detected. Pruning.")
@@ -566,3 +588,4 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
 
     print(f"Trial {trial.number}: Finished successfully. Best NSE = {final_nse:.6f}")
     return final_nse
+}
