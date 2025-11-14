@@ -1,4 +1,5 @@
 # HPO base for MLP, data-free, static weights, NO building.
+# Updated to use n_points_val and remove deprecated grid keys.
 
 hpo_settings:
   data_free: true
@@ -20,21 +21,9 @@ domain: # Fixed
   ly: 100.0
   t_final: 3600.0
 
-grid: # Optuna will suggest sampling densities
-  nx: 40
-  ny: 20
-  nt: 20
-
-ic_bc_grid: # Optuna will suggest sampling densities
-  nx_ic: 40
-  ny_ic: 40
-  ny_bc_left: 20
-  nt_bc_left: 20
-  ny_bc_right: 20
-  nt_bc_right: 20
-  nx_bc_bottom: 40
-  nt_bc_other: 20
-  nx_bc_top: 40
+# NOTE: grid and ic_bc_grid sections are removed.
+# The objective_function.py now suggests hyperparameters
+# for the "sampling" dictionary instead.
 
 physics: # Fixed
   u_const: 0.29
@@ -66,12 +55,8 @@ device: # Fixed
 numerics: # Fixed
   eps: 1e-6
 
+# Updated to use total number of points
 validation_grid:
-  nx_val: 101
-  ny_val: 21
-  nt_val: 21
+  n_points_val: 45000 # (e.g., 101*21*21 = 44541, rounded)
 
-train_grid: # This is for your new data_free=false mode
-  nx: 100   # Your fixed number of points
-  ny: 50    # Your fixed number of points
-  nt: 50    # Your fixed number of points
+# train_grid is removed as it is not used when data_free = true

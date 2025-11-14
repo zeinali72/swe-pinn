@@ -588,4 +588,3 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict, data_fr
 
     print(f"Trial {trial.number}: Finished successfully. Best NSE = {final_nse:.6f}")
     return final_nse
-}
