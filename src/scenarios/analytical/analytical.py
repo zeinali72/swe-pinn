@@ -28,7 +28,7 @@ import numpy as np
 # Local application imports
 # (Assuming this file is at src/scenarios/analytical.py, adjust paths if needed)
 from src.config import load_config, DTYPE
-from src.data import sample_points, sample_domain, get_batches
+from src.data import sample_domain, get_batches
 from src.models import init_model
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
@@ -177,10 +177,10 @@ def main(config_path: str):
         domain_cfg = cfg["domain"]
         print(f"Creating analytical validation set from 'validation_grid' config...")
         
-        val_points = sample_points(
-            0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"],
-            val_grid_cfg["nx_val"], val_grid_cfg["ny_val"], val_grid_cfg["nt_val"],
-            val_key
+        val_points = sample_domain(
+            val_key,
+            val_grid_cfg["n_points_val"],
+            (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
         )
         h_true_val = h_exact(
             val_points[:, 0], # x
@@ -225,10 +225,10 @@ def main(config_path: str):
             print(f"Creating analytical training dataset from 'train_grid' config...")
             
             # 1. Sample points (x, y, t)
-            data_points_coords = sample_points(
-                0., domain_cfg["lx"], 0., domain_cfg["ly"], 0., domain_cfg["t_final"],
-                train_grid_cfg["nx"], train_grid_cfg["ny"], train_grid_cfg["nt"],
-                train_key # Use the main training key for this
+            data_points_coords = sample_domain(
+                train_key,
+                train_grid_cfg["n_points_train"],
+                (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
             )
             
             # 2. Calculate true values (h, u, v)
