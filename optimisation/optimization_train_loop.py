@@ -52,7 +52,11 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
         # Compute losses based on available non-empty batches and active weights
         pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
         if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
-            terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config)
+            if has_building:
+                pde_mask = mask_points_inside_building(pde_batch_data, config["building"])
+                terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config, pde_mask)
+            else:
+                terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config)
             
             if 'neg_h' in active_loss_keys_base:
                 # compute_neg_h_loss uses the pde_batch_data

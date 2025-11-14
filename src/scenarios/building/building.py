@@ -77,7 +77,8 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
         terms = {}
         pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
         if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
-            terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config)
+            pde_mask = mask_points_inside_building(pde_batch_data, config["building"])
+            terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config, pde_mask)
             if 'neg_h' in active_loss_keys_base:
                 terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data)
 
