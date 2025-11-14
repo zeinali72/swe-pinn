@@ -28,7 +28,7 @@ import numpy as np
 # Local application imports
 # (Assuming this file is at src/scenarios/analytical.py, adjust paths if needed)
 from src.config import load_config, DTYPE
-from src.data import sample_domain, get_batches
+from src.data import sample_points, sample_domain, get_batches
 from src.models import init_model
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,

@@ -18,8 +18,8 @@ domain:
   ly: 100.0
   t_final: 3600.0
 sampling:
-  n_points_pde: 25000  # (This is 48*23*21=23184, just cleaner)
-  n_points_ic: 1300    # (This is 39*33=1287)
+  n_points_pde: 68000  # (This is 48*23*21=23184, just cleaner)
+  n_points_ic: 1800    # (This is 39*33=1287)
   n_points_bc_domain: 5000 # Total points for all 4 domain walls
   n_points_bc_building: 4000 # Total points for all 4 building walls (if applicable)
 physics:

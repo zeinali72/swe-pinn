@@ -66,12 +66,15 @@ def plot_h_vs_x(x_line: jnp.ndarray, h_pred_line: jnp.ndarray, t_const: float, y
         print(f"1D plot saved as {filename}")
     plt.close()
 
-def mask_points_inside_building(points: jnp.ndarray, building_config: Dict[str, Any]) -> jnp.ndarray:
+def mask_points_inside_building(points: jnp.ndarray, building_config) -> jnp.ndarray:
     """
     Creates a boolean mask to exclude points inside a building's footprint.
     Points shape: (N, 3) where columns are (x, y, t)
     Returns: Boolean array of shape (N,), True for points OUTSIDE.
     """
+    if not building_config or isinstance(building_config, bool):
+        return jnp.zeros((points.shape[0],), dtype=bool)
+
     x_coords = points[:, 0]
     y_coords = points[:, 1]
 
