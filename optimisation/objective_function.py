@@ -51,9 +51,9 @@ def objective(trial: optuna.trial.Trial,
     # === Grid Hyperparameters (MODIFIED AS REQUESTED) ===
     # Replaced grid/ic_bc_grid with sampling section
     trial_params["sampling"] = {
-        "n_points_pde": trial.suggest_int("n_points_pde", 10000, 100000, log=True),
+        "n_points_pde": trial.suggest_int("n_points_pde", 10000, 120000, log=True),
         "n_points_ic": trial.suggest_int("n_points_ic", 1000, 20000, log=True),
-        "n_points_bc_domain": trial.suggest_int("n_points_bc_domain", 1000, 20000, log=True)
+        "n_points_bc_domain": trial.suggest_int("n_points_bc_domain", 4000, 40000, log=True)
     }
     if has_building:
         trial_params["sampling"]["n_points_bc_building"] = trial.suggest_int("n_points_bc_building", 1000, 20000, log=True)
