@@ -28,10 +28,19 @@ def objective(trial: optuna.trial.Trial,
 
     # --- 1. Define Hyperparameter Search Space ---
     trial_params = {} # Store suggested params
+    
+    # --- Define specific choices for QMCSampler-compatible categorical sampling ---
+    batch_size_choices = [256, 512, 1024]
+    model_width_choices = [128, 256, 512, 1024]
+    ff_dims_choices = [128, 256, 512] # For FourierPINN
 
     # === Training Hyperparameters ===
     trial_params["learning_rate"] = trial.suggest_float("learning_rate", 1e-6, 1e-2, log=True)
-    trial_params["batch_size"] = trial.suggest_categorical("batch_size", [256, 512, 1024])
+    
+    # --- FIX: Use index-based sampling for categorical choices ---
+    batch_size_index = trial.suggest_int("batch_size_index", 0, len(batch_size_choices) - 1)
+    trial_params["batch_size"] = batch_size_choices[batch_size_index]
+    # --- END FIX ---
 
     # --- Define LR Scheduler Boundaries ---
     # Get total epochs and calculate boundaries at 60% and 80%
@@ -42,14 +51,22 @@ def objective(trial: optuna.trial.Trial,
     trial_params["lr_boundaries"] = {str(boundary1): 0.1, str(boundary2): 0.1}
 
     # === Model Hyperparameters ===
-    trial_params["model_width"] = trial.suggest_categorical("model_width", [128, 256, 512, 1024])
+    # --- FIX: Use index-based sampling for categorical choices ---
+    model_width_index = trial.suggest_int("model_width_index", 0, len(model_width_choices) - 1)
+    trial_params["model_width"] = model_width_choices[model_width_index]
+    # --- END FIX ---
+    
     trial_params["model_depth"] = trial.suggest_int("model_depth", 3, 6)
+    
     if model_name == "FourierPINN":
-        trial_params["ff_dims"] = trial.suggest_categorical("ff_dims", [128, 256, 512])
+        # --- FIX: Use index-based sampling for categorical choices ---
+        ff_dims_index = trial.suggest_int("ff_dims_index", 0, len(ff_dims_choices) - 1)
+        trial_params["ff_dims"] = ff_dims_choices[ff_dims_index]
+        # --- END FIX ---
         trial_params["fourier_scale"] = trial.suggest_float("fourier_scale", 5.0, 20.0)
 
     # === Grid Hyperparameters (MODIFIED AS REQUESTED) ===
-    # Replaced grid/ic_bc_grid with sampling section
+    # Using suggest_int with log=True (no step) for number of points
     trial_params["sampling"] = {
         "n_points_pde": trial.suggest_int("n_points_pde", 10000, 120000, log=True),
         "n_points_ic": trial.suggest_int("n_points_ic", 1000, 20000, log=True),
@@ -71,7 +88,7 @@ def objective(trial: optuna.trial.Trial,
         trial_params["loss_weights"]["pde_weight"] = 1.0
         trial_params["loss_weights"]["ic_weight"] = 1.0
         trial_params["loss_weights"]["bc_weight"] = 1.0
-        trial_params["loss_weights"]["neg_h_weight"] = 1.0 # <<<--- ADD THIS LINE
+        trial_params["loss_weights"]["neg_h_weight"] = 1.0
         if has_building: trial_params["loss_weights"]["building_bc_weight"] = 1.0
         trial_params["loss_weights"]["data_weight"] = 1.0 if not data_free else 0.0 # Set based on data_free flag
 
@@ -79,15 +96,13 @@ def objective(trial: optuna.trial.Trial,
         trial.set_user_attr("ic_weight_factor", None)
         trial.set_user_attr("bc_weight_factor", None)
         if has_building: trial.set_user_attr("building_bc_weight_factor", None)
-        trial.set_user_attr("neg_h_weight_factor", None) # <<<--- ADD THIS LINE
+        trial.set_user_attr("neg_h_weight_factor", None)
         trial.set_user_attr("data_weight_factor", None)
 
     else: # Static weights mode
         print(f"Trial {trial.number}: Configuring independent static weights (data_free={data_free}).")
         
-        # --- NEW: Suggest each weight independently ---
-        # Define a common range for all weights.
-        # You can adjust this range based on your sensitivity analysis needs.
+        # --- NEW: Suggest each weight independently (from user) ---
         min_weight = 1e-2
         max_weight = 1e3
         
@@ -117,7 +132,7 @@ def objective(trial: optuna.trial.Trial,
         trial.set_user_attr("gradnorm_alpha", None)
         trial.set_user_attr("gradnorm_update_freq", None)
         trial.set_user_attr("gradnorm_lr", None)
-        
+
     # === Construct FULL Trial Configuration Dictionary ===
     # Start with a deep copy of the base config (which is already a dict)
     trial_config_dict = copy.deepcopy(base_config_dict)
@@ -164,7 +179,7 @@ def objective(trial: optuna.trial.Trial,
 
     # --- Store the complete configuration in user attributes ---
     # Convert back to regular dict for storage if needed, ensure serializability
-    config_to_store = dict(trial_config_dict)
+    config_to_store = unfreeze(trial_config_dict) # Ensure it's a plain dict
     trial.set_user_attr('full_config', config_to_store)
 
     # --- Convert final config to FrozenDict for JAX functions ---
