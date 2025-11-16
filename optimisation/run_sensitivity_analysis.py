@@ -106,7 +106,7 @@ def main():
         direction="maximize", # Maximize NSE
         sampler=sampler,      # <<<--- ADDED SAMPLER
         load_if_exists=True,
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=20, n_warmup_steps=200, interval_steps=50)
+        pruner=optuna.pruners.NopPruner()  # No pruning during sensitivity analysis
     )
 
     # Use partial to pass static args AND the determined flags to the objective
