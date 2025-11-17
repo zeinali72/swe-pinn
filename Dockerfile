@@ -1,6 +1,6 @@
 # Start from an NVIDIA JAX image from 2023 (e.g., 23.08)
 # This is compatible with the Tesla V100 (Volta architecture) GPU
-FROM nvcr.io/nvidia/jax:23.08-py3
+FROM nvcr.io/nvidia/jax:25.01-py3
 
 # Set the working directory and HOME env var to /workspace (OVHcloud standard)
 ENV HOME=/workspace
