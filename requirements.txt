@@ -1,0 +1,19 @@
+# == HPO Library ==
+# Required by your run_job.sh for --study_name and --storage
+optuna
+
+# == Configs & Utilities ==
+# Required for loading the .yaml config files
+PyYAML
+
+# == Common ML/Data Libraries ==
+# DO NOT add jax or jaxlib here - they are in the base image.
+# Add any other libraries your scripts import:
+numpy
+pandas
+scikit-learn
+tqdm
+matplotlib
+
+# ADDED: This was missing and caused the "No module named 'seaborn'" error
+seaborn

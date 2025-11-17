@@ -1,7 +1,12 @@
-data/
-models/
-results/
+# Ignore python cache
+__pycache__/
+
+# Ignore local databases
+*.db
+
+# Ignore local log files
+*.log
+
+# Ignore git and devcontainer files
 .git/
-.vscode/
-aim_repo/
-optimisation_logs/
+.devcontainer/

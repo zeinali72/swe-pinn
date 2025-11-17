@@ -104,7 +104,7 @@ venv.bak/
 .aim/
 
 # Data, models, experiments (uncomment to track if needed)
-data/
+
 models/
 
 # IDE
