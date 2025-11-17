@@ -1,0 +1,7 @@
+data/
+models/
+results/
+.git/
+.vscode/
+aim_repo/
+optimisation_logs/

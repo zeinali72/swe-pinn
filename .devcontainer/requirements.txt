@@ -17,6 +17,7 @@ aim
 optuna
 plotly
 kaleido
+scikit-learn
 
 # Cupy and Cudf
 cudf-cu12==25.10.*

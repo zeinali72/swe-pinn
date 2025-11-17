@@ -16,17 +16,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---------- END: MODIFICATIONS FOR C++ ----------
 
 # ---------- Copy helper scripts ----------
+# CORRECTED: Paths are relative to the project root (the build context)
 COPY install_dependencies.sh   /workspace/install_dependencies.sh
 COPY install_requirements.sh   /workspace/install_requirements.sh
-
-# Optional: copy requirements; zero-byte file prevents COPY failure if absent
 COPY requirements.txt          /workspace/requirements.txt
 
 # ---------- Install OS + Python deps ----------
-# The original install_dependencies.sh can be simplified if build-essential is already installed above
+# This installs git, gdal, and all pip requirements
 RUN chmod +x install_dependencies.sh install_requirements.sh && \
     ./install_dependencies.sh && \
     ./install_requirements.sh && \
     rm -rf /var/lib/apt/lists/*
+
+# ---------- IMPORTANT ----------
+# We are NOT copying the src/, optimisation/, etc. folders.
+# This image will only contain the environment and dependencies.
+# The code will be pulled from Git at runtime on OVH.
 
 CMD ["bash"]
