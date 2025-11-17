@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e # Exit immediately if any command fails
 
+export JAX_DEFAULT_MATMUL_PRECISION=TF32
+echo "JAX_DEFAULT_MATMUL_PRECISION set to TF32"
+
 echo "--- Preparing log and database directories in /workspace/mnt ---"
 # Create directories in the persistent mount
 mkdir -p /workspace/mnt/logs
