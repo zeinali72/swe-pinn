@@ -21,6 +21,10 @@ COPY install_dependencies.sh   /workspace/install_dependencies.sh
 COPY install_requirements.sh   /workspace/install_requirements.sh
 COPY requirements.txt          /workspace/requirements.txt
 
+# >>> FIX: Define these ENV vars here so the build sees them <<<
+ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
+ENV C_INCLUDE_PATH=/usr/include/gdal
+
 # ---------- Install OS + Python deps ----------
 # This installs git, gdal, and all pip requirements
 RUN chmod +x install_dependencies.sh install_requirements.sh && \
