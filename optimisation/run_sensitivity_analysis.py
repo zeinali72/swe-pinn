@@ -133,7 +133,7 @@ def main():
     best_trial_config = None
 
     try:
-        study.optimize(objective_with_config, n_trials=args.n_trials, timeout=None, show_progress_bar=True)
+        study.optimize(objective_with_config, n_trials=args.n_trials, timeout=None, show_progress_bar=False)
     except KeyboardInterrupt:
         print("\nSensitivity analysis interrupted by user.")
     except Exception as e:
