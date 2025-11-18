@@ -22,11 +22,18 @@
 
    "mounts": [
      {
-       "source": "${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig",
+       "source": "/home/farzan/.gitconfig",
        "target": "/root/.gitconfig",
+       "type": "bind"
+     },
+     {
+       "source": "/home/farzan/.ssh",
+       "target": "/tmp/.ssh-host",
        "type": "bind"
      }
    ],
+
+   "postStartCommand": "mkdir -p /root/.ssh && cp -r /tmp/.ssh-host/. /root/.ssh/ && chmod 600 /root/.ssh/* || echo 'SSH setup skipped'",
 
    "containerUser": "root",
 
