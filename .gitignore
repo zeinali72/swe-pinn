@@ -160,3 +160,4 @@ run_all_hpo.sh
 .fuse_*
 
 ovh_token.md
+data/
