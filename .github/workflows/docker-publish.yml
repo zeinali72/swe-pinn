@@ -4,7 +4,10 @@ name: Build and Publish Docker Image
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # Allows you to run this manually from the Actions tab
+    # FIX: Only run when files in this folder change
+    paths:
+      - '.devcontainer/**'
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
