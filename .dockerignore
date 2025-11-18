@@ -10,3 +10,5 @@ __pycache__/
 # Ignore git and devcontainer files
 .git/
 .devcontainer/
+models/
+results/
