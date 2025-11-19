@@ -1,43 +1,43 @@
 #!/bin/bash
 set -e
 
-# --- 1. SETUP PATHS ---
-LOCAL_BASE="/tmp/hpo_fast"
-LOCAL_DB_DIR="$LOCAL_BASE/database"
-LOCAL_LOG_DIR="$LOCAL_BASE/logs"
+# --- 1. SETUP FAST ENVIRONMENT ---
+# Define the fast local directory
+WORK_DIR="/tmp/hpo_fast"
+LOCAL_DB_DIR="$WORK_DIR/database"
+LOCAL_LOG_DIR="$WORK_DIR/logs"
 
-# Persistent S3 paths
+# Define persistent S3 paths
 S3_DB_DIR="/workspace/optimisation/results/database"
 S3_LOG_DIR="/workspace/optimisation/results/logs"
 
-echo "--- 🔧 Setting up directories ---"
+echo "--- 🚀 Initializing Environment ---"
 mkdir -p "$LOCAL_DB_DIR" "$LOCAL_LOG_DIR"
 mkdir -p "$S3_DB_DIR" "$S3_LOG_DIR"
 
-# --- 2. DEFINING SYNC FUNCTION ---
-# We define this function to reuse it easily
-sync_data() {
-    echo "🔄 Syncing /tmp data to S3..."
-    # We use rsync if available, otherwise cp -u. 
-    # Using cp -r to ensure we catch everything.
+# COPY CODE & DATA TO NVMe (Crucial for Speed)
+# This moves the execution off S3 entirely.
+echo "⚡ Copying project to local NVMe..."
+cp -r /workspace/src "$WORK_DIR/"
+cp -r /workspace/optimisation "$WORK_DIR/"
+cp -r /workspace/data "$WORK_DIR/"
+
+# Move into the fast directory
+cd "$WORK_DIR"
+
+# --- 2. DEFINE SAFETY SYNC ---
+# This runs automatically when the script exits (Success OR Failure)
+sync_results() {
+    echo "💾 [$(date +'%T')] Syncing results to S3..."
     cp -u "$LOCAL_DB_DIR/"*.db "$S3_DB_DIR/" 2>/dev/null || true
     cp -u "$LOCAL_LOG_DIR/"*.log "$S3_LOG_DIR/" 2>/dev/null || true
-    echo "✅ Sync complete."
 }
+# If the script crashes, this ensures you still get your logs!
+trap sync_results EXIT
 
-# --- 3. SAFETY TRAP ---
-# IMPORTANT: If the script fails (error) or exits, run sync_data immediately.
-# This ensures you always get your logs in S3, even if Python crashes.
-trap sync_data EXIT
+# --- 3. START JOBS ---
 
-# --- 4. RESTORE EXISTING DATA ---
-echo "📥 checking for existing databases in S3..."
-cp "$S3_DB_DIR/"*.db "$LOCAL_DB_DIR/" 2>/dev/null || echo "No existing DBs found to resume."
-
-# --- 5. START JOBS (Sequential) ---
-# Note: We use '| tee' to show logs on screen AND write to file
-
-# JOB 1: MLP (Building)
+# JOB 1: MLP
 echo "▶️ [1/3] Starting MLP (Building)..."
 python3 -u -m optimisation.run_sensitivity_analysis \
   --config optimisation/configs/hpo_mlp_datafree_static_BUILDING.yaml \
@@ -45,11 +45,9 @@ python3 -u -m optimisation.run_sensitivity_analysis \
   --study_name "hpo-sensitivity-mlp-building" \
   --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-mlp-building.db" \
   2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-mlp-building.log"
+sync_results # Intermediate sync
 
-# Sync immediately after Job 1 finishes safely
-sync_data
-
-# JOB 2: Fourier (Building)
+# JOB 2: Fourier
 echo "▶️ [2/3] Starting Fourier (Building)..."
 python3 -u -m optimisation.run_sensitivity_analysis \
   --config optimisation/configs/hpo_fourier_datafree_static_BUILDING.yaml \
@@ -57,11 +55,9 @@ python3 -u -m optimisation.run_sensitivity_analysis \
   --study_name "hpo-sensitivity-fourier-building" \
   --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-fourier-building.db" \
   2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-fourier-building.log"
+sync_results # Intermediate sync
 
-# Sync immediately after Job 2 finishes safely
-sync_data
-
-# JOB 3: DGM (No Building)
+# JOB 3: DGM
 echo "▶️ [3/3] Starting DGM (No Building)..."
 python3 -u -m optimisation.run_sensitivity_analysis \
   --config optimisation/configs/hpo_dgm_datafree_static_NOBUILDING.yaml \
@@ -70,5 +66,5 @@ python3 -u -m optimisation.run_sensitivity_analysis \
   --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-dgm-nobuilding.db" \
   2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-dgm-nobuilding.log"
 
+# Final sync happens automatically due to 'trap'
 echo "--- 🏁 All Jobs Finished Successfully ---"
-# The 'trap' will trigger one final sync here automatically.
