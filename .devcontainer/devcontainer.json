@@ -1,50 +1,46 @@
 {
-   "name": "jax-ml-workspace",
-   "containerName": "jax-ml-workspace",
-   "shutdownAction": "none",
+  "name": "jax-ml-workspace",
+  "containerName": "jax-ml-workspace",
+  "shutdownAction": "none",
 
-   "build": {
-     "context": ".",
-     "dockerfile": "Dockerfile",
-     "args": { "NO_CACHE": "1" }
-   },
+  "build": {
+    "context": ".",
+    "dockerfile": "Dockerfile",
+    "args": { "NO_CACHE": "1" }
+  },
 
-   "envFile": [ "devcontainer.env" ],
+  "envFile": [ "devcontainer.env" ],
 
-   // --- START: ADD containerEnv ---
-   "containerEnv": {
-     "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:${containerEnv:LD_LIBRARY_PATH}"
-   },
-   // --- END: ADD containerEnv ---
+  "containerEnv": {
+    "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:${containerEnv:LD_LIBRARY_PATH}"
+  },
 
+  "runArgs": [ "--gpus=all", "--restart", "unless-stopped" ],
 
-   "runArgs": [ "--gpus=all", "--restart", "unless-stopped" ],
+  "mounts": [
+    // We keep the gitconfig if you specifically want the Desktop's name/email.
+    // (VS Code usually copies this automatically from your Laptop, but this forces the Desktop's version).
+    {
+      "source": "/home/farzan/.gitconfig",
+      "target": "/root/.gitconfig",
+      "type": "bind"
+    }
+    // DELETED: The SSH bind mount was here. We removed it.
+  ],
 
-   "mounts": [
-     {
-       "source": "/home/farzan/.gitconfig",
-       "target": "/root/.gitconfig",
-       "type": "bind"
-     },
-     {
-       "source": "/home/farzan/.ssh",
-       "target": "/tmp/.ssh-host",
-       "type": "bind"
-     }
-   ],
+  // DELETED: The 'postStartCommand' that copied SSH keys is removed.
+  // If you have other startup commands, put them here, otherwise delete the line.
+  
+  "containerUser": "root",
 
-   "postStartCommand": "mkdir -p /root/.ssh && cp -r /tmp/.ssh-host/. /root/.ssh/ && chmod 600 /root/.ssh/* || echo 'SSH setup skipped'",
-
-   "containerUser": "root",
-
-   "customizations": {
-     "vscode": {
-       "extensions": [
-         "ms-python.python",
-         "ms-python.vscode-pylance",
-         "ms-toolsai.jupyter",
-         "ms-toolsai.jupyter-renderers"
-       ]
-     }
-   }
- }
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "ms-toolsai.jupyter-renderers"
+      ]
+    }
+  }
+}
