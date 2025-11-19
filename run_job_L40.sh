@@ -1,62 +1,105 @@
 #!/bin/bash
 set -e
 
-# --- 1. CONFIGURATION ---
-SRC_DIR="/workspace"
-WORK_DIR="/tmp/hpo_fast"
-S3_RESULTS="/workspace/optimisation/results"
+# --- 1. SETUP PATHS ---
+# /workspace is READ-ONLY (GitHub code)
+# /workspace/optimisation/results is READ-WRITE (S3 Bucket)
 
-# Setup Fast Environment (NVMe)
-echo "--- 🚀 Setting up Fast Environment ---"
-# Fix Matplotlib cache issue
-export MPLCONFIGDIR="/tmp/matplotlib"
-mkdir -p "$WORK_DIR/database" "$WORK_DIR/logs" "$MPLCONFIGDIR"
-mkdir -p "$S3_RESULTS/database" "$S3_RESULTS/logs"
+# Use /tmp for fast local NVMe storage (Avoids network locking issues)
+LOCAL_BASE="/tmp/hpo_fast"
+LOCAL_DB_DIR="$LOCAL_BASE/database"
+LOCAL_LOG_DIR="$LOCAL_BASE/logs"
 
-# Copy everything to /tmp for speed (Data is small, so this is instant)
-cp -r "$SRC_DIR/src" "$WORK_DIR/"
-cp -r "$SRC_DIR/optimisation" "$WORK_DIR/"
-cp -r "$SRC_DIR/data" "$WORK_DIR/"
+# Persistent S3 paths (Must be inside the 'results' volume)
+S3_DB_DIR="/workspace/optimisation/results/database"
+S3_LOG_DIR="/workspace/optimisation/results/logs"
 
-cd "$WORK_DIR"
+echo "--- 🔧 Setting up directories ---"
+mkdir -p "$LOCAL_DB_DIR" "$LOCAL_LOG_DIR"
+mkdir -p "$S3_DB_DIR" "$S3_LOG_DIR"
 
-# --- 4. RUN JOBS (Sequential) ---
+# --- 2. RESTORE EXISTING DATA ---
+echo "🔄 Checking for existing databases in S3..."
+cp "$S3_DB_DIR/"*.db "$LOCAL_DB_DIR/" 2>/dev/null || echo "No existing DBs found to resume."
 
-# JOB 1: MLP
-echo "▶️ [1/3] Starting MLP..."
-python3 -u -m optimisation.run_sensitivity_analysis \
-  --config optimisation/configs/hpo_mlp_datafree_static_BUILDING.yaml \
-  --n_trials 100 \
-  --study_name "hpo-sensitivity-mlp-building" \
-  --storage "sqlite:///database/hpo-sensitivity-mlp-building.db" \
-  2>&1 | tee "logs/hpo-sensitivity-mlp-building.log"
+# --- 3. BACKGROUND SYNCER ---
+# Syncs /tmp -> S3 every 60 seconds
+(
+    while true; do
+        sleep 60
+        # Echo only if something is copied to avoid log spam
+        cp -u "$LOCAL_DB_DIR/"*.db "$S3_DB_DIR/" 2>/dev/null && echo "☁️ Synced DBs to S3" || true
+        cp -u "$LOCAL_LOG_DIR/"*.log "$S3_LOG_DIR/" 2>/dev/null || true
+    done
+) &
+SYNC_PID=$!
 
-# Copy files after Job 1
-cp -u database/*.db "$S3_RESULTS/database/" 2>/dev/null || true
-cp -u logs/*.log "$S3_RESULTS/logs/" 2>/dev/null || true
-echo "✅ Files copied to S3 results."
+# --- 4. PROGRESS MONITOR ---
+# Prints status to the main OVH console
+(
+    while true; do
+        sleep 60
+        echo -e "\n=== 📊 Status Report [$(date +'%H:%M')] ==="
+        for logfile in "$LOCAL_LOG_DIR"/*.log; do
+            [ -e "$logfile" ] || continue
+            job_name=$(basename "$logfile" .log)
+            # Get last meaningful line
+            last_line=$(grep "Trial" "$logfile" | tail -n 1 | cut -c 1-100)
+            count=$(grep -c "Trial .* finished" "$logfile" || echo 0)
+            echo "🔹 $job_name: $count completed. | Status: $last_line"
+        done
+    done
+) &
+MON_PID=$!
 
-# JOB 2: Fourier
-echo "▶️ [2/3] Starting Fourier..."
-python3 -u -m optimisation.run_sensitivity_analysis \
-  --config optimisation/configs/hpo_fourier_datafree_static_BUILDING.yaml \
-  --n_trials 100 \
-  --study_name "hpo-sensitivity-fourier-building" \
-  --storage "sqlite:///database/hpo-sensitivity-fourier-building.db" \
-  2>&1 | tee "logs/hpo-sensitivity-fourier-building.log"
+# --- 5. START JOBS (3 Parallel) ---
+# H100 80GB. 3 Jobs at 30% Memory each = 90% Utilisation.
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.30
 
-# Copy files after Job 2
-cp -u database/*.db "$S3_RESULTS/database/" 2>/dev/null || true
-cp -u logs/*.log "$S3_RESULTS/logs/" 2>/dev/null || true
-echo "✅ Files copied to S3 results."
+echo "--- 🚀 Starting 3 Parallel Optimizations ---"
 
-# JOB 3: DGM
-echo "▶️ [3/3] Starting DGM..."
-python3 -u -m optimisation.run_sensitivity_analysis \
-  --config optimisation/configs/hpo_dgm_datafree_static_NOBUILDING.yaml \
-  --n_trials 100 \
-  --study_name "hpo-sensitivity-dgm-nobuilding" \
-  --storage "sqlite:///database/hpo-sensitivity-dgm-nobuilding.db" \
-  2>&1 | tee "logs/hpo-sensitivity-dgm-nobuilding.log"
+# JOB 1: MLP (Building)
+(
+    echo "▶️ [1/3] Starting MLP (Building)..."
+    python3 -u -m optimisation.run_sensitivity_analysis \
+      --config optimisation/configs/hpo_mlp_datafree_static_BUILDING.yaml \
+      --n_trials 100 \
+      --study_name "hpo-sensitivity-mlp-building" \
+      --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-mlp-building.db" \
+      > "$LOCAL_LOG_DIR/hpo-sensitivity-mlp-building.log" 2>&1
+    echo "✅ Finished MLP (Building)"
+) &
 
-echo "--- 🎉 All Success ---"
+# JOB 2: Fourier (Building)
+(
+    echo "▶️ [2/3] Starting Fourier (Building)..."
+    python3 -u -m optimisation.run_sensitivity_analysis \
+      --config optimisation/configs/hpo_fourier_datafree_static_BUILDING.yaml \
+      --n_trials 100 \
+      --study_name "hpo-sensitivity-fourier-building" \
+      --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-fourier-building.db" \
+      > "$LOCAL_LOG_DIR/hpo-sensitivity-fourier-building.log" 2>&1
+    echo "✅ Finished Fourier (Building)"
+) &
+
+# JOB 3: DGM (No Building)
+(
+    echo "▶️ [3/3] Starting DGM (No Building)..."
+    python3 -u -m optimisation.run_sensitivity_analysis \
+      --config optimisation/configs/hpo_dgm_datafree_static_NOBUILDING.yaml \
+      --n_trials 100 \
+      --study_name "hpo-sensitivity-dgm-nobuilding" \
+      --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-dgm-nobuilding.db" \
+      > "$LOCAL_LOG_DIR/hpo-sensitivity-dgm-nobuilding.log" 2>&1
+    echo "✅ Finished DGM (No Building)"
+) &
+
+# Wait for all jobs
+wait
+
+# --- 6. CLEANUP ---
+kill $SYNC_PID $MON_PID
+echo "🏁 Final Sync to S3..."
+cp -u "$LOCAL_DB_DIR/"*.db "$S3_DB_DIR/"
+cp -u "$LOCAL_LOG_DIR/"*.log "$S3_LOG_DIR/"
+echo "--- All Done ---"
