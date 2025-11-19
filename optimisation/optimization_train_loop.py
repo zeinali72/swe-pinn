@@ -1,13 +1,12 @@
 # optimisation/optimization_train_loop.py
 """
-Contains the core training loop logic for a single Optuna trial.
-Refactored to exclude GradNorm and Data Loss (Physics-Only).
-Includes robust batch calculation and safe loss weighting.
+Contains the core training loop logic for a single Optuna trial,
+adapted from src/train.py and src/train_gradnorm.py.
 """
 import os
 import jax
 import jax.numpy as jnp
-from jax import random
+from jax import random, lax
 import optax
 from flax.core import FrozenDict
 import numpy as np
@@ -18,15 +17,18 @@ from typing import Any, Dict, Tuple
 import optuna
 
 # --- Imports from project src directory ---
+# This assumes run_optimization.py adds the project root to sys.path
 from src.config import DTYPE
-from src.data import sample_domain, get_batches
+from src.data import sample_domain, get_batches # <<<--- MODIFIED: Using sample_domain
 from src.models import init_model
 from src.losses import (
     compute_neg_h_loss, compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
     compute_building_bc_loss
 )
+# Note: get_initial_losses is specifically for GradNorm setup
 from src.utils import nse, rmse, mask_points_inside_building
 from src.physics import h_exact
+# Do not import reporting here; objective function returns the value directly
 
 
 # --- Define Training Step (Functionally JITted) ---
@@ -45,64 +47,56 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
 
     def loss_and_individual_terms(p):
         terms = {}
-        # --- Compute Losses based on available data ---
-        
-        # 1. PDE Loss
+        # Compute losses based on available non-empty batches and active weights
         pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
         if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
             if has_building:
                 pde_mask = mask_points_inside_building(pde_batch_data, config["building"])
                 terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config, pde_mask)
-                if 'neg_h' in active_loss_keys_base:
-                    terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data, pde_mask)
             else:
                 terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config)
-                if 'neg_h' in active_loss_keys_base:
+            
+            if 'neg_h' in active_loss_keys_base:
+                # compute_neg_h_loss uses the pde_batch_data
+                if has_building:
+                    pde_mask = mask_points_inside_building(pde_batch_data, config["building"])
+                    terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data, pde_mask)
+                else:
                     terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data)
 
-        # 2. IC Loss
         ic_batch_data = all_batches.get('ic', jnp.empty((0,3), dtype=DTYPE))
         if 'ic' in active_loss_keys_base and ic_batch_data.shape[0] > 0:
             terms['ic'] = compute_ic_loss(model, p, ic_batch_data)
 
-        # 3. BC Loss (Domain Walls)
         bc_batches = all_batches.get('bc', {})
-        if 'bc' in active_loss_keys_base:
-             bc_left = bc_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
-             bc_right = bc_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
-             bc_bottom = bc_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
-             bc_top = bc_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
-             
-             # Only compute if we actually have data in at least one wall
-             if any(b.shape[0] > 0 for b in [bc_left, bc_right, bc_bottom, bc_top]):
-                 terms['bc'] = compute_bc_loss(
-                     model, p, bc_left, bc_right, bc_bottom, bc_top, config
-                 )
+        bc_left_batch = bc_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
+        bc_right_batch = bc_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
+        bc_bottom_batch = bc_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
+        bc_top_batch = bc_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
+        if 'bc' in active_loss_keys_base and any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
+             terms['bc'] = compute_bc_loss(
+                 model, p, bc_left_batch, bc_right_batch, bc_bottom_batch, bc_top_batch, config
+             )
 
-        # 4. Building BC Loss
         if has_building and 'building_bc' in active_loss_keys_base:
             bldg_batches = all_batches.get('building_bc', {})
-            b_left = bldg_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
-            b_right = bldg_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
-            b_bottom = bldg_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
-            b_top = bldg_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
-            
-            if any(b.shape[0] > 0 for b in [b_left, b_right, b_bottom, b_top]):
+            bldg_left_batch = bldg_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
+            bldg_right_batch = bldg_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
+            bldg_bottom_batch = bldg_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
+            bldg_top_batch = bldg_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
+            if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
                 terms['building_bc'] = compute_building_bc_loss(
-                    model, p, b_left, b_right, b_bottom, b_top
+                    model, p, bldg_left_batch, bldg_right_batch, bldg_bottom_batch, bldg_top_batch
                 )
 
-        # --- Calculate Weighted Total Loss ---
-        # We create a dictionary that contains a value for EVERY key in weights_dict.
-        # If a term wasn't computed (e.g. batch empty), it defaults to 0.0.
+        # Calculate weighted total loss
+        # Use only weights for terms that were actually computed in this step
+        active_weights = {k: weights_dict.get(k, 0.0) for k in terms.keys()}
+        # Ensure all keys from weights_dict are present for total_loss function, defaulting computed value to 0 if not present in `terms`
         terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
 
-        # We pass the FULL weights_dict. 
-        # Mathematical safety: sum(weight[k] * term[k]). If term[k] is 0.0, the contribution is 0.0.
-        # This avoids KeyError if 'total_loss' iterates over weights_dict.
-        total = total_loss(terms_with_defaults, weights_dict)
-        
-        return total, terms
+        total = total_loss(terms_with_defaults, active_weights)
+        return total, terms # Return only computed terms
 
     (total_loss_val, individual_terms_val), grads = jax.value_and_grad(loss_and_individual_terms, has_aux=True)(params)
     updates, new_opt_state = optimiser.update(grads, opt_state, params)
@@ -118,7 +112,7 @@ train_step_trial_jitted = jax.jit(
 # --- Main Training Function for a Single Trial ---
 def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> float:
     """
-    Runs the training loop for a single Optuna trial (Data-Free / Static Weights).
+    Runs the training loop for a single Optuna trial.
     Args:
         trial: The Optuna trial object.
         trial_cfg: The configuration dictionary for this specific trial.
@@ -128,13 +122,13 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     has_building = "building" in trial_cfg
 
     print(f"--- Starting Trial {trial.number} ---")
-    print("Mode: Data-Free (Physics Only)")
 
     # --- 1. Setup Model, Optimizer, Keys ---
     key = random.PRNGKey(trial_cfg["training"]["seed"])
     
-    model_key, init_key_main, train_key = random.split(key, 3)
-    init_key, val_key = random.split(init_key_main, 2)
+    # --- MODIFICATION: Split key for validation sampling ---
+    model_key, train_key, val_key = random.split(key, 3)
+    # --- END MODIFICATION ---
 
     model_name = trial_cfg["model"]["name"]
 
@@ -144,30 +138,34 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
         model, params = init_model(model_class, model_key, trial_cfg)
     except (ImportError, AttributeError, ValueError) as e:
         print(f"Trial {trial.number}: ERROR during model initialization: {e}")
-        return -1.0
+        return -1.0 # Return poor value
 
+    # Get the boundaries dict, which has string keys from the config
     raw_boundaries = trial_cfg["training"].get("lr_boundaries", {15000: 0.1, 30000: 0.1})
+    
+    # --- FIX: Convert string keys to int keys for Optax ---
     boundaries_and_scales_int_keys = {int(k): v for k, v in raw_boundaries.items()}
+    # --- END FIX ---
 
     lr_schedule = optax.piecewise_constant_schedule(
         init_value=trial_cfg["training"]["learning_rate"],
-        boundaries_and_scales=boundaries_and_scales_int_keys
+        boundaries_and_scales=boundaries_and_scales_int_keys # Use the converted dict
     )
     optimiser = optax.chain(
-        optax.clip_by_global_norm(trial_cfg["training"].get("clip_norm", 1.0)),
+        optax.clip_by_global_norm(trial_cfg["training"].get("clip_norm", 1.0)), # Use default if not in config
         optax.adam(learning_rate=lr_schedule)
     )
     opt_state = optimiser.init(params)
 
-    # --- 2. Prepare Static Weights ---
+    # --- 2. Prepare Initial Weights ---
     current_weights_dict = {k.replace('_weight',''):v for k,v in trial_cfg["loss_weights"].items()}
-    
-    # Filter to active keys (weights > 0), explicitly excluding 'data'
+
+    # Determine active loss keys based on weights > 0
     active_loss_term_keys = [
         k for k, v in current_weights_dict.items() if v > 0 and k != 'data'
     ]
-    
-    # --- 3. Load/Create Validation Data ---
+
+    # --- 3. Load Validation Data ---
     val_points, h_true_val = None, None
     validation_data_loaded = False
     scenario_name_val = trial_cfg.get('scenario', 'default_scenario')
@@ -175,68 +173,122 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     validation_data_file = os.path.join(base_data_path_val, "validation_sample.npy")
 
     if os.path.exists(validation_data_file):
+        # --- Case 1: validation_sample.npy file exists (standard case) ---
         try:
-            # Case 1: Validation file exists (Standard)
+            print(f"Trial {trial.number}: Loading validation data from: {validation_data_file}")
             loaded_val_data = np.load(validation_data_file).astype(DTYPE)
             val_points_all = loaded_val_data[:, [1, 2, 0]] # (x, y, t)
             h_true_val_all = loaded_val_data[:, 3]       # (h)
             
             if has_building:
+                # Apply building mask if building scenario
+                print(f"Trial {trial.number}: Applying building mask to validation points.")
                 mask_val = mask_points_inside_building(val_points_all, trial_cfg["building"])
                 val_points = val_points_all[mask_val]
                 h_true_val = h_true_val_all[mask_val]
             else:
+                 # No building, use all loaded points
                  val_points = val_points_all
                  h_true_val = h_true_val_all
 
             if val_points is not None and val_points.shape[0] > 0:
                  validation_data_loaded = True
+                 print(f"Trial {trial.number}: Loaded {val_points.shape[0]} validation points.")
+            else:
+                 print(f"Trial {trial.number}: WARNING - No validation points remain after loading/masking.")
         except Exception as e:
             print(f"Trial {trial.number}: WARNING - Error loading validation data {validation_data_file}: {e}.")
             
+    # --- MODIFICATION: Use sample_domain for analytical validation ---
     elif not has_building and "validation_grid" in trial_cfg:
-        # Case 2: Analytical validation (No file, no building)
+        # --- Case 2: No file, but NO building and validation_grid exists ---
+        print(f"Trial {trial.number}: INFO - {validation_data_file} not found. Creating analytical validation set from 'validation_grid' config.")
         try:
             val_grid_cfg = trial_cfg["validation_grid"]
             domain_cfg = trial_cfg["domain"]
-            n_val_points = val_grid_cfg.get("n_points_val", 10000)
             
+            # Check for n_points_val first, otherwise compute from nx/ny/nt
+            if "n_points_val" in val_grid_cfg:
+                n_val_points = val_grid_cfg["n_points_val"]
+            else:
+                n_val_points = val_grid_cfg.get("nx_val", 10) * val_grid_cfg.get("ny_val", 10) * val_grid_cfg.get("nt_val", 10)
+            
+            print(f"Trial {trial.number}: Sampling {n_val_points} analytical validation points...")
+            # Sample points based on the validation grid using sample_domain
             val_points = sample_domain(
-                val_key,
+                val_key, # Use the dedicated key
                 n_val_points,
                 (0., domain_cfg["lx"]), 
                 (0., domain_cfg["ly"]), 
                 (0., domain_cfg["t_final"])
             )
             
+            # Calculate the exact solution for these points
             h_true_val = h_exact(
-                val_points[:, 0],
-                val_points[:, 2],
+                val_points[:, 0], # x
+                val_points[:, 2], # t
                 trial_cfg["physics"]["n_manning"],
                 trial_cfg["physics"]["u_const"]
             )
             
             if val_points.shape[0] > 0:
                 validation_data_loaded = True
+                print(f"Trial {trial.number}: Created analytical validation set with {val_points.shape[0]} points.")
+            else:
+                print(f"Trial {trial.number}: WARNING - Analytical validation set is empty (check validation_grid config).")
+                
         except Exception as e:
             print(f"Trial {trial.number}: WARNING - Error creating analytical validation set: {e}.")
             val_points, h_true_val = None, None
+    # --- END MODIFICATION ---
+            
+    else:
+        # --- Case 3: No file AND (it's a building scenario OR no validation_grid) ---
+        print(f"Trial {trial.number}: WARNING - Validation file {validation_data_file} not found.")
+        if has_building:
+            print(f"Trial {trial.number}: WARNING - Building scenario, NSE/RMSE will not be calculated.")
+        else:
+            print(f"Trial {trial.number}: WARNING - No-building scenario, but 'validation_grid' not found in config. NSE/RMSE will not be calculated.")
+        # In this case, validation_data_loaded remains False
+
 
     # --- 4. Training Loop ---
     best_nse_trial = -jnp.inf
     epochs = trial_cfg["training"]["epochs"]
     batch_size = trial_cfg["training"]["batch_size"]
+    global_step = 0
     start_time_trial = time.time()
+
+    # Helper to prepare batches for lax.scan
+    def prepare_batches(batches, n_steps, shape_suffix):
+        if not batches:
+            return jnp.zeros((n_steps, 0) + shape_suffix, dtype=DTYPE)
+        stacked = jnp.stack(batches)
+        n_avail = stacked.shape[0]
+        if n_avail == n_steps:
+            return stacked
+        # Repeat batches if fewer than n_steps
+        indices = jnp.arange(n_steps) % n_avail
+        return stacked[indices]
+
+    # Define scan body function
+    def scan_body(carry, batch_data):
+        curr_params, curr_opt_state = carry
+        new_params, new_opt_state, terms, total = train_step_trial(
+            model, curr_params, curr_opt_state, batch_data, current_weights_dict, optimiser, trial_cfg
+        )
+        # We don't need to carry the history of losses for now to save memory
+        return (new_params, new_opt_state), None
 
     for epoch in range(epochs):
         epoch_start_time = time.time()
         key = train_key # Use the training key for this epoch's sampling
 
-        # --- Dynamic Sampling ---
+        # --- MODIFICATION: Dynamic Sampling using sample_domain ---
         key, pde_key, ic_key, bc_keys, bldg_keys = random.split(key, 5)
         l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
         domain_cfg = trial_cfg["domain"]
-        sampling_cfg = trial_cfg["sampling"]
+        sampling_cfg = trial_cfg["sampling"] # <-- Use new config section
 
         # Sample points only needed for active terms
         n_pde = sampling_cfg.get("n_points_pde", 1000)
@@ -264,6 +316,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
             building_points['right'] = sample_domain(bldg_r_key, n_bldg_per_wall, (b_cfg["x_max"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
             building_points['bottom'] = sample_domain(bldg_b_key, n_bldg_per_wall, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_min"]), (0., domain_cfg["t_final"]))
             building_points['top'] = sample_domain(bldg_t_key, n_bldg_per_wall, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_max"], b_cfg["y_max"]), (0., domain_cfg["t_final"]))
+        # --- END MODIFICATION ---
 
         # --- Batch Creation ---
         key, pde_b_key, ic_b_key, bc_b_keys, bldg_b_keys = random.split(key, 5)
@@ -283,86 +336,48 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
              for wall, points in building_points.items():
                  building_batches_dict[wall] = get_batches(building_b_keys_map[wall], points, batch_size) if points.shape[0] > 0 else []
 
-        # --- Determine Number of Batches (Robust) ---
-        # Collect all valid batch lists to find the maximum number of iterations required
-        all_active_batches = []
-        if pde_batches: all_active_batches.append(pde_batches)
-        if ic_batches: all_active_batches.append(ic_batches)
-        
-        # Domain BCs
-        for b in [left_batches, right_batches, bottom_batches, top_batches]:
-            if b: all_active_batches.append(b)
-            
-        # Building BCs
-        for b in building_batches_dict.values():
-            if b: all_active_batches.append(b)
-            
-        if not all_active_batches:
-             # No data generated for this epoch (e.g. extremely small N)
+        # --- Determine Number of Batches ---
+        num_batches = 0
+        if 'pde' in active_loss_term_keys and pde_batches:
+             num_batches = len(pde_batches)
+        elif 'ic' in active_loss_term_keys and ic_batches: # Fallback if only IC/BC active
+             num_batches = len(ic_batches)
+        # Add more fallbacks if necessary based on expected active terms
+
+        if num_batches == 0:
+             print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - No batches generated for active terms. Skipping epoch.")
              continue
-             
-        # Set num_batches to the length of the longest list (iterations per epoch)
-        num_batches = max(len(b) for b in all_active_batches)
 
-        # --- Batch Iterators ---
-        pde_batch_iter = itertools.cycle(pde_batches) if pde_batches else iter(())
-        ic_batch_iter = itertools.cycle(ic_batches) if ic_batches else iter(())
-        left_batch_iter = itertools.cycle(left_batches) if left_batches else iter(())
-        right_batch_iter = itertools.cycle(right_batches) if right_batches else iter(())
-        bottom_batch_iter = itertools.cycle(bottom_batches) if bottom_batches else iter(())
-        top_batch_iter = itertools.cycle(top_batches) if top_batches else iter(())
-
-        building_batch_iters = {}
+        # --- Prepare Data for lax.scan ---
+        building_scan_data = {}
         if has_building and 'building_bc' in active_loss_term_keys:
-             for wall, batches in building_batches_dict.items():
-                 building_batch_iters[wall] = itertools.cycle(batches) if batches else iter(())
+            for wall, batches in building_batches_dict.items():
+                building_scan_data[wall] = prepare_batches(batches, num_batches, (3,))
 
-        # --- Training Steps within Epoch ---
-        for i in range(num_batches):
-            # Get batches
-            pde_batch_data = next(pde_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-            ic_batch_data = next(ic_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-            left_batch_data = next(left_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-            right_batch_data = next(right_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-            bottom_batch_data = next(bottom_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-            top_batch_data = next(top_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
+        scan_inputs = {
+            'pde': prepare_batches(pde_batches, num_batches, (3,)),
+            'ic': prepare_batches(ic_batches, num_batches, (3,)),
+            'bc': {
+                'left': prepare_batches(left_batches, num_batches, (3,)),
+                'right': prepare_batches(right_batches, num_batches, (3,)),
+                'bottom': prepare_batches(bottom_batches, num_batches, (3,)),
+                'top': prepare_batches(top_batches, num_batches, (3,)),
+            },
+            'building_bc': building_scan_data,
+            # 'data' term is not present in this simplified loop context or handled if needed
+        }
 
-            current_building_batch_data = {}
-            if has_building and 'building_bc' in active_loss_term_keys:
-                for wall, iterator in building_batch_iters.items():
-                    current_building_batch_data[wall] = next(iterator, jnp.empty((0, 3), dtype=DTYPE))
-
-            # Aggregate batches
-            current_all_batches = {
-                'pde': pde_batch_data,
-                'ic': ic_batch_data,
-                'bc': {
-                    'left': left_batch_data,
-                    'right': right_batch_data,
-                    'bottom': bottom_batch_data,
-                    'top': top_batch_data,
-                },
-                'building_bc': {
-                    'left': current_building_batch_data.get('left', jnp.empty((0, 3), dtype=DTYPE)),
-                    'right': current_building_batch_data.get('right', jnp.empty((0, 3), dtype=DTYPE)),
-                    'bottom': current_building_batch_data.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
-                    'top': current_building_batch_data.get('top', jnp.empty((0, 3), dtype=DTYPE)),
-                }
-            }
-
-            # --- Training Step ---
-            params, opt_state, _, _ = train_step_trial_jitted(
-                model, params, opt_state,
-                current_all_batches,
-                current_weights_dict,
-                optimiser, trial_cfg
-            )
+        # --- Run Training Steps with lax.scan ---
+        (params, opt_state), _ = lax.scan(scan_body, (params, opt_state), scan_inputs)
+        
+        global_step += num_batches
 
         # --- Epoch End Validation & Pruning ---
-        validation_freq = trial_cfg.get("training", {}).get("validation_freq", 1)
+        validation_freq = trial_cfg.get("training", {}).get("validation_freq", 1) # Validate less frequently
         if (epoch + 1) % validation_freq == 0:
-            current_nse = -jnp.inf
+            current_nse = -jnp.inf # Default if validation fails/skipped
 
+            # This single block now handles both loaded .npy data and pre-computed analytical data
             if validation_data_loaded: 
                 try:
                     U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
@@ -372,28 +387,35 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                     print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - NSE calculation error: {e_val}")
                     current_nse = -jnp.inf
             
+            # Else (e.g., building case with no validation data), current_nse remains -inf
+
             if jnp.isnan(current_nse):
                  print(f"Trial {trial.number}, Epoch {epoch+1}: NaN NSE detected. Pruning.")
                  raise optuna.exceptions.TrialPruned()
 
-            best_nse_trial = max(best_nse_trial, current_nse if current_nse > -jnp.inf else -1.0)
+            best_nse_trial = max(best_nse_trial, current_nse if current_nse > -jnp.inf else -1.0) # Keep track of best valid NSE
 
-            # --- Logging Block (Restored) ---
-            if (epoch + 1) % (validation_freq * 10) == 0:
-                epoch_time = time.time() - epoch_start_time
-                print(f"  Trial {trial.number}, Epoch {epoch+1}/{epochs}: "
-                      f"NSE={current_nse:.6f}, "
-                      f"Time={epoch_time:.2f}s, Current Best NSE={best_nse_trial:.6f}")
-
+            # Optuna Pruning - Report the best NSE seen so far in this trial
             trial.report(best_nse_trial, epoch)
             if trial.should_prune():
                  print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
                  raise optuna.exceptions.TrialPruned()
 
+            # Optional: Log progress less frequently
+            if (epoch + 1) % (validation_freq*200) == 0:
+                epoch_time = time.time() - epoch_start_time
+                print(f"  Trial {trial.number}, Epoch {epoch+1}/{epochs}: "
+                        f"NSE={current_nse:.6f}, "
+                        f"Time={epoch_time:.2f}s, Current Best NSE={best_nse_trial:.6f}")
+
+
+        # Update train_key for next epoch's sampling
         train_key = key
+
 
     # --- 5. Return Final Objective Value ---
     final_nse = best_nse_trial
+    # Return a poor but valid float if NSE calculation failed or was skipped
     if final_nse <= -jnp.inf:
         print(f"Trial {trial.number}: Finished. No valid NSE achieved.")
         return -1.0
