@@ -20,21 +20,21 @@ cp "$S3_DB_DIR/"*.db "$LOCAL_DB_DIR/" 2>/dev/null || echo "No existing DBs found
 # --- 3. BACKGROUND SYNCER ---
 (
     while true; do
-        sleep 360
+        sleep 60
         cp "$LOCAL_DB_DIR/"*.db "$S3_DB_DIR/" && echo "☁️ Synced DBs" || echo "⚠️ DB Sync Failed"
         cp "$LOCAL_LOG_DIR/"*.log "$S3_LOG_DIR/" && echo "☁️ Synced Logs" || echo "⚠️ Log Sync Failed"
     done
 ) &
 SYNC_PID=$!
 
-# --- 4. GPU CONFIGURATION (CRITICAL FOR PARALLEL) ---
-# Limit each job to 45% VRAM so they fit side-by-side on the single GPU.
+# --- 4. GPU CONFIGURATION ---
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.45
 
-# --- 5. START JOBS (PARALLEL) ---
+# --- 5. START JOBS (PARALLEL WITH PREFIXED LOGS) ---
 echo "--- 🚀 Starting MLP and Fourier in Parallel ---"
 
 # JOB 1: MLP (Building)
+# We pipe to tee (to save raw file) AND then to sed (to add prefix for screen)
 (
     echo "▶️ [1/2] Starting MLP (Building)..."
     python3 -u -m optimisation.run_sensitivity_analysis \
@@ -42,8 +42,8 @@ echo "--- 🚀 Starting MLP and Fourier in Parallel ---"
       --n_trials 100 \
       --study_name "hpo-sensitivity-mlp-building" \
       --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-mlp-building.db" \
-      2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-mlp-building.log"
-    echo "✅ Finished MLP (Building)"
+      2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-mlp-building.log" | sed "s/^/[MLP] /"
+    echo "✅ [MLP] Finished"
 ) &
 
 # JOB 2: Fourier (Building)
@@ -54,8 +54,8 @@ echo "--- 🚀 Starting MLP and Fourier in Parallel ---"
       --n_trials 100 \
       --study_name "hpo-sensitivity-fourier-building" \
       --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-fourier-building.db" \
-      2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-fourier-building.log"
-    echo "✅ Finished Fourier (Building)"
+      2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-fourier-building.log" | sed "s/^/[Fourier] /"
+    echo "✅ [Fourier] Finished"
 ) &
 
 # Wait for BOTH jobs to finish
