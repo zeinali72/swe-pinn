@@ -2,6 +2,7 @@
 """
 Contains the core training loop logic for a single Optuna trial.
 Refactored to exclude GradNorm and Data Loss (Physics-Only).
+Includes robust batch calculation and safe loss weighting.
 """
 import os
 import jax
@@ -44,25 +45,27 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
 
     def loss_and_individual_terms(p):
         terms = {}
-        # Compute losses based on available non-empty batches and active weights
+        # --- Compute Losses based on available data ---
+        
+        # 1. PDE Loss
         pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
         if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
             if has_building:
                 pde_mask = mask_points_inside_building(pde_batch_data, config["building"])
                 terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config, pde_mask)
-                
                 if 'neg_h' in active_loss_keys_base:
                     terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data, pde_mask)
             else:
                 terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config)
-                
                 if 'neg_h' in active_loss_keys_base:
                     terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data)
 
+        # 2. IC Loss
         ic_batch_data = all_batches.get('ic', jnp.empty((0,3), dtype=DTYPE))
         if 'ic' in active_loss_keys_base and ic_batch_data.shape[0] > 0:
             terms['ic'] = compute_ic_loss(model, p, ic_batch_data)
 
+        # 3. BC Loss (Domain Walls)
         bc_batches = all_batches.get('bc', {})
         if 'bc' in active_loss_keys_base:
              bc_left = bc_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
@@ -70,12 +73,13 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
              bc_bottom = bc_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
              bc_top = bc_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
              
-             # Compute BC loss if any BC batch has data
+             # Only compute if we actually have data in at least one wall
              if any(b.shape[0] > 0 for b in [bc_left, bc_right, bc_bottom, bc_top]):
                  terms['bc'] = compute_bc_loss(
                      model, p, bc_left, bc_right, bc_bottom, bc_top, config
                  )
 
+        # 4. Building BC Loss
         if has_building and 'building_bc' in active_loss_keys_base:
             bldg_batches = all_batches.get('building_bc', {})
             b_left = bldg_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
@@ -88,14 +92,16 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
                     model, p, b_left, b_right, b_bottom, b_top
                 )
 
-        # Calculate weighted total loss
-        # active_weights only includes terms calculated in this step
-        active_weights = {k: weights_dict.get(k, 0.0) for k in terms.keys()}
-        
-        # terms_with_defaults ensures total_loss receives all expected keys (defaulting to 0.0)
+        # --- Calculate Weighted Total Loss ---
+        # We create a dictionary that contains a value for EVERY key in weights_dict.
+        # If a term wasn't computed (e.g. batch empty), it defaults to 0.0.
         terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
 
-        total = total_loss(terms_with_defaults, active_weights)
+        # We pass the FULL weights_dict. 
+        # Mathematical safety: sum(weight[k] * term[k]). If term[k] is 0.0, the contribution is 0.0.
+        # This avoids KeyError if 'total_loss' iterates over weights_dict.
+        total = total_loss(terms_with_defaults, weights_dict)
+        
         return total, terms
 
     (total_loss_val, individual_terms_val), grads = jax.value_and_grad(loss_and_individual_terms, has_aux=True)(params)
@@ -156,7 +162,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     # --- 2. Prepare Static Weights ---
     current_weights_dict = {k.replace('_weight',''):v for k,v in trial_cfg["loss_weights"].items()}
     
-    # Filter to active keys (weights > 0), excluding 'data' since we are data-free
+    # Filter to active keys (weights > 0), explicitly excluding 'data'
     active_loss_term_keys = [
         k for k, v in current_weights_dict.items() if v > 0 and k != 'data'
     ]
@@ -170,7 +176,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
 
     if os.path.exists(validation_data_file):
         try:
-            # Case 1: validation_sample.npy file exists
+            # Case 1: Validation file exists (Standard)
             loaded_val_data = np.load(validation_data_file).astype(DTYPE)
             val_points_all = loaded_val_data[:, [1, 2, 0]] # (x, y, t)
             h_true_val_all = loaded_val_data[:, 3]       # (h)
@@ -189,7 +195,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
             print(f"Trial {trial.number}: WARNING - Error loading validation data {validation_data_file}: {e}.")
             
     elif not has_building and "validation_grid" in trial_cfg:
-        # Case 2: No file, but NO building and validation_grid exists (Analytical)
+        # Case 2: Analytical validation (No file, no building)
         try:
             val_grid_cfg = trial_cfg["validation_grid"]
             domain_cfg = trial_cfg["domain"]
@@ -215,11 +221,6 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
         except Exception as e:
             print(f"Trial {trial.number}: WARNING - Error creating analytical validation set: {e}.")
             val_points, h_true_val = None, None
-            
-    else:
-        # Case 3: No file AND (building scenario OR no validation_grid)
-        # Validation skipped
-        pass
 
     # --- 4. Training Loop ---
     best_nse_trial = -jnp.inf
@@ -228,10 +229,10 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     start_time_trial = time.time()
 
     for epoch in range(epochs):
-        epoch_start_time = time.time()  # Start timing this epoch
+        epoch_start_time = time.time()
         key = train_key # Use the training key for this epoch's sampling
 
-        # --- Dynamic Sampling using sample_domain ---
+        # --- Dynamic Sampling ---
         key, pde_key, ic_key, bc_keys, bldg_keys = random.split(key, 5)
         l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
         domain_cfg = trial_cfg["domain"]
@@ -282,16 +283,26 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
              for wall, points in building_points.items():
                  building_batches_dict[wall] = get_batches(building_b_keys_map[wall], points, batch_size) if points.shape[0] > 0 else []
 
-        # --- Determine Number of Batches ---
-        num_batches = 0
-        if 'pde' in active_loss_term_keys and pde_batches:
-             num_batches = len(pde_batches)
-        elif 'ic' in active_loss_term_keys and ic_batches:
-             num_batches = len(ic_batches)
+        # --- Determine Number of Batches (Robust) ---
+        # Collect all valid batch lists to find the maximum number of iterations required
+        all_active_batches = []
+        if pde_batches: all_active_batches.append(pde_batches)
+        if ic_batches: all_active_batches.append(ic_batches)
         
-        if num_batches == 0:
-             # If no batches, skip epoch
+        # Domain BCs
+        for b in [left_batches, right_batches, bottom_batches, top_batches]:
+            if b: all_active_batches.append(b)
+            
+        # Building BCs
+        for b in building_batches_dict.values():
+            if b: all_active_batches.append(b)
+            
+        if not all_active_batches:
+             # No data generated for this epoch (e.g. extremely small N)
              continue
+             
+        # Set num_batches to the length of the longest list (iterations per epoch)
+        num_batches = max(len(b) for b in all_active_batches)
 
         # --- Batch Iterators ---
         pde_batch_iter = itertools.cycle(pde_batches) if pde_batches else iter(())
@@ -323,13 +334,13 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
 
             # Aggregate batches
             current_all_batches = {
-                'pde': pde_batch_data if pde_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
-                'ic': ic_batch_data if ic_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
+                'pde': pde_batch_data,
+                'ic': ic_batch_data,
                 'bc': {
-                    'left': left_batch_data if left_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
-                    'right': right_batch_data if right_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
-                    'bottom': bottom_batch_data if bottom_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
-                    'top': top_batch_data if top_batch_data.shape[0] > 0 else jnp.empty((0, 3), dtype=DTYPE),
+                    'left': left_batch_data,
+                    'right': right_batch_data,
+                    'bottom': bottom_batch_data,
+                    'top': top_batch_data,
                 },
                 'building_bc': {
                     'left': current_building_batch_data.get('left', jnp.empty((0, 3), dtype=DTYPE)),
@@ -368,8 +379,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
             best_nse_trial = max(best_nse_trial, current_nse if current_nse > -jnp.inf else -1.0)
 
             # --- Logging Block (Restored) ---
-            # Log progress less frequently (every 200 validation checks)
-            if (epoch + 1) % (validation_freq * 2) == 0:
+            if (epoch + 1) % (validation_freq * 10) == 0:
                 epoch_time = time.time() - epoch_start_time
                 print(f"  Trial {trial.number}, Epoch {epoch+1}/{epochs}: "
                       f"NSE={current_nse:.6f}, "
@@ -380,7 +390,6 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                  print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
                  raise optuna.exceptions.TrialPruned()
 
-        # Update train_key for next epoch's sampling
         train_key = key
 
     # --- 5. Return Final Objective Value ---
