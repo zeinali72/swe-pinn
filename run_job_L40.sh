@@ -20,20 +20,6 @@ cp -r "$SRC_DIR/data" "$WORK_DIR/"
 
 cd "$WORK_DIR"
 
-# --- 2. DEFINE SYNC FUNCTION ---
-sync_to_s3() {
-    echo "💾 [$(date +'%T')] Syncing Database & Logs to S3..."
-    # We use 'cp' without background '&' so it pauses execution safely
-    cp -u database/*.db "$S3_RESULTS/database/" 2>/dev/null || true
-    cp -u logs/*.log "$S3_RESULTS/logs/" 2>/dev/null || true
-    echo "✅ Sync Done."
-}
-
-# --- 3. SAFETY TRAP ---
-# This ensures that if Python crashes (e.g. bug in code), we still save the logs.
-# But we DO NOT run a background loop.
-trap sync_to_s3 EXIT
-
 # --- 4. RUN JOBS (Sequential) ---
 
 # JOB 1: MLP
@@ -45,8 +31,10 @@ python3 -u -m optimisation.run_sensitivity_analysis \
   --storage "sqlite:///database/hpo-sensitivity-mlp-building.db" \
   2>&1 | tee "logs/hpo-sensitivity-mlp-building.log"
 
-# Sync immediately after Job 1 finishes (Safe time to copy)
-sync_to_s3
+# Copy files after Job 1
+cp -u database/*.db "$S3_RESULTS/database/" 2>/dev/null || true
+cp -u logs/*.log "$S3_RESULTS/logs/" 2>/dev/null || true
+echo "✅ Files copied to S3 results."
 
 # JOB 2: Fourier
 echo "▶️ [2/3] Starting Fourier..."
@@ -57,8 +45,10 @@ python3 -u -m optimisation.run_sensitivity_analysis \
   --storage "sqlite:///database/hpo-sensitivity-fourier-building.db" \
   2>&1 | tee "logs/hpo-sensitivity-fourier-building.log"
 
-# Sync immediately after Job 2 finishes
-sync_to_s3
+# Copy files after Job 2
+cp -u database/*.db "$S3_RESULTS/database/" 2>/dev/null || true
+cp -u logs/*.log "$S3_RESULTS/logs/" 2>/dev/null || true
+echo "✅ Files copied to S3 results."
 
 # JOB 3: DGM
 echo "▶️ [3/3] Starting DGM..."
@@ -70,4 +60,3 @@ python3 -u -m optimisation.run_sensitivity_analysis \
   2>&1 | tee "logs/hpo-sensitivity-dgm-nobuilding.log"
 
 echo "--- 🎉 All Success ---"
-# Final sync happens automatically via 'trap'
