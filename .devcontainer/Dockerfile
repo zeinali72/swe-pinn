@@ -36,3 +36,5 @@ RUN chmod +x install_dependencies.sh install_requirements.sh && \
 # We are NOT copying the src/, optimisation/, etc. folders.
 # This image will only contain the environment and dependencies.
 # The code will be pulled from Git at runtime on OVH.
+
+CMD ["/workspace/run_job_L40.sh"]
