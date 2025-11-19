@@ -20,7 +20,7 @@ cp "$S3_DB_DIR/"*.db "$LOCAL_DB_DIR/" 2>/dev/null || echo "No existing DBs found
 # --- 3. BACKGROUND SYNCER ---
 (
     while true; do
-        sleep 60
+        sleep 360
         cp "$LOCAL_DB_DIR/"*.db "$S3_DB_DIR/" && echo "☁️ Synced DBs" || echo "⚠️ DB Sync Failed"
         cp "$LOCAL_LOG_DIR/"*.log "$S3_LOG_DIR/" && echo "☁️ Synced Logs" || echo "⚠️ Log Sync Failed"
     done
