@@ -17,7 +17,7 @@ mkdir -p "$S3_DB_DIR" "$S3_LOG_DIR"
 echo "🔄 Checking for existing databases in S3..."
 cp "$S3_DB_DIR/"*.db "$LOCAL_DB_DIR/" 2>/dev/null || echo "No existing DBs found to resume."
 
-# --- 3. BACKGROUND SYNCER (Runs in background to save progress) ---
+# --- 3. BACKGROUND SYNCER ---
 (
     while true; do
         sleep 60
@@ -27,42 +27,41 @@ cp "$S3_DB_DIR/"*.db "$LOCAL_DB_DIR/" 2>/dev/null || echo "No existing DBs found
 ) &
 SYNC_PID=$!
 
-# --- 4. START JOBS (SEQUENTIAL) ---
-echo "--- 🚀 Starting 3 Sequential Optimizations ---"
+# --- 4. GPU CONFIGURATION (CRITICAL FOR PARALLEL) ---
+# Limit each job to 45% VRAM so they fit side-by-side on the single GPU.
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.45
 
-# JOB 1: MLP
-echo "▶️ [1/3] Starting MLP..."
-python3 -u -m optimisation.run_sensitivity_analysis \
-  --config optimisation/configs/hpo_mlp_datafree_static_BUILDING.yaml \
-  --n_trials 100 \
-  --study_name "hpo-sensitivity-mlp-building" \
-  --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-mlp-building.db" \
-  2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-mlp-building.log"
-echo "✅ Finished MLP"
+# --- 5. START JOBS (PARALLEL) ---
+echo "--- 🚀 Starting MLP and Fourier in Parallel ---"
 
-# JOB 2: Fourier
-# This will only start AFTER Job 1 finishes
-echo "▶️ [2/3] Starting Fourier..."
-python3 -u -m optimisation.run_sensitivity_analysis \
-  --config optimisation/configs/hpo_fourier_datafree_static_BUILDING.yaml \
-  --n_trials 100 \
-  --study_name "hpo-sensitivity-fourier-building" \
-  --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-fourier-building.db" \
-  2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-fourier-building.log"
-echo "✅ Finished Fourier"
+# JOB 1: MLP (Building)
+(
+    echo "▶️ [1/2] Starting MLP (Building)..."
+    python3 -u -m optimisation.run_sensitivity_analysis \
+      --config optimisation/configs/hpo_mlp_datafree_static_BUILDING.yaml \
+      --n_trials 100 \
+      --study_name "hpo-sensitivity-mlp-building" \
+      --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-mlp-building.db" \
+      2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-mlp-building.log"
+    echo "✅ Finished MLP (Building)"
+) &
 
-# JOB 3: DGM
-# This will only start AFTER Job 2 finishes
-echo "▶️ [3/3] Starting DGM..."
-python3 -u -m optimisation.run_sensitivity_analysis \
-  --config optimisation/configs/hpo_dgm_datafree_static_NOBUILDING.yaml \
-  --n_trials 100 \
-  --study_name "hpo-sensitivity-dgm-nobuilding" \
-  --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-dgm-nobuilding.db" \
-  2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-dgm-nobuilding.log"
-echo "✅ Finished DGM"
+# JOB 2: Fourier (Building)
+(
+    echo "▶️ [2/2] Starting Fourier (Building)..."
+    python3 -u -m optimisation.run_sensitivity_analysis \
+      --config optimisation/configs/hpo_fourier_datafree_static_BUILDING.yaml \
+      --n_trials 100 \
+      --study_name "hpo-sensitivity-fourier-building" \
+      --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-fourier-building.db" \
+      2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-fourier-building.log"
+    echo "✅ Finished Fourier (Building)"
+) &
 
-# --- 5. CLEANUP ---
+# Wait for BOTH jobs to finish
+wait
+
+# --- 6. CLEANUP ---
 kill $SYNC_PID
 echo "🏁 Final Sync to S3..."
 cp "$LOCAL_DB_DIR/"*.db "$S3_DB_DIR/"
