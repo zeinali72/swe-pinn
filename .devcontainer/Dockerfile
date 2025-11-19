@@ -37,4 +37,4 @@ RUN chmod +x install_dependencies.sh install_requirements.sh && \
 # This image will only contain the environment and dependencies.
 # The code will be pulled from Git at runtime on OVH.
 
-CMD ["/workspace/run_job_L40.sh"]
+CMD ["bash", "-c", "chmod +x /workspace/run_job_L40.sh && /workspace/run_job_L40.sh"]
