@@ -103,11 +103,6 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
     new_params = optax.apply_updates(params, updates)
     return new_params, new_opt_state, individual_terms_val, total_loss_val
 
-# JIT the training step
-train_step_trial_jitted = jax.jit(
-    train_step_trial,
-    static_argnames=('model', 'optimiser', 'config')
-)
 
 # --- Main Training Function for a Single Trial ---
 def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> float:
@@ -337,15 +332,27 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                  building_batches_dict[wall] = get_batches(building_b_keys_map[wall], points, batch_size) if points.shape[0] > 0 else []
 
         # --- Determine Number of Batches ---
-        num_batches = 0
-        if 'pde' in active_loss_term_keys and pde_batches:
-             num_batches = len(pde_batches)
-        elif 'ic' in active_loss_term_keys and ic_batches: # Fallback if only IC/BC active
-             num_batches = len(ic_batches)
-        # Add more fallbacks if necessary based on expected active terms
+        # logic: Use the maximum batch count available to ensure no generated data is ignored.
+        # prepare_batches will cycle smaller datasets to match this length.
+        batch_counts = [
+            len(pde_batches),
+            len(ic_batches),
+            len(left_batches),
+            len(right_batches),
+            len(bottom_batches),
+            len(top_batches)
+        ]
+        
+        if has_building and 'building_bc' in active_loss_term_keys:
+            for b_batches in building_batches_dict.values():
+                batch_counts.append(len(b_batches))
+
+        num_batches = max(batch_counts)
 
         if num_batches == 0:
-             print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - No batches generated for active terms. Skipping epoch.")
+             # This should theoretically be unreachable given your constraint, 
+             # but serves as a sane guardrail against sampling errors.
+             print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - Zero batches generated. Skipping.")
              continue
 
         # --- Prepare Data for lax.scan ---
