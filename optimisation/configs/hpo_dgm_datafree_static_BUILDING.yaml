@@ -22,30 +22,17 @@ domain: # Fixed
   ly: 100.0
   t_final: 3600.0
 
-grid: # Optuna will suggest sampling densities
-  nx: 40
-  ny: 20
-  nt: 20
-
-ic_bc_grid: # Optuna will suggest sampling densities
-  nx_ic: 40
-  ny_ic: 40
-  ny_bc_left: 20
-  nt_bc_left: 20
-  ny_bc_right: 20
-  nt_bc_right: 20
-  nx_bc_bottom: 40
-  nt_bc_other: 20
-  nx_bc_top: 40
+sampling:
+  n_points_pde: 68000  # (This is 48*23*21=23184, just cleaner)
+  n_points_ic: 1800    # (This is 39*33=1287)
+  n_points_bc_domain: 10000 # Total points for all 4 domain walls
+  n_points_bc_building: 4000 # Total points for all 4 building walls (if applicable)
 
 building: # Fixed geometry, Optuna suggests sampling density
   x_min: 325.0
   x_max: 375.0
   y_min: 25.0
   y_max: 75.0
-  nx: 20
-  ny: 20
-  nt: 20
 
 physics: # Fixed
   u_const: 0.29
@@ -77,3 +64,6 @@ device: # Fixed
 
 numerics: # Fixed
   eps: 1e-6
+
+train_grid:
+  n_points_train: 2000

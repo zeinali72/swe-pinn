@@ -21,9 +21,10 @@ domain: # Fixed
   ly: 100.0
   t_final: 3600.0
 
-# NOTE: grid and ic_bc_grid sections are removed.
-# The objective_function.py now suggests hyperparameters
-# for the "sampling" dictionary instead.
+sampling:
+  n_points_pde: 68000  # (This is 48*23*21=23184, just cleaner)
+  n_points_ic: 1800    # (This is 39*33=1287)
+  n_points_bc_domain: 10000 # Total points for all 4 domain walls
 
 physics: # Fixed
   u_const: 0.29
@@ -57,6 +58,6 @@ numerics: # Fixed
 
 # Updated to use total number of points
 validation_grid:
-  n_points_val: 45000 # (e.g., 101*21*21 = 44541, rounded)
-
-# train_grid is removed as it is not used when data_free = true
+  n_points_val: 42000
+train_grid:
+  n_points_train: 2000
