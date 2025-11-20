@@ -63,3 +63,29 @@ def sample_domain(key: jax.random.PRNGKey, n_points: int,
         random.uniform(key_t, (n_points, 1), minval=t_start, maxval=t_end, dtype=DTYPE)
 
     return jnp.hstack([x_coords, y_coords, t_coords])
+
+def get_batches_tensor(key, data, batch_size, total_batches):
+    """
+    JIT-compatible batching helper.
+    Returns (total_batches, batch_size, features).
+    Assumes data.shape[0] >= batch_size (checked by caller).
+    """
+    n_samples = data.shape[0]
+    n_batches_avail = n_samples // batch_size
+    
+    # Shuffle
+    data = random.permutation(key, data, axis=0)
+    
+    # Trim
+    data = data[:n_batches_avail * batch_size]
+    
+    # Reshape
+    data = data.reshape((n_batches_avail, batch_size, -1))
+    
+    # Repeat to fill total_batches
+    indices = jnp.arange(total_batches) % n_batches_avail
+    return data[indices]
+
+def get_sample_count(sampling_cfg, name, default):
+    """Helper to safely get sample counts from config."""
+    return sampling_cfg.get(name, default)
