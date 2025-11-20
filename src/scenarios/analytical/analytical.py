@@ -34,10 +34,10 @@ from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
     compute_data_loss, compute_neg_h_loss
 )
-# from src.gradnorm import (
-#     init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP,
-#     get_initial_losses
-# )
+from src.gradnorm import (
+    init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP,
+    get_initial_losses, GradNormState
+)
 from src.utils import ( 
     nse, rmse, generate_trial_name, save_model, ask_for_confirmation,
     plot_h_vs_x
@@ -160,12 +160,11 @@ def main(config_path: str):
 
     # --- 4. Prepare Loss Weights and GradNorm ---
     static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
-    # gradnorm_cfg = cfg.get("gradnorm", {})
-    # enable_gradnorm = gradnorm_cfg.get("enable", False) 
-    enable_gradnorm = False
-    # gradnorm_alpha = gradnorm_cfg.get("alpha", 1.5)
-    # gradnorm_lr = gradnorm_cfg.get("learning_rate", 0.01)
-    # gradnorm_update_freq = gradnorm_cfg.get("update_freq", 100)
+    gradnorm_cfg = cfg.get("gradnorm", {})
+    enable_gradnorm = gradnorm_cfg.get("enable", False) 
+    gradnorm_alpha = gradnorm_cfg.get("alpha", 1.5)
+    gradnorm_lr = gradnorm_cfg.get("learning_rate", 0.01)
+    gradnorm_update_freq = gradnorm_cfg.get("update_freq", 100)
     gradnorm_state = None
 
     # --- 5. Create Validation and Training Data (Analytical) ---
@@ -321,79 +320,82 @@ def main(config_path: str):
     current_weights_dict = {k: static_weights_dict[k] for k in active_loss_term_keys}
 
     # --- 8. Initialize GradNorm if Enabled ---
-    # if enable_gradnorm:
-    #     print("GradNorm enabled. Initializing dynamic weights...")
-    #     key, pde_key, ic_key, bc_keys, data_key_init = random.split(init_key, 5)
-    #     l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
-    #     batch_size_init = cfg["training"]["batch_size"]
-    #
-    #     domain_cfg = cfg["domain"]
-    #     sampling_cfg = cfg.get("sampling", {}) # <-- Use new config section
-    #     init_batches = {} 
-    #
-    #     # --- 1. PDE Init Batch ---
-    #     if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys:
-    #         n_pde_init = sampling_cfg.get("n_points_pde", 1000)
-    #         pde_points_init = sample_domain(pde_key, n_pde_init,
-    #                                         (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
-    #         if pde_points_init.shape[0] > 0: 
-    #             init_batches['pde'] = get_batches(pde_key, pde_points_init, batch_size_init)[0]
-    #             if 'neg_h' in active_loss_term_keys:
-    #                 init_batches['neg_h'] = init_batches['pde']
-    #     
-    #     # --- 2. IC Init Batch ---
-    #     if 'ic' in active_loss_term_keys:
-    #         n_ic_init = sampling_cfg.get("n_points_ic", 100)
-    #         ic_points_init = sample_domain(ic_key, n_ic_init,
-    #                                        (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
-    #         if ic_points_init.shape[0] > 0: 
-    #             init_batches['ic'] = get_batches(ic_key, ic_points_init, batch_size_init)[0]
-    #
-    #     # --- 3. Domain BC Init Batch ---
-    #     if 'bc' in active_loss_term_keys:
-    #         n_bc_init = sampling_cfg.get("n_points_bc_domain", 100)
-    #         n_bc_per_wall_init = max(5, n_bc_init // 4)
-    #         bc_batches_init = {}
-    #         bc_batches_init['left'] = get_batches(l_key, sample_domain(l_key, n_bc_per_wall_init, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])), batch_size_init)[0]
-    #         bc_batches_init['right'] = get_batches(r_key, sample_domain(r_key, n_bc_per_wall_init, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])), batch_size_init)[0]
-    #         bc_batches_init['bottom'] = get_batches(b_key, sample_domain(b_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"])), batch_size_init)[0]
-    #         bc_batches_init['top'] = get_batches(t_key, sample_domain(t_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"])), batch_size_init)[0]
-    #         init_batches['bc'] = {k: (v if v.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE)) for k, v in bc_batches_init.items() if v.shape[0] > 0}
-    #     if not data_free and 'data' in active_loss_term_keys: 
-    #          if data_points_full is not None and data_points_full.shape[0] > 0:
-    #              init_data_sample = data_points_full[np.random.choice(data_points_full.shape[0], batch_size_init, replace=False)]
-    #              init_batches['data'] = get_batches(data_key_init, init_data_sample, batch_size_init)[0]
-    #     
-    #     relevant_init_batches = {}
-    #     for k in active_loss_term_keys:
-    #         if k not in LOSS_FN_MAP: continue
-    #         batch_key = LOSS_FN_MAP[k]['batch_key']
-    #         if batch_key in init_batches:
-    #             batch = init_batches[batch_key]
-    #             is_valid = (isinstance(batch, jnp.ndarray) and batch.shape[0] > 0) or \
-    #                       (isinstance(batch, dict) and any(b.shape[0] > 0 for b in batch.values() if isinstance(b, jnp.ndarray)))
-    #             if is_valid:
-    #                 relevant_init_batches[k] = batch
-    #     
-    #     active_loss_term_keys = list(relevant_init_batches.keys())
-    #     print(f"GradNorm active keys for init: {active_loss_term_keys}")
-    #
-    #     with jax.disable_jit():
-    #         initial_losses = get_initial_losses(model, params, relevant_init_batches, cfg)
-    #
-    #     gradnorm_state = init_gradnorm(
-    #         loss_keys=list(initial_losses.keys()),
-    #         initial_losses=initial_losses,
-    #         gradnorm_lr=gradnorm_lr
-    #     )
-    #     current_weights_dict = {key: float(w) for key, w in zip(initial_losses.keys(), gradnorm_state.weights)}
-    #     for k in active_loss_term_keys:
-    #         if k not in current_weights_dict:
-    #             current_weights_dict[k] = 1.0
-    #     
-    #     print(f"GradNorm initialized. Initial Weights: {current_weights_dict}")
-    # else:
-    print(f"GradNorm disabled. Using Static Weights: {current_weights_dict}")
+    if enable_gradnorm:
+        print(f"GradNorm enabled. Initializing dynamic weights... (LR={gradnorm_lr}, Alpha={gradnorm_alpha}, Freq={gradnorm_update_freq})")
+        key, pde_key, ic_key, bc_keys, data_key_init = random.split(init_key, 5)
+        l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
+        batch_size_init = cfg["training"]["batch_size"]
+
+        domain_cfg = cfg["domain"]
+        sampling_cfg = cfg.get("sampling", {}) 
+        init_batches = {} 
+
+        # --- 1. PDE Init Batch ---
+        if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys:
+            n_pde_init = batch_size_init
+            pde_points_init = sample_domain(pde_key, n_pde_init,
+                                            (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            if pde_points_init.shape[0] > 0: 
+                init_batches['pde'] = pde_points_init
+                if 'neg_h' in active_loss_term_keys:
+                    init_batches['neg_h'] = pde_points_init
+        
+        # --- 2. IC Init Batch ---
+        if 'ic' in active_loss_term_keys:
+            n_ic_init = batch_size_init
+            ic_points_init = sample_domain(ic_key, n_ic_init,
+                                           (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
+            if ic_points_init.shape[0] > 0: 
+                init_batches['ic'] = ic_points_init
+
+        # --- 3. Domain BC Init Batch ---
+        if 'bc' in active_loss_term_keys:
+            n_bc_per_wall_init = max(5, batch_size_init // 4)
+            bc_batches_init = {}
+            bc_batches_init['left'] = sample_domain(l_key, n_bc_per_wall_init, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            bc_batches_init['right'] = sample_domain(r_key, n_bc_per_wall_init, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            bc_batches_init['bottom'] = sample_domain(b_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"]))
+            bc_batches_init['top'] = sample_domain(t_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            init_batches['bc'] = {k: (v if v.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE)) for k, v in bc_batches_init.items() if v.shape[0] > 0}
+        
+        if not data_free and 'data' in active_loss_term_keys: 
+             if data_points_full is not None and data_points_full.shape[0] > 0:
+                 idx = random.choice(data_key_init, data_points_full.shape[0], shape=(batch_size_init,), replace=False)
+                 init_batches['data'] = data_points_full[idx]
+        
+        relevant_init_batches = {}
+        for k in active_loss_term_keys:
+            if k not in LOSS_FN_MAP: continue
+            batch_key = LOSS_FN_MAP[k]['batch_key']
+            if batch_key in init_batches:
+                batch = init_batches[batch_key]
+                is_valid = False
+                if isinstance(batch, jnp.ndarray) and batch.shape[0] > 0: is_valid = True
+                elif isinstance(batch, dict) and any(b.shape[0] > 0 for b in batch.values() if isinstance(b, jnp.ndarray)): is_valid = True
+                
+                if is_valid:
+                    relevant_init_batches[k] = batch
+        
+        active_loss_term_keys = list(relevant_init_batches.keys())
+        print(f"GradNorm active keys for init: {active_loss_term_keys}")
+
+        initial_losses = get_initial_losses(model, params, relevant_init_batches, cfg)
+
+        gradnorm_state = init_gradnorm(
+            loss_keys=list(initial_losses.keys()),
+            initial_losses=initial_losses,
+            gradnorm_lr=gradnorm_lr
+        )
+        current_weights_dict = {key: gradnorm_state.weights[i] for i, key in enumerate(gradnorm_state.loss_keys)}
+        for k in active_loss_term_keys:
+            if k not in current_weights_dict:
+                current_weights_dict[k] = jnp.array(1.0, dtype=DTYPE)
+        
+        print(f"GradNorm initialized. Initial Weights: {current_weights_dict}")
+    else:
+        print(f"GradNorm disabled. Using Static Weights: {current_weights_dict}")
+        # Ensure weights are JAX arrays for consistency in scan
+        current_weights_dict = {k: jnp.array(v, dtype=DTYPE) for k, v in current_weights_dict.items()}
     
     # --- 9. Pre-Training Summary ---
     print(f"\n--- Training Started (Jax-Scan): {trial_name} ---")
@@ -510,13 +512,29 @@ def main(config_path: str):
 
     # Define scan body function
     def scan_body(carry, batch_data):
-        curr_params, curr_opt_state = carry
-        # Note: GradNorm updates are disabled inside scan for performance/JIT compatibility.
-        # Weights are constant during the epoch.
+        curr_params, curr_opt_state, curr_gn_state, curr_weights, step_count = carry
+        
+        # GradNorm Update Logic
+        if enable_gradnorm:
+            def update_gn(s, p, b, w):
+                new_s, new_w = update_gradnorm_weights(s, p, model, b, cfg, gradnorm_alpha, gradnorm_lr)
+                return new_s, new_w
+            
+            def no_update_gn(s, p, b, w):
+                return s, w
+
+            do_update = (step_count % gradnorm_update_freq == 0)
+            curr_gn_state, curr_weights = lax.cond(
+                do_update, 
+                update_gn, 
+                no_update_gn, 
+                curr_gn_state, curr_params, batch_data, curr_weights
+            )
+
         new_params, new_opt_state, terms, total = train_step_jitted(
-            model, curr_params, curr_opt_state, batch_data, current_weights_dict, optimiser, cfg, data_free
+            model, curr_params, curr_opt_state, batch_data, curr_weights, optimiser, cfg, data_free
         )
-        return (new_params, new_opt_state), (terms, total)
+        return (new_params, new_opt_state, curr_gn_state, curr_weights, step_count + 1), (terms, total)
 
     # --- 10. Main Training Loop ---
     try:
@@ -528,8 +546,10 @@ def main(config_path: str):
             scan_inputs = generate_epoch_data_jit(epoch_key, data_placeholder)
 
             # --- Run Training Steps with lax.scan ---
-            (params, opt_state), (batch_losses_unweighted, batch_total_weighted_loss) = lax.scan(
-                scan_body, (params, opt_state), scan_inputs
+            scan_carry = (params, opt_state, gradnorm_state, current_weights_dict, 0)
+            
+            (params, opt_state, gradnorm_state, current_weights_dict, _), (batch_losses_unweighted, batch_total_weighted_loss) = lax.scan(
+                scan_body, scan_carry, scan_inputs
             )
             
             global_step += num_batches
@@ -541,27 +561,7 @@ def main(config_path: str):
             avg_total_weighted_loss = float(jnp.mean(batch_total_weighted_loss))
 
             # --- GradNorm Update (Per Epoch) ---
-            # Since we can't easily do this inside scan without JIT issues, we do it once per epoch if enabled.
-            # if enable_gradnorm:
-                # Use the last batch of the epoch for update
-                # last_batches = {
-                #     k: v[-1] for k, v in scan_inputs.items() if isinstance(v, jnp.ndarray) and v.shape[1] > 0
-                # }
-                # Handle nested BCs
-                # if 'bc' in scan_inputs:
-                #     for wall, v in scan_inputs['bc'].items():
-                #         if v.shape[1] > 0:
-                #             # We need to reconstruct the nested structure expected by update_gradnorm_weights
-                #             # But update_gradnorm_weights expects 'bc' key to map to a dict of batches
-                #             # Here we just need to ensure we pass compatible data.
-                #             # Simplified: We skip complex reconstruction here for brevity, 
-                #             # assuming GradNorm is less critical or user accepts per-epoch updates.
-                #             pass
-
-                # For now, we skip the explicit GradNorm update call here to keep the loop clean 
-                # and because constructing the exact batch dict from scan inputs is verbose.
-                # If strict GradNorm adherence is needed, it should be done here.
-                # pass
+            # (Removed commented out code)
 
             # --- Validation ---
             nse_val, rmse_val = -jnp.inf, jnp.inf
@@ -609,8 +609,10 @@ def main(config_path: str):
                     avg_losses_unweighted.get('neg_h', 0.0),
                     nse_val, rmse_val, epoch_time
                 )
-                # if enable_gradnorm:
-                #      print(f"      Current Weights: { {k: f'{v:.2e}' for k, v in current_weights_dict.items()} }")
+                if enable_gradnorm:
+                     # Convert JAX arrays to float for printing
+                     w_print = {k: float(v) for k, v in current_weights_dict.items()}
+                     print(f"      Current Weights: { {k: f'{v:.4e}' for k, v in w_print.items()} }")
 
             if aim_run:
                 epoch_metrics_to_log = {

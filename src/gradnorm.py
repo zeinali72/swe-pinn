@@ -23,22 +23,28 @@ from src.config import DTYPE
 
 @flax.struct.dataclass
 class GradNormState:
-    weights: chex.ArrayTree
-    initial_losses: Dict[str, float]
+    weights: chex.Array
+    initial_losses: chex.Array
     opt_state: optax.OptState
+    loss_keys: Tuple[str, ...] = flax.struct.field(pytree_node=False)
 
 def init_gradnorm(loss_keys: List[str], initial_losses: Dict[str, float], gradnorm_lr: float) -> GradNormState:
     """Initializes the GradNorm state."""
     num_losses = len(loss_keys)
     weights = jnp.ones(num_losses, dtype=DTYPE)
-    processed_initial_losses = {k: max(initial_losses.get(k, 1e-8), 1e-8) for k in loss_keys}
+    
+    # Convert initial_losses dict to array, ensuring order matches loss_keys
+    init_loss_values = [max(initial_losses.get(k, 1e-8), 1e-8) for k in loss_keys]
+    initial_losses_arr = jnp.array(init_loss_values, dtype=DTYPE)
+    
     optimizer = optax.adam(learning_rate=gradnorm_lr)
     opt_state = optimizer.init(weights)
 
     return GradNormState(
         weights=weights,
-        initial_losses=processed_initial_losses,
-        opt_state=opt_state
+        initial_losses=initial_losses_arr,
+        opt_state=opt_state,
+        loss_keys=tuple(loss_keys)
     )
 
 def _get_shared_layer_name(model: Any) -> str:
@@ -94,15 +100,26 @@ LOSS_FN_MAP = {
 # (This function is JITted)
 def _compute_gradient_norm_impl(grads: chex.ArrayTree) -> jnp.ndarray:
     """Computes the L2 norm of the gradients (flattened)."""
-    leaves, _ = jax.tree_util.tree_flatten(grads)
+    leaves = jax.tree_util.tree_leaves(grads)
     if not leaves:
         return jnp.array(0.0, dtype=DTYPE)
-    leaves_arrays = [jnp.asarray(leaf) for leaf in leaves]
-    flat_grads = jnp.concatenate([jnp.ravel(leaf) for leaf in leaves_arrays])
-    norm = jnp.linalg.norm(flat_grads)
+    # Compute norm squared for each leaf and sum, then sqrt
+    sq_norms = [jnp.sum(jnp.square(leaf)) for leaf in leaves]
+    total_sq_norm = jnp.sum(jnp.array(sq_norms))
+    norm = jnp.sqrt(total_sq_norm)
     return jnp.maximum(norm, 1e-12)
 
 _compute_gradient_norm = jax.jit(_compute_gradient_norm_impl)
+
+def _is_batch_empty_runtime(batch: Any) -> jnp.ndarray:
+    """Checks if a batch is empty (size 0) at runtime. Returns boolean scalar."""
+    if isinstance(batch, (dict, FrozenDict)):
+        leaves = jax.tree_util.tree_leaves(batch)
+        if not leaves:
+            return jnp.array(True)
+        # Check the first leaf
+        return leaves[0].shape[0] == 0
+    return batch.shape[0] == 0
 
 def update_gradnorm_weights(
     gradnorm_state: GradNormState,
@@ -112,21 +129,24 @@ def update_gradnorm_weights(
     config: FrozenDict,
     alpha: float,
     gradnorm_lr: float
-) -> Tuple[GradNormState, Dict[str, float]]:
+) -> Tuple[GradNormState, Dict[str, Any]]:
     """
     Computes individual loss gradients and updates GradNorm weights for PINNs.
+    Optimized for GPU execution using jax.lax.cond and scan.
     """
-    loss_keys = list(gradnorm_state.initial_losses.keys())
+    loss_keys = gradnorm_state.loss_keys
     num_losses = len(loss_keys)
-    current_losses = {}
-    grads_wrt_shared_layer = {}
-
+    
     shared_layer_name = _get_shared_layer_name(model)
-    shared_layer_params = _get_shared_layer_params(model_params, shared_layer_name)
+    shared_layer_params_template = _get_shared_layer_params(model_params, shared_layer_name)
 
-    for key in loss_keys: 
+    loss_vals_list = []
+    shared_grads_list = []
+
+    for key in loss_keys:
         if key not in LOSS_FN_MAP:
-            print(f"Internal Warning: Loss key '{key}' from GradNorm state not found in LOSS_FN_MAP. Skipping.")
+            loss_vals_list.append(jnp.array(0.0, dtype=DTYPE))
+            shared_grads_list.append(jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params_template))
             continue
 
         loss_info = LOSS_FN_MAP[key]
@@ -134,29 +154,29 @@ def update_gradnorm_weights(
         batch_key = loss_info['batch_key']
         batch_data = all_batches.get(batch_key)
 
-        is_empty_batch = False
-        if batch_data is None: is_empty_batch = True
-        elif isinstance(batch_data, jnp.ndarray) and batch_data.shape[0] == 0: is_empty_batch = True
-        elif isinstance(batch_data, dict) and not any(isinstance(b, jnp.ndarray) and b.shape[0] > 0 for b in batch_data.values() if isinstance(b, jnp.ndarray)): is_empty_batch = True
-
-        if is_empty_batch:
-            current_losses[key] = 0.0
-            grads_wrt_shared_layer[key] = jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params)
+        # Static check for None
+        if batch_data is None:
+            loss_vals_list.append(jnp.array(0.0, dtype=DTYPE))
+            shared_grads_list.append(jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params_template))
             continue
 
-        grad_fn = jax.value_and_grad(loss_func, argnums=0, has_aux=False)
+        def compute_loss_and_grad(b):
+            val, grads = jax.value_and_grad(loss_func, argnums=0)(model_params, model, b, config)
+            shared_grads = _get_shared_layer_params(grads, shared_layer_name)
+            return val, shared_grads
 
-        try:
-            loss_val, full_grads = grad_fn(model_params, model, batch_data, config)
-            current_losses[key] = float(loss_val)
-            grads_wrt_shared_layer[key] = _get_shared_layer_params(full_grads, shared_layer_name)
-        except Exception as e:
-            print(f"Error computing loss/gradient for '{key}': {e}.")
-            current_losses[key] = 0.0
-            grads_wrt_shared_layer[key] = jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params)
+        def empty_batch_fallback(b):
+            return jnp.array(0.0, dtype=DTYPE), jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params_template)
 
-    current_losses_array = jnp.array([current_losses.get(k, 0.0) for k in loss_keys], dtype=DTYPE)
-    initial_losses_array = jnp.array([gradnorm_state.initial_losses[k] for k in loss_keys], dtype=DTYPE) 
+        is_empty = _is_batch_empty_runtime(batch_data)
+        l_val, s_grads = jax.lax.cond(is_empty, empty_batch_fallback, compute_loss_and_grad, batch_data)
+        
+        loss_vals_list.append(l_val)
+        shared_grads_list.append(s_grads)
+
+    current_losses_array = jnp.stack(loss_vals_list)
+    stacked_shared_grads = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *shared_grads_list)
+    initial_losses_array = gradnorm_state.initial_losses
 
     def gradnorm_loss_calculation(current_weights_array):
         w = jnp.maximum(jnp.abs(current_weights_array), 1e-8)
@@ -165,12 +185,17 @@ def update_gradnorm_weights(
         mean_loss_ratio = jnp.mean(loss_ratios)
         mean_loss_ratio = jnp.maximum(mean_loss_ratio, 1e-8)
         relative_inverse_rates = loss_ratios / mean_loss_ratio
-        grad_norms = jnp.array([_compute_gradient_norm(grads_wrt_shared_layer.get(k, jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params))) for k in loss_keys], dtype=DTYPE)
+        
+        def scan_norm_fn(carry, grads_slice):
+            n = _compute_gradient_norm(grads_slice)
+            return carry, n
+        _, grad_norms = jax.lax.scan(scan_norm_fn, None, stacked_shared_grads)
+        
         weighted_grad_norms = w * grad_norms
         mean_weighted_grad_norm = jnp.mean(weighted_grad_norms)
         mean_weighted_grad_norm = jnp.maximum(mean_weighted_grad_norm, 1e-8)
         target_grad_norms = mean_weighted_grad_norm * (relative_inverse_rates ** alpha)
-        gradnorm_loss = jnp.sum(jnp.abs(weighted_grad_norms - target_grad_norms))
+        gradnorm_loss = jnp.sum(jnp.abs(weighted_grad_norms - jax.lax.stop_gradient(target_grad_norms)))
         return gradnorm_loss
 
     gradnorm_loss_val, gradnorm_grads = jax.value_and_grad(gradnorm_loss_calculation)(gradnorm_state.weights)
@@ -183,54 +208,49 @@ def update_gradnorm_weights(
     weight_sum = jnp.maximum(weight_sum, 1e-8)
     new_weights_normalized = num_losses * new_weights_positive / weight_sum
 
-    updated_state = GradNormState(
+    updated_state = gradnorm_state.replace(
         weights=new_weights_normalized,
-        initial_losses=gradnorm_state.initial_losses,
         opt_state=new_opt_state
     )
 
-    new_weights_dict = {key: float(w) for key, w in zip(loss_keys, new_weights_normalized)}
+    new_weights_dict = {key: new_weights_normalized[i] for i, key in enumerate(loss_keys)}
     return updated_state, new_weights_dict
 
 
 def get_initial_losses(model: Any, params: FrozenDict, all_batches: Dict[str, Any], config: FrozenDict) -> Dict[str, float]:
     """Computes the initial value for each loss term (L_i(0)) for PINNs."""
     initial_losses = {}
-    active_loss_keys = list(all_batches.keys())
     
     print("Calculating initial losses (L_i(0))...")
-    for loss_key in active_loss_keys:
-        if loss_key not in LOSS_FN_MAP:
-            if loss_key in config.get('loss_weights', {}):
-                print(f"Warning: Loss key '{loss_key}' has a weight but is not in LOSS_FN_MAP. Skipping.")
-            continue
-
-        loss_info = LOSS_FN_MAP[loss_key]
-        loss_func = loss_info['func']
+    for loss_key, loss_info in LOSS_FN_MAP.items():
         batch_key = loss_info['batch_key']
-        batch_data = all_batches.get(batch_key) 
-
-        is_empty_batch = False
-        if batch_data is None: is_empty_batch = True
-        elif isinstance(batch_data, jnp.ndarray) and batch_data.shape[0] == 0: is_empty_batch = True
-        elif isinstance(batch_data, dict) and not any(isinstance(b, jnp.ndarray) and b.shape[0] > 0 for b in batch_data.values() if isinstance(b, jnp.ndarray)): is_empty_batch = True
-
-        if is_empty_batch:
-            print(f"  Warning: Cannot compute initial loss for '{loss_key}', required batch '{batch_key}' is empty/missing. Setting to 1e-8.")
-            initial_losses[loss_key] = 1e-8
+        if batch_key not in all_batches:
             continue
+            
+        batch_data = all_batches[batch_key]
+        # Simple check for empty batch (not inside JIT here)
+        is_empty = False
+        if batch_data is None: is_empty = True
+        elif isinstance(batch_data, (dict, FrozenDict)):
+             if not jax.tree_util.tree_leaves(batch_data): is_empty = True
+             elif jax.tree_util.tree_leaves(batch_data)[0].shape[0] == 0: is_empty = True
+        elif batch_data.shape[0] == 0: is_empty = True
 
+        if is_empty:
+             initial_losses[loss_key] = 1e-8
+             continue
+             
+        loss_func = loss_info['func']
         try:
-            loss_val = loss_func(params, model, batch_data, config)
-            initial_losses[loss_key] = max(float(loss_val), 1e-8)
+            # Mark model (1) and config (3) as static
+            loss_val = jax.jit(loss_func, static_argnums=(1, 3))(params, model, batch_data, config)
+            initial_losses[loss_key] = float(loss_val)
             print(f"  Initial loss for {loss_key:<12}: {initial_losses[loss_key]:.4e}")
         except Exception as e:
             print(f"  Error calculating initial loss for {loss_key}: {e}. Setting to 1e-8.")
             initial_losses[loss_key] = 1e-8
 
-    final_initial_losses = {k: v for k, v in initial_losses.items() if k in all_batches}
-    print(f"Final Initial Losses for GradNorm: {final_initial_losses}")
-    return final_initial_losses
+    return initial_losses
 
 # ==============================================================================
 # --- OperatorNet (DeepONet) GradNorm Functions ---
@@ -257,44 +277,34 @@ OPERATOR_LOSS_FN_MAP = {
 def get_initial_losses_operator(model: Any, params: FrozenDict, all_batches: Dict[str, Any], config: FrozenDict) -> Dict[str, float]:
     """Computes the initial value for each loss term (L_i(0)) for OperatorNet."""
     initial_losses = {}
-    active_loss_keys = list(all_batches.keys())
     
     print("Calculating initial losses (L_i(0)) for OperatorNet...")
-    for loss_key in active_loss_keys:
-        if loss_key not in OPERATOR_LOSS_FN_MAP:
-            if loss_key in config.get('loss_weights', {}):
-                print(f"Warning: Loss key '{loss_key}' has a weight but is not in OPERATOR_LOSS_FN_MAP. Skipping.")
-            continue
-
-        loss_info = OPERATOR_LOSS_FN_MAP[loss_key]
-        loss_func = loss_info['func']
+    for loss_key, loss_info in OPERATOR_LOSS_FN_MAP.items():
         batch_key = loss_info['batch_key']
-        batch_data = all_batches.get(batch_key)
-
-        # OperatorNet batches are dicts {'branch': ..., 'trunk': ...} or {'trunk_left': ...}
-        is_empty_batch = True
-        if batch_data is not None and isinstance(batch_data, dict):
-             if loss_key == 'bc':
-                 is_empty_batch = not any(b.shape[0] > 0 for k, b in batch_data.items() if k.startswith('trunk_'))
-             else:
-                 is_empty_batch = not (batch_data.get('trunk', jnp.empty((0,3))).shape[0] > 0)
+        if batch_key not in all_batches: continue
+        batch_data = all_batches[batch_key]
         
-        if is_empty_batch:
-            print(f"  Warning: Cannot compute initial loss for '{loss_key}', required batch '{batch_key}' is empty/missing. Setting to 1e-8.")
-            initial_losses[loss_key] = 1e-8
-            continue
+        is_empty = False
+        if batch_data is None: is_empty = True
+        elif isinstance(batch_data, (dict, FrozenDict)):
+             if not jax.tree_util.tree_leaves(batch_data): is_empty = True
+             elif jax.tree_util.tree_leaves(batch_data)[0].shape[0] == 0: is_empty = True
+        elif batch_data.shape[0] == 0: is_empty = True
 
+        if is_empty:
+             initial_losses[loss_key] = 1e-8
+             continue
+        loss_func = loss_info['func']
         try:
-            loss_val = loss_func(params, model, batch_data, config)
-            initial_losses[loss_key] = max(float(loss_val), 1e-8)
+            # Mark model (1) and config (3) as static
+            loss_val = jax.jit(loss_func, static_argnums=(1, 3))(params, model, batch_data, config)
+            initial_losses[loss_key] = float(loss_val)
             print(f"  Initial loss for {loss_key:<12}: {initial_losses[loss_key]:.4e}")
         except Exception as e:
             print(f"  Error calculating initial loss for {loss_key}: {e}. Setting to 1e-8.")
             initial_losses[loss_key] = 1e-8
             
-    final_initial_losses = {k: v for k, v in initial_losses.items() if k in all_batches}
-    print(f"Final Initial Losses for GradNorm (OperatorNet): {final_initial_losses}")
-    return final_initial_losses
+    return initial_losses
 
 
 def update_gradnorm_weights_operatornet(
@@ -305,21 +315,22 @@ def update_gradnorm_weights_operatornet(
     config: FrozenDict,
     alpha: float,
     gradnorm_lr: float
-) -> Tuple[GradNormState, Dict[str, float]]:
+) -> Tuple[GradNormState, Dict[str, Any]]:
     """
     Computes individual loss gradients and updates GradNorm weights for OperatorNet.
     """
-    loss_keys = list(gradnorm_state.initial_losses.keys())
+    loss_keys = gradnorm_state.loss_keys
     num_losses = len(loss_keys)
-    current_losses = {}
-    grads_wrt_shared_layer = {}
-
     shared_layer_name = _get_shared_layer_name(model)
-    shared_layer_params = _get_shared_layer_params(model_params, shared_layer_name)
+    shared_layer_params_template = _get_shared_layer_params(model_params, shared_layer_name)
+
+    loss_vals_list = []
+    shared_grads_list = []
 
     for key in loss_keys: 
         if key not in OPERATOR_LOSS_FN_MAP:
-            print(f"Internal Warning: Loss key '{key}' from GradNorm state not found in OPERATOR_LOSS_FN_MAP. Skipping.")
+            loss_vals_list.append(jnp.array(0.0, dtype=DTYPE))
+            shared_grads_list.append(jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params_template))
             continue
 
         loss_info = OPERATOR_LOSS_FN_MAP[key]
@@ -327,32 +338,28 @@ def update_gradnorm_weights_operatornet(
         batch_key = loss_info['batch_key']
         batch_data = all_batches.get(batch_key)
 
-        is_empty_batch = True
-        if batch_data is not None and isinstance(batch_data, dict):
-             if key == 'bc':
-                 is_empty_batch = not any(b.shape[0] > 0 for k, b in batch_data.items() if k.startswith('trunk_'))
-             else:
-                 is_empty_batch = not (batch_data.get('trunk', jnp.empty((0,3))).shape[0] > 0)
-
-        if is_empty_batch:
-            current_losses[key] = 0.0
-            grads_wrt_shared_layer[key] = jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params)
+        if batch_data is None:
+            loss_vals_list.append(jnp.array(0.0, dtype=DTYPE))
+            shared_grads_list.append(jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params_template))
             continue
 
-        grad_fn = jax.value_and_grad(loss_func, argnums=0, has_aux=False)
+        def compute_loss_and_grad(b):
+            val, grads = jax.value_and_grad(loss_func, argnums=0)(model_params, model, b, config)
+            shared_grads = _get_shared_layer_params(grads, shared_layer_name)
+            return val, shared_grads
 
-        try:
-            loss_val, full_grads = grad_fn(model_params, model, batch_data, config)
-            current_losses[key] = float(loss_val)
-            grads_wrt_shared_layer[key] = _get_shared_layer_params(full_grads, shared_layer_name)
-        except Exception as e:
-            print(f"Error computing loss/gradient for '{key}': {e}.")
-            current_losses[key] = 0.0
-            grads_wrt_shared_layer[key] = jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params)
+        def empty_batch_fallback(b):
+            return jnp.array(0.0, dtype=DTYPE), jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params_template)
 
-    # --- The rest of this function is identical to the PINN version ---
-    current_losses_array = jnp.array([current_losses.get(k, 0.0) for k in loss_keys], dtype=DTYPE)
-    initial_losses_array = jnp.array([gradnorm_state.initial_losses[k] for k in loss_keys], dtype=DTYPE) 
+        is_empty = _is_batch_empty_runtime(batch_data)
+        l_val, s_grads = jax.lax.cond(is_empty, empty_batch_fallback, compute_loss_and_grad, batch_data)
+        
+        loss_vals_list.append(l_val)
+        shared_grads_list.append(s_grads)
+
+    current_losses_array = jnp.stack(loss_vals_list)
+    stacked_shared_grads = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *shared_grads_list)
+    initial_losses_array = gradnorm_state.initial_losses
 
     def gradnorm_loss_calculation(current_weights_array):
         w = jnp.maximum(jnp.abs(current_weights_array), 1e-8)
@@ -361,12 +368,17 @@ def update_gradnorm_weights_operatornet(
         mean_loss_ratio = jnp.mean(loss_ratios)
         mean_loss_ratio = jnp.maximum(mean_loss_ratio, 1e-8)
         relative_inverse_rates = loss_ratios / mean_loss_ratio
-        grad_norms = jnp.array([_compute_gradient_norm(grads_wrt_shared_layer.get(k, jax.tree_util.tree_map(jnp.zeros_like, shared_layer_params))) for k in loss_keys], dtype=DTYPE)
+        
+        def scan_norm_fn(carry, grads_slice):
+            n = _compute_gradient_norm(grads_slice)
+            return carry, n
+        _, grad_norms = jax.lax.scan(scan_norm_fn, None, stacked_shared_grads)
+        
         weighted_grad_norms = w * grad_norms
         mean_weighted_grad_norm = jnp.mean(weighted_grad_norms)
         mean_weighted_grad_norm = jnp.maximum(mean_weighted_grad_norm, 1e-8)
         target_grad_norms = mean_weighted_grad_norm * (relative_inverse_rates ** alpha)
-        gradnorm_loss = jnp.sum(jnp.abs(weighted_grad_norms - target_grad_norms))
+        gradnorm_loss = jnp.sum(jnp.abs(weighted_grad_norms - jax.lax.stop_gradient(target_grad_norms)))
         return gradnorm_loss
 
     gradnorm_loss_val, gradnorm_grads = jax.value_and_grad(gradnorm_loss_calculation)(gradnorm_state.weights)
@@ -379,11 +391,10 @@ def update_gradnorm_weights_operatornet(
     weight_sum = jnp.maximum(weight_sum, 1e-8)
     new_weights_normalized = num_losses * new_weights_positive / weight_sum
 
-    updated_state = GradNormState(
+    updated_state = gradnorm_state.replace(
         weights=new_weights_normalized,
-        initial_losses=gradnorm_state.initial_losses,
         opt_state=new_opt_state
     )
 
-    new_weights_dict = {key: float(w) for key, w in zip(loss_keys, new_weights_normalized)}
+    new_weights_dict = {key: new_weights_normalized[i] for i, key in enumerate(loss_keys)}
     return updated_state, new_weights_dict
