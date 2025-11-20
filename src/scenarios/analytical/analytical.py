@@ -28,7 +28,7 @@ import numpy as np
 # Local application imports
 # (Assuming this file is at src/scenarios/analytical.py, adjust paths if needed)
 from src.config import load_config, DTYPE
-from src.data import sample_domain, get_batches
+from src.data import sample_domain, get_batches_tensor, get_sample_count
 from src.models import init_model
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
@@ -422,17 +422,91 @@ def main(config_path: str):
     global_step = 0 
     start_time = time.time()
 
-    # Helper to prepare batches for lax.scan
-    def prepare_batches(batches, n_steps, shape_suffix):
-        if not batches:
-            return jnp.zeros((n_steps, 0) + shape_suffix, dtype=DTYPE)
-        stacked = jnp.stack(batches)
-        n_avail = stacked.shape[0]
-        if n_avail == n_steps:
-            return stacked
-        # Repeat batches if fewer than n_steps
-        indices = jnp.arange(n_steps) % n_avail
-        return stacked[indices]
+    # --- Pre-calculate Batch Counts and Total Batches ---
+    domain_cfg = cfg["domain"]
+    sampling_cfg = cfg["sampling"]
+    batch_size = cfg["training"]["batch_size"]
+
+    # Calculate expected points
+    n_pde = get_sample_count(sampling_cfg, "n_points_pde", 1000) if ('pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys) else 0
+    n_ic = get_sample_count(sampling_cfg, "n_points_ic", 100) if 'ic' in active_loss_term_keys else 0
+    
+    n_bc_domain = get_sample_count(sampling_cfg, "n_points_bc_domain", 100) if 'bc' in active_loss_term_keys else 0
+    n_bc_per_wall = max(5, n_bc_domain // 4) if n_bc_domain > 0 else 0
+    
+    # Data term
+    n_data_batches = 0
+    if not data_free and data_points_full is not None:
+        n_data_batches = data_points_full.shape[0] // batch_size
+
+    # Calculate available batches per term
+    bc_counts = [
+        n_pde // batch_size,
+        n_ic // batch_size,
+        n_bc_per_wall // batch_size, # left
+        n_bc_per_wall // batch_size, # right
+        n_bc_per_wall // batch_size, # bottom
+        n_bc_per_wall // batch_size, # top
+        n_data_batches
+    ]
+        
+    num_batches = max(bc_counts) if bc_counts else 0
+    
+    if num_batches == 0:
+        print(f"WARNING - Batch size {batch_size} is too large for configured sample counts. No training will occur.")
+        return -1.0
+
+    # Placeholder for data if None (for JIT)
+    data_placeholder = data_points_full if data_points_full is not None else jnp.empty((0, 6), dtype=DTYPE)
+
+    # --- Define JIT Data Generator ---
+    def generate_epoch_data(key, data_points):
+        key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
+        
+        # PDE
+        if n_pde // batch_size > 0:
+            pde_points = sample_domain(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            pde_data = get_batches_tensor(pde_key, pde_points, batch_size, num_batches)
+        else:
+            pde_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+
+        # IC
+        if n_ic // batch_size > 0:
+            ic_points = sample_domain(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
+            ic_data = get_batches_tensor(ic_key, ic_points, batch_size, num_batches)
+        else:
+            ic_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+            
+        # BCs
+        bc_data = {}
+        l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
+        
+        # Helper for walls
+        def get_wall_data(k, n, x_rng, y_rng, t_rng):
+            if n // batch_size > 0:
+                pts = sample_domain(k, n, x_rng, y_rng, t_rng)
+                return get_batches_tensor(k, pts, batch_size, num_batches)
+            return jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+
+        bc_data['left'] = get_wall_data(l_key, n_bc_per_wall, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+        bc_data['right'] = get_wall_data(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+        bc_data['bottom'] = get_wall_data(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"]))
+        bc_data['top'] = get_wall_data(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+
+        # Data
+        data_batch_out = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
+        if n_data_batches > 0:
+             data_batch_out = get_batches_tensor(data_key, data_points, batch_size, num_batches)
+        
+        return {
+            'pde': pde_data,
+            'ic': ic_data,
+            'bc': bc_data,
+            'data': data_batch_out,
+            'building_bc': {} # Empty dict for analytical
+        }
+
+    generate_epoch_data_jit = jax.jit(generate_epoch_data)
 
     # Define scan body function
     def scan_body(carry, batch_data):
@@ -449,67 +523,9 @@ def main(config_path: str):
         for epoch in range(cfg["training"]["epochs"]):
             epoch_start_time = time.time()
 
-            # --- Dynamic Point Sampling ---
-            key, pde_key, ic_key, bc_keys, data_key_epoch = random.split(key, 5)
-            l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
-            domain_cfg = cfg["domain"]
-            sampling_cfg = cfg["sampling"] # <-- Use new config section
-
-            # 1. PDE Points
-            n_pde = sampling_cfg.get("n_points_pde", 1000)
-            pde_points = sample_domain(pde_key, n_pde, 
-                                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) \
-                                    if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-
-            # 2. IC Points
-            n_ic = sampling_cfg.get("n_points_ic", 100)
-            ic_points = sample_domain(ic_key, n_ic, 
-                                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.)) \
-                                    if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-
-            # 3. Domain BC Points
-            n_bc = sampling_cfg.get("n_points_bc_domain", 100)
-            n_bc_per_wall = max(5, n_bc // 4)
-            left_wall = sample_domain(l_key, n_bc_per_wall, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            right_wall = sample_domain(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            bottom_wall = sample_domain(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            top_wall = sample_domain(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            # --- Create Batches ---
-            batch_size = cfg["training"]["batch_size"]
-            key, pde_b_key, ic_b_key, bc_b_keys, data_b_key_epoch = random.split(key, 5)
-            l_b_key, r_b_key, b_b_key, t_b_key = random.split(bc_b_keys, 4)
-
-            pde_batches = get_batches(pde_b_key, pde_points, batch_size) if pde_points.shape[0] > 0 else []
-            ic_batches = get_batches(ic_b_key, ic_points, batch_size) if ic_points.shape[0] > 0 else []
-            left_batches = get_batches(l_b_key, left_wall, batch_size) if left_wall.shape[0] > 0 else []
-            right_batches = get_batches(r_b_key, right_wall, batch_size) if right_wall.shape[0] > 0 else []
-            bottom_batches = get_batches(b_b_key, bottom_wall, batch_size) if bottom_wall.shape[0] > 0 else []
-            top_batches = get_batches(t_b_key, top_wall, batch_size) if top_wall.shape[0] > 0 else []
-
-            data_batches = []
-            if not data_free and data_points_full is not None:
-                 data_batches = get_batches(data_b_key_epoch, data_points_full, batch_size)
-
-            all_batch_lists = [pde_batches, ic_batches, left_batches, right_batches, bottom_batches, top_batches, data_batches]
-            num_batches = max([len(b_list) for b_list in all_batch_lists if b_list], default=0)
-
-            if num_batches == 0:
-                 print(f"Warning: Epoch {epoch+1} - No batches generated for active terms. Skipping epoch.")
-                 continue
-
-            # --- Prepare Data for lax.scan ---
-            scan_inputs = {
-                'pde': prepare_batches(pde_batches, num_batches, (3,)),
-                'ic': prepare_batches(ic_batches, num_batches, (3,)),
-                'bc': {
-                    'left': prepare_batches(left_batches, num_batches, (3,)),
-                    'right': prepare_batches(right_batches, num_batches, (3,)),
-                    'bottom': prepare_batches(bottom_batches, num_batches, (3,)),
-                    'top': prepare_batches(top_batches, num_batches, (3,)),
-                },
-                'data': prepare_batches(data_batches, num_batches, (6,)) if not data_free else jnp.zeros((num_batches, 0, 6), dtype=DTYPE),
-                'building_bc': {} # Empty dict for analytical
-            }
+            # --- Optimized Data Generation ---
+            train_key, epoch_key = random.split(train_key)
+            scan_inputs = generate_epoch_data_jit(epoch_key, data_placeholder)
 
             # --- Run Training Steps with lax.scan ---
             (params, opt_state), (batch_losses_unweighted, batch_total_weighted_loss) = lax.scan(
