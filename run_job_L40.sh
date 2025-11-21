@@ -2,64 +2,79 @@
 set -e
 
 # --- 1. SETUP PATHS ---
+# /workspace is READ-ONLY (GitHub code)
+# /workspace/optimisation/results is READ-WRITE (S3 Bucket)
+
+# Use /tmp for fast local NVMe storage (Avoids network locking issues)
 LOCAL_BASE="/tmp/hpo_fast"
 LOCAL_DB_DIR="$LOCAL_BASE/database"
 LOCAL_LOG_DIR="$LOCAL_BASE/logs"
 
-# OVH/S3 Mount Paths
-MOUNT_DB_DIR="/workspace/optimisation/results/database"
-MOUNT_LOG_DIR="/workspace/optimisation/results/logs"
+# Persistent S3 paths (Must be inside the 'results' volume)
+S3_DB_DIR="/workspace/optimisation/results/database"
+S3_LOG_DIR="/workspace/optimisation/results/logs"
 
 echo "--- 🔧 Setting up directories ---"
-# Ensure local dirs exist; clear them if you want a guaranteed clean slate (optional)
 mkdir -p "$LOCAL_DB_DIR" "$LOCAL_LOG_DIR"
-mkdir -p "$MOUNT_DB_DIR" "$MOUNT_LOG_DIR"
+mkdir -p "$S3_DB_DIR" "$S3_LOG_DIR"
 
-# --- 2. BACKGROUND BACKUP (Every 10 Mins) ---
+# --- 2. RESTORE EXISTING DATA ---
+echo "🔄 Checking for existing databases in S3..."
+cp "$S3_DB_DIR/"*.db "$LOCAL_DB_DIR/" 2>/dev/null || echo "No existing DBs found to resume."
+
+# --- 3. BACKGROUND SYNCER ---
+# Syncs /tmp -> S3 every 60 seconds
 (
     while true; do
-        sleep 600
-        echo "⏰ [Background] Creating 10-min snapshot on mount..."
-        # Uses -u to only copy if source is newer (reduces I/O)
-        cp -u "$LOCAL_DB_DIR/"*.db "$MOUNT_DB_DIR/" 2>/dev/null || true
-        cp -u "$LOCAL_LOG_DIR/"*.log "$MOUNT_LOG_DIR/" 2>/dev/null || true
+        sleep 60
+        # Echo only if something is copied to avoid log spam
+        cp -u "$LOCAL_DB_DIR/"*.db "$S3_DB_DIR/" 2>/dev/null && echo "☁️ Synced DBs to S3" || true
+        cp -u "$LOCAL_LOG_DIR/"*.log "$S3_LOG_DIR/" 2>/dev/null || true
     done
 ) &
 SYNC_PID=$!
 
-# --- 3. SAFETY TRAP (Final Sync on Exit/Crash) ---
-cleanup() {
-    echo "--- 🏁 Job Finished or Interrupted ---"
-    echo "💾 Killing background syncer and forcing FINAL save..."
-    kill $SYNC_PID 2>/dev/null || true
-    
-    # Force full copy of all DBs and Logs to mount
-    cp -f "$LOCAL_DB_DIR/"*.db "$MOUNT_DB_DIR/" 2>/dev/null || true
-    cp -f "$LOCAL_LOG_DIR/"*.log "$MOUNT_LOG_DIR/" 2>/dev/null || true
-    
-    echo "✅ Data safely persisted to $MOUNT_DB_DIR"
-}
-# Run cleanup on Exit, Error, or Interrupt (Ctrl+C)
-trap cleanup EXIT
+# --- 4. PROGRESS MONITOR ---
+# Prints status to the main OVH console
+(
+    while true; do
+        sleep 60
+        echo -e "\n=== 📊 Status Report [$(date +'%H:%M')] ==="
+        for logfile in "$LOCAL_LOG_DIR"/*.log; do
+            [ -e "$logfile" ] || continue
+            job_name=$(basename "$logfile" .log)
+            # Get last meaningful line
+            last_line=$(grep "Trial" "$logfile" | tail -n 1 | cut -c 1-100)
+            count=$(grep -c "Trial .* finished" "$logfile" || echo 0)
+            echo "🔹 $job_name: $count completed. | Status: $last_line"
+        done
+    done
+) &
+MON_PID=$!
 
-# --- 4. START SEQUENTIAL JOBS ---
+# --- 5. START JOB ---
+# Single Job on H100. Use 90% Memory.
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.90
 
-# === JOB 1: MLP ===
-echo "--- 🚀 Starting MLP (1/2) ---"
-python3 -u -m optimisation.run_sensitivity_analysis \
-  --config optimisation/configs/hpo_mlp_datafree_static_BUILDING.yaml \
-  --n_trials 100 \
-  --study_name "hpo-sensitivity-mlp-building" \
-  --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-mlp-building.db" \
-  2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-mlp-building.log"
+echo "--- 🚀 Starting Single Job: DGM (No Building) ---"
 
-# === JOB 2: Fourier ===
-echo "--- 🚀 Starting Fourier (2/2) ---"
-python3 -u -m optimisation.run_sensitivity_analysis \
-  --config optimisation/configs/hpo_fourier_datafree_static_BUILDING.yaml \
-  --n_trials 100 \
-  --study_name "hpo-sensitivity-fourier-building" \
-  --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-fourier-building.db" \
-  2>&1 | tee "$LOCAL_LOG_DIR/hpo-sensitivity-fourier-building.log"
+(
+    echo "▶️ Starting DGM (No Building) Sensitivity Analysis..."
+    python3 -u -m optimisation.run_sensitivity_analysis \
+      --config optimisation/configs/hpo_dgm_datafree_static_NOBUILDING.yaml \
+      --n_trials 100 \
+      --study_name "hpo-sensitivity-dgm-nobuilding" \
+      --storage "sqlite:///$LOCAL_DB_DIR/hpo-sensitivity-dgm-nobuilding.db" \
+      > "$LOCAL_LOG_DIR/hpo-sensitivity-dgm-nobuilding.log" 2>&1
+    echo "✅ Finished DGM (No Building)"
+) &
 
-# Trap triggers automatically here upon script completion
+# Wait for the job to finish
+wait
+
+# --- 6. CLEANUP ---
+kill $SYNC_PID $MON_PID
+echo "🏁 Final Sync to S3..."
+cp -u "$LOCAL_DB_DIR/"*.db "$S3_DB_DIR/"
+cp -u "$LOCAL_LOG_DIR/"*.log "$S3_LOG_DIR/"
+echo "--- All Done ---"
