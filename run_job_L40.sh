@@ -18,7 +18,7 @@ mkdir -p "$MOUNT_DB_DIR" "$MOUNT_LOG_DIR"
 # --- 2. BACKGROUND BACKUP (Every 10 Mins) ---
 (
     while true; do
-        sleep 600
+        sleep 3600
         echo "⏰ [Background] Creating 10-min snapshot on mount..."
         # Uses -u to only copy if source is newer (reduces I/O)
         cp -u "$LOCAL_DB_DIR/"*.db "$MOUNT_DB_DIR/" 2>/dev/null || true
