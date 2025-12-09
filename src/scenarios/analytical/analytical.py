@@ -3,7 +3,7 @@ Training script for the "analytical" (no-building) scenario for the
 Shallow Water Equation (SWE) PINN model.
 
 This script handles both data-free and data-driven (analytical) training modes.
-It supports dynamic loss weighting using GradNorm and provides
+It supports static loss weighting and provides
 logging and result visualization through Aim.
 """
 
@@ -19,7 +19,7 @@ import shutil
 
 import jax
 import jax.numpy as jnp
-from jax import random
+from jax import random, lax
 import optax
 from aim import Repo, Run, Image
 from flax.core import FrozenDict
@@ -28,15 +28,11 @@ import numpy as np
 # Local application imports
 # (Assuming this file is at src/scenarios/analytical.py, adjust paths if needed)
 from src.config import load_config, DTYPE
-from src.data import sample_domain, get_batches
+from src.data import sample_domain, get_batches, get_batches_tensor, get_sample_count
 from src.models import init_model
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
     compute_data_loss, compute_neg_h_loss
-)
-from src.gradnorm import (
-    init_gradnorm, update_gradnorm_weights, LOSS_FN_MAP,
-    get_initial_losses
 )
 from src.utils import ( 
     nse, rmse, generate_trial_name, save_model, ask_for_confirmation,
@@ -128,8 +124,8 @@ def main(config_path: str):
         raise ValueError(f"Could not find model class '{cfg['model']['name']}' in src/models.py") from e
 
     key = random.PRNGKey(cfg["training"]["seed"])
-    # Split key for model, gradnorm init, training loop, and validation data generation
-    model_key, init_key, train_key, val_key = random.split(key, 4)
+    # Split key for model, and training loop/validation usage
+    model_key, train_key, val_key = random.split(key, 3)
     model, params = init_model(model_class, model_key, cfg)
 
     # --- 2. Setup Directories for Results and Models ---
@@ -158,15 +154,9 @@ def main(config_path: str):
     )
     opt_state = optimiser.init(params)
 
-    # --- 4. Prepare Loss Weights and GradNorm ---
+    # --- 4. Prepare Loss Weights ---
     static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
-    gradnorm_cfg = cfg.get("gradnorm", {})
-    enable_gradnorm = gradnorm_cfg.get("enable", False) 
-    gradnorm_alpha = gradnorm_cfg.get("alpha", 1.5)
-    gradnorm_lr = gradnorm_cfg.get("learning_rate", 0.01)
-    gradnorm_update_freq = gradnorm_cfg.get("update_freq", 100)
-    gradnorm_state = None
-
+    
     # --- 5. Create Validation and Training Data (Analytical) ---
     
     # Create Analytical Validation Data
@@ -293,7 +283,7 @@ def main(config_path: str):
             "scenario_type": "analytical",
             "data_free_config_flag": data_free_flag,
             "data_loss_active_final": has_data_loss,
-            "gradnorm_enabled": enable_gradnorm
+            "gradnorm_enabled": False
         }
         
         try:
@@ -319,88 +309,13 @@ def main(config_path: str):
     
     current_weights_dict = {k: static_weights_dict[k] for k in active_loss_term_keys}
 
-    # --- 8. Initialize GradNorm if Enabled ---
-    if enable_gradnorm:
-        print("GradNorm enabled. Initializing dynamic weights...")
-        key, pde_key, ic_key, bc_keys, data_key_init = random.split(init_key, 5)
-        l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
-        batch_size_init = cfg["training"]["batch_size"]
-
-        domain_cfg = cfg["domain"]
-        sampling_cfg = cfg.get("sampling", {}) # <-- Use new config section
-        init_batches = {} 
-
-        # --- 1. PDE Init Batch ---
-        if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys:
-            n_pde_init = sampling_cfg.get("n_points_pde", 1000)
-            pde_points_init = sample_domain(pde_key, n_pde_init,
-                                            (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
-            if pde_points_init.shape[0] > 0: 
-                init_batches['pde'] = get_batches(pde_key, pde_points_init, batch_size_init)[0]
-                if 'neg_h' in active_loss_term_keys:
-                    init_batches['neg_h'] = init_batches['pde']
-        
-        # --- 2. IC Init Batch ---
-        if 'ic' in active_loss_term_keys:
-            n_ic_init = sampling_cfg.get("n_points_ic", 100)
-            ic_points_init = sample_domain(ic_key, n_ic_init,
-                                           (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
-            if ic_points_init.shape[0] > 0: 
-                init_batches['ic'] = get_batches(ic_key, ic_points_init, batch_size_init)[0]
-
-        # --- 3. Domain BC Init Batch ---
-        if 'bc' in active_loss_term_keys:
-            n_bc_init = sampling_cfg.get("n_points_bc_domain", 100)
-            n_bc_per_wall_init = max(5, n_bc_init // 4)
-            bc_batches_init = {}
-            bc_batches_init['left'] = get_batches(l_key, sample_domain(l_key, n_bc_per_wall_init, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])), batch_size_init)[0]
-            bc_batches_init['right'] = get_batches(r_key, sample_domain(r_key, n_bc_per_wall_init, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])), batch_size_init)[0]
-            bc_batches_init['bottom'] = get_batches(b_key, sample_domain(b_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"])), batch_size_init)[0]
-            bc_batches_init['top'] = get_batches(t_key, sample_domain(t_key, n_bc_per_wall_init, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"])), batch_size_init)[0]
-            init_batches['bc'] = {k: (v if v.shape[0] > 0 else jnp.empty((0,3), dtype=DTYPE)) for k, v in bc_batches_init.items() if v.shape[0] > 0}
-        if not data_free and 'data' in active_loss_term_keys: 
-             if data_points_full is not None and data_points_full.shape[0] > 0:
-                 init_data_sample = data_points_full[np.random.choice(data_points_full.shape[0], batch_size_init, replace=False)]
-                 init_batches['data'] = get_batches(data_key_init, init_data_sample, batch_size_init)[0]
-        
-        relevant_init_batches = {}
-        for k in active_loss_term_keys:
-            if k not in LOSS_FN_MAP: continue
-            batch_key = LOSS_FN_MAP[k]['batch_key']
-            if batch_key in init_batches:
-                batch = init_batches[batch_key]
-                is_valid = (isinstance(batch, jnp.ndarray) and batch.shape[0] > 0) or \
-                          (isinstance(batch, dict) and any(b.shape[0] > 0 for b in batch.values() if isinstance(b, jnp.ndarray)))
-                if is_valid:
-                    relevant_init_batches[k] = batch
-        
-        active_loss_term_keys = list(relevant_init_batches.keys())
-        print(f"GradNorm active keys for init: {active_loss_term_keys}")
-
-        with jax.disable_jit():
-            initial_losses = get_initial_losses(model, params, relevant_init_batches, cfg)
-
-        gradnorm_state = init_gradnorm(
-            loss_keys=list(initial_losses.keys()),
-            initial_losses=initial_losses,
-            gradnorm_lr=gradnorm_lr
-        )
-        current_weights_dict = {key: float(w) for key, w in zip(initial_losses.keys(), gradnorm_state.weights)}
-        for k in active_loss_term_keys:
-            if k not in current_weights_dict:
-                current_weights_dict[k] = 1.0
-        
-        print(f"GradNorm initialized. Initial Weights: {current_weights_dict}")
-    else:
-         print(f"GradNorm disabled. Using Static Weights: {current_weights_dict}")
-    
     # --- 9. Pre-Training Summary ---
     print(f"\n--- Training Started: {trial_name} ---")
     print(f"Model: {cfg['model']['name']}, Epochs: {cfg['training']['epochs']}, Batch Size: {cfg['training']['batch_size']}")
     print(f"Scenario: analytical (No Building)")
     print(f"Saving results to: {results_dir}")
     print(f"Saving model to: {model_dir}")
-    print(f"GradNorm Enabled: {enable_gradnorm}")
+    print(f"GradNorm Enabled: False")
     print(f"Data Loss Active: {has_data_loss} (Final Data-Free: {data_free})")
     print(f"Active Loss Terms: {active_loss_term_keys}")
     print(f"Initial Weights: {current_weights_dict}")
@@ -421,121 +336,129 @@ def main(config_path: str):
     global_step = 0 
     start_time = time.time()
 
+    # --- Pre-calculate Batch Counts and Total Batches (for jax.lax.scan) ---
+    sampling_cfg = cfg["sampling"]
+    batch_size = cfg["training"]["batch_size"]
+    domain_cfg = cfg["domain"]
+
+    # Calculate expected points
+    n_pde = get_sample_count(sampling_cfg, "n_points_pde", 1000) if ('pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys) else 0
+    n_ic = get_sample_count(sampling_cfg, "n_points_ic", 100) if 'ic' in active_loss_term_keys else 0
+    n_bc_domain = get_sample_count(sampling_cfg, "n_points_bc_domain", 100) if 'bc' in active_loss_term_keys else 0
+    n_bc_per_wall = max(5, n_bc_domain // 4) if n_bc_domain > 0 else 0
+    
+    # Calculate available batches per term
+    bc_counts = [
+        n_pde // batch_size,
+        n_ic // batch_size,
+        n_bc_per_wall // batch_size, # left
+        n_bc_per_wall // batch_size, # right
+        n_bc_per_wall // batch_size, # bottom
+        n_bc_per_wall // batch_size, # top
+    ]
+    if not data_free and data_points_full is not None:
+         bc_counts.append(data_points_full.shape[0] // batch_size)
+
+    num_batches = max(bc_counts) if bc_counts else 0
+    
+    if num_batches == 0:
+        print(f"Error: Batch size {batch_size} is too large for configured sample counts or data. No training will occur.")
+        return -1.0
+
+    # --- Define JIT Data Generator ---
+    def generate_epoch_data(key):
+        key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
+        
+        # PDE
+        if n_pde // batch_size > 0:
+            pde_points = sample_domain(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            pde_data = get_batches_tensor(pde_key, pde_points, batch_size, num_batches)
+        else:
+            pde_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+
+        # IC
+        if n_ic // batch_size > 0:
+            ic_points = sample_domain(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
+            ic_data = get_batches_tensor(ic_key, ic_points, batch_size, num_batches)
+        else:
+            ic_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+            
+        # BCs
+        bc_data = {}
+        l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
+        
+        # Helper for walls
+        def get_wall_data(k, n, x_rng, y_rng, t_rng):
+            if n // batch_size > 0:
+                pts = sample_domain(k, n, x_rng, y_rng, t_rng)
+                return get_batches_tensor(k, pts, batch_size, num_batches)
+            return jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+
+        bc_data['left'] = get_wall_data(l_key, n_bc_per_wall, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+        bc_data['right'] = get_wall_data(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+        bc_data['bottom'] = get_wall_data(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"]))
+        bc_data['top'] = get_wall_data(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+
+        # Data
+        data_data = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
+        if not data_free and data_points_full is not None:
+             # get_batches_tensor reshapes/repeats data_points_full to match num_batches
+             data_data = get_batches_tensor(data_key, data_points_full, batch_size, num_batches)
+
+        return {
+            'pde': pde_data,
+            'ic': ic_data,
+            'bc': bc_data,
+            'data': data_data,
+            'building_bc': {} # Empty for analytical
+        }
+
+    generate_epoch_data_jit = jax.jit(generate_epoch_data)
+
+    # --- Define Scan Body Function ---
+    def scan_body(carry, batch_data):
+        curr_params, curr_opt_state = carry
+        
+        # Reconstruct hierarchical dict expected by train_step
+        current_all_batches = {
+            'pde': batch_data['pde'],
+            'ic': batch_data['ic'],
+            'bc': batch_data['bc'],
+            'data': batch_data['data'],
+            'building_bc': batch_data['building_bc']
+        }
+
+        new_params, new_opt_state, terms, total = train_step(
+            model, curr_params, curr_opt_state,
+            current_all_batches,
+            current_weights_dict,
+            optimiser, cfg, data_free
+        )
+        return (new_params, new_opt_state), (terms, total)
+
     # --- 10. Main Training Loop ---
     try:
         for epoch in range(cfg["training"]["epochs"]):
             epoch_start_time = time.time()
 
-            # --- Dynamic Point Sampling ---
-            key, pde_key, ic_key, bc_keys, data_key_epoch = random.split(key, 5)
-            l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
-            domain_cfg = cfg["domain"]
-            sampling_cfg = cfg["sampling"] # <-- Use new config section
+            # --- Optimized Data Generation ---
+            train_key, epoch_key = random.split(train_key)
+            scan_inputs = generate_epoch_data_jit(epoch_key)
 
-            # 1. PDE Points
-            n_pde = sampling_cfg.get("n_points_pde", 1000)
-            pde_points = sample_domain(pde_key, n_pde, 
-                                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) \
-                                    if 'pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-
-            # 2. IC Points
-            n_ic = sampling_cfg.get("n_points_ic", 100)
-            ic_points = sample_domain(ic_key, n_ic, 
-                                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.)) \
-                                    if 'ic' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-
-            # 3. Domain BC Points
-            n_bc = sampling_cfg.get("n_points_bc_domain", 100)
-            n_bc_per_wall = max(5, n_bc // 4)
-            left_wall = sample_domain(l_key, n_bc_per_wall, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            right_wall = sample_domain(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            bottom_wall = sample_domain(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            top_wall = sample_domain(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"])) if 'bc' in active_loss_term_keys else jnp.empty((0,3), dtype=DTYPE)
-            # --- Create Batches ---
-            batch_size = cfg["training"]["batch_size"]
-            key, pde_b_key, ic_b_key, bc_b_keys, data_b_key_epoch = random.split(key, 5)
-            l_b_key, r_b_key, b_b_key, t_b_key = random.split(bc_b_keys, 4)
-
-            pde_batches = get_batches(pde_b_key, pde_points, batch_size) if pde_points.shape[0] > 0 else []
-            ic_batches = get_batches(ic_b_key, ic_points, batch_size) if ic_points.shape[0] > 0 else []
-            left_batches = get_batches(l_b_key, left_wall, batch_size) if left_wall.shape[0] > 0 else []
-            right_batches = get_batches(r_b_key, right_wall, batch_size) if right_wall.shape[0] > 0 else []
-            bottom_batches = get_batches(b_b_key, bottom_wall, batch_size) if bottom_wall.shape[0] > 0 else []
-            top_batches = get_batches(t_b_key, top_wall, batch_size) if top_wall.shape[0] > 0 else []
-
-            data_batches = []
-            if not data_free and data_points_full is not None:
-                 data_batches = get_batches(data_b_key_epoch, data_points_full, batch_size)
-
-            all_batch_lists = [pde_batches, ic_batches, left_batches, right_batches, bottom_batches, top_batches, data_batches]
-            num_batches = max([len(b_list) for b_list in all_batch_lists if b_list], default=0)
-
-            if num_batches == 0:
-                 print(f"Warning: Epoch {epoch+1} - No batches generated for active terms. Skipping epoch.")
-                 continue
-
-            # --- Batch Iterators ---
-            pde_batch_iter = itertools.cycle(pde_batches) if pde_batches else iter(())
-            ic_batch_iter = itertools.cycle(ic_batches) if ic_batches else iter(())
-            left_batch_iter = itertools.cycle(left_batches) if left_batches else iter(())
-            right_batch_iter = itertools.cycle(right_batches) if right_batches else iter(())
-            bottom_batch_iter = itertools.cycle(bottom_batches) if bottom_batches else iter(())
-            top_batch_iter = itertools.cycle(top_batches) if top_batches else iter(())
-            data_batch_iter = itertools.cycle(data_batches) if data_batches else iter(())
-
-            epoch_losses_unweighted_sum = {k: 0.0 for k in active_loss_term_keys}
-            epoch_total_weighted_loss_sum = 0.0
-
-            # --- Iterate Through Batches ---
-            for i in range(num_batches):
-                global_step += 1
-
-                pde_batch_data = next(pde_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-                ic_batch_data = next(ic_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-                left_batch_data = next(left_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-                right_batch_data = next(right_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-                bottom_batch_data = next(bottom_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-                top_batch_data = next(top_batch_iter, jnp.empty((0, 3), dtype=DTYPE))
-                data_batch_data = next(data_batch_iter, jnp.empty((0, 6), dtype=DTYPE))
-
-                current_all_batches = {
-                    'pde': pde_batch_data,
-                    'ic': ic_batch_data,
-                    'bc': {'left': left_batch_data, 'right': right_batch_data, 'bottom': bottom_batch_data, 'top': top_batch_data},
-                    'data': data_batch_data,
-                    'building_bc': {} # Empty dict for analytical
-                }
-                
-                # --- GradNorm Update ---
-                if enable_gradnorm and global_step % gradnorm_update_freq == 0:
-                    active_batches_for_gradnorm = {
-                        k: current_all_batches[LOSS_FN_MAP[k]['batch_key']] 
-                        for k in active_loss_term_keys if k in LOSS_FN_MAP
-                    }
-                    with jax.disable_jit():
-                         gradnorm_state, current_weights_dict = update_gradnorm_weights(
-                              gradnorm_state, params, model, active_batches_for_gradnorm,
-                              cfg, gradnorm_alpha, gradnorm_lr
-                         )
-
-                # --- Training Step ---
-                params, opt_state, batch_losses_unweighted, batch_total_weighted_loss = train_step_jitted(
-                    model, params, opt_state,
-                    current_all_batches,
-                    current_weights_dict,
-                    optimiser, cfg, data_free
-                )
-
-                for k in active_loss_term_keys:
-                    epoch_losses_unweighted_sum[k] += float(batch_losses_unweighted.get(k, 0.0))
-                epoch_total_weighted_loss_sum += float(batch_total_weighted_loss)
-
-                if aim_run and enable_gradnorm and (global_step % log_freq_steps == 0):
-                    log_metrics(aim_run, step=global_step, epoch=epoch, metrics={'gradnorm_weights': current_weights_dict})
+            # --- Run Training Steps with lax.scan ---
+            (params, opt_state), (batch_losses_unweighted_stacked, batch_total_weighted_loss_stacked) = lax.scan(
+                scan_body, (params, opt_state), scan_inputs
+            )
             
-            # --- End of Epoch ---
-            avg_losses_unweighted = {k: v / num_batches for k, v in epoch_losses_unweighted_sum.items()}
-            avg_total_weighted_loss = epoch_total_weighted_loss_sum / num_batches
+            global_step += num_batches
+
+            # --- Aggregate Losses ---
+            # Sum over batches dimension
+            epoch_losses_unweighted_sum = {k: jnp.sum(v) for k, v in batch_losses_unweighted_stacked.items()}
+            epoch_total_weighted_loss_sum = jnp.sum(batch_total_weighted_loss_stacked)
+
+            avg_losses_unweighted = {k: float(v) / num_batches for k, v in epoch_losses_unweighted_sum.items()}
+            avg_total_weighted_loss = float(epoch_total_weighted_loss_sum) / num_batches
 
             # --- Validation ---
             nse_val, rmse_val = -jnp.inf, jnp.inf
@@ -583,8 +506,6 @@ def main(config_path: str):
                     avg_losses_unweighted.get('neg_h', 0.0),
                     nse_val, rmse_val, epoch_time
                 )
-                if enable_gradnorm:
-                     print(f"      Current Weights: { {k: f'{v:.2e}' for k, v in current_weights_dict.items()} }")
 
             if aim_run:
                 epoch_metrics_to_log = {
@@ -604,8 +525,8 @@ def main(config_path: str):
                 print(f"--- Early stopping triggered at epoch {epoch+1} ---")
                 print(f"Best NSE {best_nse_stats['nse']:.6f} achieved at epoch {best_nse_stats['epoch']+1}.")
                 break
-
-            train_key = key
+            
+            # Key update for data sample is handled by train_key split above
 
     except KeyboardInterrupt:
         print("\n--- Training interrupted by user ---")
