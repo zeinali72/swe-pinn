@@ -162,3 +162,5 @@ run_all_hpo.sh
 ovh_token.md
 
 .temp/
+
+*.html
