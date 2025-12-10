@@ -100,7 +100,7 @@ def main():
     start_time_opt = time.time()
 
     try:
-        study.optimize(objective_with_config, n_trials=args.n_trials, timeout=None, show_progress_bar=True)
+        study.optimize(objective_with_config, n_trials=args.n_trials, timeout=None, show_progress_bar=False)
     except KeyboardInterrupt:
         print("\nOptimization interrupted by user.")
     except Exception as e:
