@@ -1,0 +1,83 @@
+Study: hpo-sensitivity-mlp-building
+Database: hpo-sensitivity-mlp-building.db
+Best Trial Number: 30
+Best Value (NSE): 0.8643891215324402
+----------------------------------------
+Parameters:
+batch_size_index: 2
+bc_weight: 80.58421877614808
+building_bc_weight: 39.241897584845354
+ic_weight: 0.5232991146814947
+learning_rate: 0.0013335214321633251
+model_depth: 5
+model_width_index: 2
+n_points_bc_building: 2321
+n_points_bc_domain: 4963
+n_points_ic: 1098
+n_points_pde: 17221
+neg_h_weight: 9.305720409296987
+pde_weight: 273841.963426436
+----------------------------------------
+Full Configuration (User Attrs):
+CONFIG_PATH: optimisation/configs/hpo_mlp_datafree_static_BUILDING.yaml
+building:
+  x_max: 375.0
+  x_min: 325.0
+  y_max: 75.0
+  y_min: 25.0
+data_free: true
+device:
+  dtype: float32
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+gradnorm:
+  enable: false
+  learning_rate: 0.01
+hpo_settings:
+  data_free: true
+  enable_gradnorm: false
+  opt_epochs: 2000
+loss_weights:
+  bc_weight: 80.58421877614808
+  building_bc_weight: 39.241897584845354
+  data_weight: 0.0
+  ic_weight: 0.5232991146814947
+  neg_h_weight: 9.305720409296987
+  pde_weight: 273841.963426436
+model:
+  depth: 5
+  name: MLP
+  output_dim: 3
+  width: 512
+numerics:
+  eps: 1.0e-06
+physics:
+  g: 9.81
+  inflow: null
+  n_manning: 0.03
+  u_const: 0.29
+plotting:
+  nx_val: 101
+  plot_resolution: 150
+  t_const_val: 1800.0
+  y_const_plot: 0
+sampling:
+  n_points_bc_building: 2321
+  n_points_bc_domain: 4963
+  n_points_ic: 1098
+  n_points_pde: 17221
+scenario: one_building_DEM_zero
+train_grid:
+  n_points_train: 2000
+training:
+  batch_size: 1024
+  epochs: 2000
+  learning_rate: 0.0013335214321633251
+  lr_boundaries:
+    '1200': 0.1
+    '1600': 0.1
+  seed: 42

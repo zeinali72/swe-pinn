@@ -1,0 +1,81 @@
+Study: hpo-sensitivity-fourier-nobuilding
+Database: hpo-sensitivity-fourier-nobuilding.db
+Best Trial Number: 98
+Best Value (NSE): 0.8278031349182129
+----------------------------------------
+Parameters:
+batch_size_index: 1
+bc_weight: 0.3337624694292039
+ff_dims_index: 0
+fourier_scale: 6.7578125
+ic_weight: 0.026895987855750442
+learning_rate: 0.00014330125702369644
+model_depth: 6
+model_width_index: 3
+n_points_bc_domain: 22901
+n_points_ic: 1355
+n_points_pde: 93234
+neg_h_weight: 10.181517217181812
+pde_weight: 2641.6483203860907
+----------------------------------------
+Full Configuration (User Attrs):
+CONFIG_PATH: optimisation/configs/hpo_fourier_datafree_static_NOBUILDING.yaml
+data_free: true
+device:
+  dtype: float32
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+gradnorm:
+  enable: false
+  learning_rate: 0.01
+hpo_settings:
+  data_free: true
+  enable_gradnorm: false
+  opt_epochs: 2000
+loss_weights:
+  bc_weight: 0.3337624694292039
+  data_weight: 0.0
+  ic_weight: 0.026895987855750442
+  neg_h_weight: 10.181517217181812
+  pde_weight: 2641.6483203860907
+model:
+  bias_init: 0.0
+  depth: 6
+  ff_dims: 128
+  fourier_scale: 6.7578125
+  kernel_init: glorot_uniform
+  name: FourierPINN
+  output_dim: 3
+  width: 1024
+numerics:
+  eps: 1.0e-06
+physics:
+  g: 9.81
+  inflow: null
+  n_manning: 0.03
+  u_const: 0.29
+plotting:
+  nx_val: 101
+  plot_resolution: 150
+  t_const_val: 1800.0
+  y_const_plot: 0
+sampling:
+  n_points_bc_domain: 22901
+  n_points_ic: 1355
+  n_points_pde: 93234
+train_grid:
+  n_points_train: 2000
+training:
+  batch_size: 512
+  epochs: 2000
+  learning_rate: 0.00014330125702369644
+  lr_boundaries:
+    '1200': 0.1
+    '1600': 0.1
+  seed: 42
+validation_grid:
+  n_points_val: 42000
