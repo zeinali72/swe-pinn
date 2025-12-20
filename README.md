@@ -16,6 +16,7 @@ This repository implements a Physics-Informed Neural Network (PINN) approach to 
 ### Prerequisites
 - Python 3.8+
 - CUDA-compatible GPU (recommended for performance)
+- Docker (for Dev Container support)
 
 ### Setup
 1. Clone the repository:
@@ -24,12 +25,15 @@ git clone https://github.com/zeinali72/swe-pinn.git
 cd swe-pinn
 ```
 
-2. Install dependencies:
+2. **Dev Container (Recommended):**
+   - Open the folder in VS Code.
+   - When prompted, reopen in the Dev Container. This will automatically set up the environment with all dependencies (JAX, Flax, Aim, etc.) on Ubuntu 24.04.
+
+3. **Manual Installation:**
+   If not using the dev container, install dependencies manually:
 ```bash
 pip install -r .devcontainer/requirements.txt
 ```
-
-3. For development in VS Code with dev containers, use the provided `.devcontainer` configuration.
 
 ## Project Structure
 
