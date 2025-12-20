@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swe_pinn"
+version = "0.1.0"
+description = "Physics-Informed Neural Networks for Shallow Water Equations"
+requires-python = ">=3.8"
+dependencies = [
+    "jax",
+    "flax",
+    "optax",
+    "optuna",
+    "aim",
+    "numpy",
+    "pyyaml",
+    "matplotlib",
+    "seaborn"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

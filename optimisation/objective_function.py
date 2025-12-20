@@ -4,7 +4,7 @@ import optuna
 from flax.core import FrozenDict, unfreeze
 import numpy as np
 import jax.numpy as jnp
-from typing import Dict, Any, Union, List
+from typing import Dict, Any
 import copy
 import yaml
 
@@ -18,26 +18,23 @@ def get_hpo_value(trial: optuna.trial.Trial,
     """
     Parses the config value to decide whether to Fix, Suggest Range, or Suggest Category.
     """
-    # 1. If not in config, use the hardcoded default fallback
+    # 1. If not in config, use the hardcoded default fallback (Exploration/Sensitivity)
     if config_val is None:
         if default_fn is None:
             raise ValueError(f"Parameter '{param_name}' not found in config and no default provided.")
         return default_fn()
 
-    # 2. Fixed Value (Scalar) -> Exploitation
+    # 2. Fixed Value (Scalar) -> Exploitation (Fixed)
     if isinstance(config_val, (int, float, str, bool)):
         return config_val
 
-    # 3. Categorical Choice (List) -> Exploration
+    # 3. Categorical Choice (List) -> Exploration (Categorical)
     if isinstance(config_val, list):
         return trial.suggest_categorical(param_name, config_val)
 
-    # 4. Range (Dictionary with min/max) -> Exploration
+    # 4. Range (Dictionary with min/max) -> Exploration (Range)
     if isinstance(config_val, dict):
-        # Determine type (int or float)
-        # If 'type' is explicitly set, use it. Otherwise infer from min/max types.
         val_type = config_val.get("type", "float")
-        
         low = config_val["min"]
         high = config_val["max"]
         log = config_val.get("log", False)
@@ -59,7 +56,7 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
     model_name = base_cfg["model"]["name"]
     has_building = "building" in base_cfg
     
-    # Load the HPO configuration section (defaults to empty dict if missing)
+    # Load the HPO configuration section
     hpo_cfg = base_config_dict.get("hpo_hyperparameters", {})
     
     # Helper to simplify calls
@@ -71,15 +68,13 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
     trial_params = {}
 
     # === Training ===
-    # Example YAML: learning_rate: {min: 1e-5, max: 1e-2, log: true}
     trial_params["learning_rate"] = suggest("learning_rate", hpo_cfg, 
         lambda: trial.suggest_float("learning_rate", 1e-6, 1e-2, log=True))
     
-    # Example YAML: batch_size: [256, 512]
     trial_params["batch_size"] = suggest("batch_size", hpo_cfg,
         lambda: trial.suggest_categorical("batch_size", [256, 512, 1024]))
 
-    # LR Boundaries (Derived from epochs, usually not tuned directly)
+    # LR Boundaries (Calculated based on epochs)
     opt_epochs = base_config_dict.get("training", {}).get("epochs", 2000)
     boundary1 = int(opt_epochs * 0.6)
     boundary2 = int(opt_epochs * 0.8)
@@ -96,14 +91,12 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
         trial_params["ff_dims"] = suggest("ff_dims", hpo_cfg,
             lambda: trial.suggest_categorical("ff_dims", [128, 256, 512]))
         trial_params["fourier_scale"] = suggest("fourier_scale", hpo_cfg,
-            lambda: trial.suggest_float("fourier_scale", 5.0, 20.0))
+            lambda: trial.suggest_float("fourier_scale", 5.0, 30.0))
 
-    # === Sampling (Nested in YAML under 'sampling' key if preferred, or top level) ===
-    # We look for them at the top level of hpo_hyperparameters for simplicity, 
-    # but check if user nested them under 'sampling' just in case.
-    samp_cfg = hpo_cfg.get("sampling", hpo_cfg) 
-    
+    # === Sampling ===
+    samp_cfg = hpo_cfg.get("sampling", hpo_cfg)
     trial_params["sampling"] = {}
+    
     trial_params["sampling"]["n_points_pde"] = suggest("n_points_pde", samp_cfg,
         lambda: trial.suggest_int("n_points_pde", 10000, 120000, log=True))
         
@@ -124,59 +117,83 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
     for w in ["pde_weight", "ic_weight", "bc_weight", "neg_h_weight", "building_bc_weight"]:
         if w == "building_bc_weight" and not has_building: continue
         
-        # Default ranges
         min_w, max_w = (1.0, 1e6) if w == "pde_weight" else (1e-2, 1e3)
-        
         trial_params["loss_weights"][w] = suggest(w, weights_cfg,
             lambda: trial.suggest_float(w, min_w, max_w, log=True))
 
-    # Always 0 for data-free
     trial_params["loss_weights"]["data_weight"] = 0.0
-    
+
     # === Construct Configuration ===
     trial_config_dict = copy.deepcopy(base_config_dict)
 
-    # Overwrite Training
+    # Update Training
     trial_config_dict["training"]["learning_rate"] = trial_params["learning_rate"]
     trial_config_dict["training"]["batch_size"] = trial_params["batch_size"]
     trial_config_dict["training"]["lr_boundaries"] = trial_params["lr_boundaries"]
 
-    # Overwrite Model
+    # Update Model
     trial_config_dict["model"]["width"] = trial_params["model_width"]
     trial_config_dict["model"]["depth"] = trial_params["model_depth"]
     if model_name == "FourierPINN":
         trial_config_dict["model"]["ff_dims"] = trial_params["ff_dims"]
         trial_config_dict["model"]["fourier_scale"] = trial_params["fourier_scale"]
 
-    # Overwrite Sampling
+    # Update Sampling & Weights
     trial_config_dict["sampling"] = trial_params["sampling"]
-    # Clean up old keys
+    trial_config_dict["loss_weights"] = trial_params["loss_weights"]
+    
+    # Cleanup
     for k in ["grid", "ic_bc_grid"]: trial_config_dict.pop(k, None)
     if has_building and "building" in trial_config_dict:
         for k in ["nx", "ny", "nt"]: trial_config_dict["building"].pop(k, None)
-
-    # Overwrite Weights
-    trial_config_dict["loss_weights"] = trial_params["loss_weights"]
 
     # Ensure flags
     if "gradnorm" not in trial_config_dict: trial_config_dict["gradnorm"] = {}
     trial_config_dict["gradnorm"]["enable"] = False
     trial_config_dict["data_free"] = True
 
-    # Store & Freeze
-    trial.set_user_attr('full_config', unfreeze(trial_config_dict))
+    # Store
+    config_to_store = unfreeze(trial_config_dict)
+    trial.set_user_attr('full_config', config_to_store)
     trial_cfg_frozen = FrozenDict(trial_config_dict)
+
+    # --- Logging (Restored User's Format) ---
+    # We flatten the params to log so we see EVERYTHING (Fixed + Tuned)
+    params_to_log = {}
+    for k, v in trial_params.items():
+        if not isinstance(v, dict): params_to_log[k] = v
+    if "sampling" in trial_params: params_to_log.update(trial_params["sampling"])
+    if "loss_weights" in trial_params: params_to_log.update(trial_params["loss_weights"])
+
+    print("-" * 50)
+    print(f"Starting Trial {trial.number}")
+    print("Suggested Hyperparameters (Fixed + Tuned):")
+    for key in sorted(params_to_log.keys()):
+        value = params_to_log[key]
+        if value is not None:
+             if isinstance(value, (float, np.floating)):
+                  # Check bounds to decide formatting
+                  print(f"  {key:<25}: {value:.6e}" if abs(value) < 1e-2 or abs(value) > 1e3 else f"  {key:<25}: {value:.6f}")
+             else:
+                  print(f"  {key:<25}: {value}")
+
+    print("\nFull Configuration for this Trial:")
+    print(yaml.dump(config_to_store, default_flow_style=False, sort_keys=False, indent=2))
+    print("-" * 50)
 
     # --- Run ---
     try:
         best_nse = run_training_trial(trial, trial_cfg_frozen)
-        # Safety check for non-float returns
+        
         if hasattr(best_nse, 'item'): best_nse = best_nse.item()
-        if jnp.isnan(best_nse) or best_nse <= -float('inf'): return -1.0
+        if jnp.isnan(best_nse) or best_nse <= -float('inf'):
+             print(f"Trial {trial.number}: Invalid NSE ({best_nse}). Returning -1.0.")
+             return -1.0
         return float(best_nse)
+
     except optuna.exceptions.TrialPruned as e:
-        raise e
+         raise e
     except Exception as e:
-        print(f"Trial {trial.number} Failed: {e}")
-        import traceback; traceback.print_exc()
-        return -1.0
+         print(f"Trial {trial.number} Failed: {e}")
+         import traceback; traceback.print_exc()
+         return -1.0
