@@ -1,0 +1,16 @@
+--- Parameter Importance (fANOVA) for hpo-sensitivity-fourier-nobuilding ---
+Total Completed Trials: 98
+----------------------------------------
+n_points_bc_domain            : 0.4023
+fourier_scale                 : 0.2158
+learning_rate                 : 0.2109
+n_points_ic                   : 0.0491
+pde_weight                    : 0.0317
+bc_weight                     : 0.0293
+ic_weight                     : 0.0248
+batch_size_index              : 0.0153
+n_points_pde                  : 0.0094
+model_width_index             : 0.0039
+neg_h_weight                  : 0.0028
+ff_dims_index                 : 0.0027
+model_depth                   : 0.0020

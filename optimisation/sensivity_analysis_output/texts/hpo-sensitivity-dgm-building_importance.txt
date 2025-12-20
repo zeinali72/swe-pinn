@@ -1,0 +1,16 @@
+--- Parameter Importance (fANOVA) for hpo-sensitivity-dgm-building ---
+Total Completed Trials: 100
+----------------------------------------
+n_points_bc_building          : 0.3181
+learning_rate                 : 0.2637
+n_points_pde                  : 0.0953
+n_points_bc_domain            : 0.0843
+model_width_index             : 0.0706
+neg_h_weight                  : 0.0425
+ic_weight                     : 0.0387
+n_points_ic                   : 0.0355
+bc_weight                     : 0.0197
+pde_weight                    : 0.0140
+model_depth                   : 0.0122
+building_bc_weight            : 0.0050
+batch_size_index              : 0.0005

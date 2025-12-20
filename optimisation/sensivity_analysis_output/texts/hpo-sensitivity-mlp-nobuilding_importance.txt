@@ -1,0 +1,14 @@
+--- Parameter Importance (fANOVA) for hpo-sensitivity-mlp-nobuilding ---
+Total Completed Trials: 100
+----------------------------------------
+bc_weight                     : 0.2378
+learning_rate                 : 0.2147
+n_points_ic                   : 0.2089
+model_depth                   : 0.0907
+pde_weight                    : 0.0820
+n_points_pde                  : 0.0773
+batch_size_index              : 0.0487
+neg_h_weight                  : 0.0157
+n_points_bc_domain            : 0.0134
+ic_weight                     : 0.0102
+model_width_index             : 0.0006
