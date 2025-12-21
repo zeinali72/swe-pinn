@@ -340,3 +340,27 @@ def init_model(model_class: Any, key: jax.random.PRNGKey, config: Dict[str, Any]
     # Initialize with a dummy input (batch=1, dim=3 for x,y,t) 
     variables = model.init(key, jnp.zeros((1, 3), dtype=DTYPE))
     return model, {'params': variables['params']}
+
+
+class FourierNTK_MLP(nn.Module):
+    """PINN combining Fourier Feature Mapping and NTK Parameterization."""
+    config: FrozenDict
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, train: bool = True) -> jnp.ndarray:
+        model_cfg = self.config["model"]
+        domain_cfg = self.config["domain"]
+
+        # 1. Normalize Coordinates
+        x = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x)
+
+        # 2. Fourier Feature Mapping (to handle Spectral Bias [cite: 1368, 1388])
+        x = FourierFeatures(output_dims=model_cfg["ff_dims"], scale=model_cfg["fourier_scale"])(x)
+
+        # 3. NTK-Parameterized Hidden Layers [cite: 1207]
+        for _ in range(model_cfg["depth"]):
+            x = NTKDense(features=model_cfg["width"])(x)
+            x = nn.tanh(x)
+
+        # 4. Final NTK Output Layer
+        return NTKDense(features=model_cfg["output_dim"])(x)
