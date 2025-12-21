@@ -1,65 +1,59 @@
-# General Flags
-data_free: true                  # Set to true for PINN (physics only), false for data-driven
-
+# configs/analytical_ntk_config.yaml
+data_free: true
 training:
-  learning_rate: 0.000789191293  # Optimized learning rate from your Fourier config
-  epochs: 20000                  
-  batch_size: 512                
-  seed: 42                       
-  clip_norm: 1.0                 # Gradient clipping for stability
-  lr_boundaries:                 # Optional piecewise schedule
+  learning_rate: 0.000789191293
+  epochs: 20000
+  batch_size: 512
+  seed: 42
+  clip_norm: 1.0
+  lr_boundaries:
     15000: 0.1
     30000: 0.1
 
 model:
-  name: "FourierPINN"            # Matches your optimized model choice
+  name: "FourierPINN"
   width: 256
   depth: 4
   output_dim: 3
-  ff_dims: 512                   # Fourier feature dimensions
-  fourier_scale: 15.0            # Scale for high-frequency captures
+  ff_dims: 512
+  fourier_scale: 15.0
   kernel_init: "glorot_uniform"
   bias_init: 0.0
 
 domain:
-  lx: 1200.0                     # Longitudinal domain length (m)
-  ly: 100.0                      # Transverse domain length (m)
-  t_final: 3600.0                # Total simulation time (s)
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
 
-# --- NEW: REQUIRED SAMPLING SECTION ---
-# These define how many points are sampled per epoch for training
 sampling:
-  n_points_pde: 50000            # Total points for PDE residual calculation
-  n_points_ic: 5000              # Total points for initial condition (t=0)
-  n_points_bc_domain: 10000      # Total points shared across all 4 boundaries
+  n_points_pde: 50000
+  n_points_ic: 5000
+  n_points_bc_domain: 10000
 
-# --- NEW: VALIDATION GRID SECTION ---
 validation_grid:
-  n_points_val: 2000             # Random points for NSE/RMSE calculation
+  n_points_val: 2000
 
-# --- NEW: NTK CONFIGURATION SECTION ---
 ntk:
-  enable: true                   # Enable Neural Tangent Kernel weighting
-  update_freq: 100               # Update weights every 100 steps on GPU
-  ema_alpha: 0.1                 # Smoothing factor for weight updates
+  enable: true
+  update_freq: 100
+  ema_alpha: 0.1
 
 physics:
-  u_const: 0.29                  # Flow velocity (m/s)
-  n_manning: 0.03                # Roughness coefficient
-  g: 9.81                        # Gravity (m/s^2)
+  u_const: 0.29
+  n_manning: 0.03
+  g: 9.81
   inflow: null
 
 loss_weights:
-  # These are the starting weights; NTK will adjust them dynamically
-  pde_weight: 739697.429819995   # Your optimized PDE scale
-  ic_weight: 55.79602913312669   
-  bc_weight: 52.451320991170604  
-  neg_h_weight: 5.0              # Penalty for h < 0
+  pde_weight: 739697.429819995
+  ic_weight: 55.79602913312669
+  bc_weight: 52.451320991170604
+  neg_h_weight: 5.0
 
 plotting:
-  nx_val: 101                    
-  t_const_val: 1800.0            
-  y_const_plot: 0                
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 0
 
 device:
   dtype: "float32"
@@ -67,4 +61,6 @@ device:
   early_stop_patience: 3000
 
 numerics:
-  eps: 1.0e-06                   # Epsilon for numerical stability
+  eps: 1.0e-06
+
+CONFIG_PATH: configs/analytical_ntk_config.yaml
