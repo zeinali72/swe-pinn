@@ -1,7 +1,7 @@
 # configs/analytical_ntk_config.yaml
 data_free: true
 training:
-  learning_rate: 0.000789191293
+  learning_rate: 0.000001
   epochs: 20000
   batch_size: 512
   seed: 42
@@ -11,9 +11,9 @@ training:
     30000: 0.1
 
 model:
-  name: "FourierPINN"
-  width: 256
-  depth: 4
+  name: "NTKDense"
+  width: 512
+  depth: 3
   output_dim: 3
   ff_dims: 512
   fourier_scale: 15.0
@@ -35,7 +35,7 @@ validation_grid:
 
 ntk:
   enable: true
-  update_freq: 100
+  update_freq: 25600
   ema_alpha: 0.1
 
 physics:

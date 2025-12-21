@@ -290,3 +290,17 @@ def init_deeponet_model(model_class: nn.Module, key: jax.random.PRNGKey, config:
     
     variables = model.init(key, dummy_input_branch, dummy_input_trunk)
     return model, {'params': variables['params']}
+
+
+
+class NTKDense(nn.Module):
+    features: int
+    def setup(self):
+        # Weights initialized to N(0, 1) as per Eq 2.1 & 2.2
+        self.kernel = self.param('kernel', nn.initializers.normal(stddev=1.0), 
+                                (self.input_shape[-1], self.features))
+        self.bias = self.param('bias', nn.initializers.normal(stddev=1.0), (self.features,))
+
+    def __call__(self, x):
+        # Scale output by 1/sqrt(width)
+        return (x @ self.kernel) / jnp.sqrt(self.features) + self.bias

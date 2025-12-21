@@ -87,7 +87,7 @@ def update_ntk_weights_algo1(traces: Dict[str, jnp.ndarray], current_weights: Di
         target_weight = total_trace / jnp.maximum(trace, 1e-8)
         
         # Clamp to avoid extreme values found in your previous run
-        target_weight = jnp.clip(target_weight, 1e-2, 1e6) 
+        target_weight = jnp.clip(target_weight, 1e-2, 1e3)
         
         # Exponential Moving Average for training stability
         new_weights[key] = (1.0 - ema_alpha) * current_weights.get(key, 1.0) + ema_alpha * target_weight
