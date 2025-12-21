@@ -292,15 +292,34 @@ def init_deeponet_model(model_class: nn.Module, key: jax.random.PRNGKey, config:
     return model, {'params': variables['params']}
 
 
-
 class NTKDense(nn.Module):
     features: int
-    def setup(self):
-        # Weights initialized to N(0, 1) as per Eq 2.1 & 2.2
-        self.kernel = self.param('kernel', nn.initializers.normal(stddev=1.0), 
-                                (self.input_shape[-1], self.features))
-        self.bias = self.param('bias', nn.initializers.normal(stddev=1.0), (self.features,))
 
+    @nn.compact
     def __call__(self, x):
-        # Scale output by 1/sqrt(width)
-        return (x @ self.kernel) / jnp.sqrt(self.features) + self.bias
+        # Weights and biases initialized to i.i.d. Standard Normal N(0, 1) [cite: 72]
+        kernel = self.param('kernel', jax.nn.initializers.normal(stddev=1.0), (x.shape[-1], self.features))
+        bias = self.param('bias', jax.nn.initializers.normal(stddev=1.0), (features,))
+        
+        # NTK scaling: Wx / sqrt(fan_in) + b [cite: 62, 66]
+        return jnp.dot(x, kernel) / jnp.sqrt(x.shape[-1]) + bias
+
+class NTK_MLP(nn.Module):
+    """Fully-connected PINN with NTK Parameterization[cite: 70]."""
+    config: FrozenDict
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, train: bool = True) -> jnp.ndarray:
+        model_cfg = self.config["model"]
+        domain_cfg = self.config["domain"]
+
+        # 1. Normalize Coordinates (Required for multi-scale domains)
+        x = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x)
+
+        # 2. Hidden Layers: Scaled Linear -> Tanh [cite: 62]
+        for _ in range(model_cfg["depth"]):
+            x = NTKDense(features=model_cfg["width"])(x)
+            x = nn.tanh(x)
+
+        # 3. Output Layer (Scaled Linear only) [cite: 66]
+        return NTKDense(features=model_cfg["output_dim"])(x)

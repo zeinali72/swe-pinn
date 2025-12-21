@@ -38,8 +38,8 @@ def compute_ntk_traces(model: Any, params: Any, batch: Dict[str, Any], config: A
         if data is None or data.shape[0] == 0:
             return jnp.array(0.0)
             
-        # Function to compute ||grad r(x)||^2 for one point
         def point_grad_norm_sq(x):
+            """Computes ||grad r(x)||^2 for a single point x."""
             res_val, vjp_fn = jax.vjp(lambda p: get_single_res(p, x, term_type), params)
             num_outputs = res_val.shape[0]
             
@@ -49,28 +49,14 @@ def compute_ntk_traces(model: Any, params: Any, batch: Dict[str, Any], config: A
                 flat_grad, _ = jax.flatten_util.ravel_pytree(grad_tuple)
                 return jnp.sum(jnp.square(flat_grad))
                 
-            # Sum squared norms of grads of each output component
             return jnp.sum(jax.vmap(comp_norm)(jnp.arange(num_outputs)))
 
-        # Vmap over the batch of points
-        return jnp.sum(jax.vmap(point_grad_norm_sq)(data))
-
-    traces = {}
-    if 'pde' in active_keys:
-        traces['pde'] = compute_trace_efficient(batch['pde'], 'pde')
-    if 'ic' in active_keys:
-        traces['ic'] = compute_trace_efficient(batch['ic'], 'ic')
-    if 'bc' in active_keys:
-        bc_trace = 0.0
-        for wall in ['left', 'right', 'bottom', 'top']:
-            pts = batch['bc'].get(wall)
-            if pts is not None:
-                bc_trace += compute_trace_efficient(pts, 'bc')
-        traces['bc'] = bc_trace
-    if 'neg_h' in active_keys:
-        traces['neg_h'] = compute_trace_efficient(batch['pde'], 'neg_h')
-    
-    return traces
+        # MEMORY FIX: Use lax.scan to iterate over points sequentially instead of vmap
+        def scan_body(carry, x):
+            return carry + point_grad_norm_sq(x), None
+        
+        total_trace, _ = jax.lax.scan(scan_body, 0.0, data)
+        return total_trace
 
 def update_ntk_weights_algo1(traces: Dict[str, jnp.ndarray], current_weights: Dict[str, jnp.ndarray], ema_alpha: float = 0.1):
     """

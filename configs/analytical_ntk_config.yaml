@@ -11,7 +11,7 @@ training:
     30000: 0.1
 
 model:
-  name: "NTKDense"
+  name: "NTK_MLP"
   width: 512
   depth: 3
   output_dim: 3
@@ -45,10 +45,10 @@ physics:
   inflow: null
 
 loss_weights:
-  pde_weight: 739697.429819995
-  ic_weight: 55.79602913312669
-  bc_weight: 52.451320991170604
-  neg_h_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+  bc_weight: 1.0
+  neg_h_weight: 1.0
 
 plotting:
   nx_val: 101
