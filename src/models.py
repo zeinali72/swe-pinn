@@ -293,19 +293,26 @@ def init_deeponet_model(model_class: nn.Module, key: jax.random.PRNGKey, config:
 
 
 class NTKDense(nn.Module):
+    """A Dense layer with NTK parameterization: N(0,1) init and 1/sqrt(n) scaling."""
     features: int
 
     @nn.compact
     def __call__(self, x):
-        # Weights and biases initialized to i.i.d. Standard Normal N(0, 1) [cite: 72]
-        kernel = self.param('kernel', jax.nn.initializers.normal(stddev=1.0), (x.shape[-1], self.features))
-        bias = self.param('bias', jax.nn.initializers.normal(stddev=1.0), (features,))
+        # Corrected: Weight and bias initialized to N(0, 1) 
+        kernel = self.param('kernel', 
+                            jax.nn.initializers.normal(stddev=1.0), 
+                            (x.shape[-1], self.features))
         
-        # NTK scaling: Wx / sqrt(fan_in) + b [cite: 62, 66]
+        # FIX: Use self.features instead of features 
+        bias = self.param('bias', 
+                          jax.nn.initializers.normal(stddev=1.0), 
+                          (self.features,))
+        
+        # NTK scaling: (Wx / sqrt(fan_in)) + b 
         return jnp.dot(x, kernel) / jnp.sqrt(x.shape[-1]) + bias
 
 class NTK_MLP(nn.Module):
-    """Fully-connected PINN with NTK Parameterization[cite: 70]."""
+    """Multi-Layer Perceptron using NTK Parameterization."""
     config: FrozenDict
 
     @nn.compact
@@ -313,13 +320,23 @@ class NTK_MLP(nn.Module):
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
 
-        # 1. Normalize Coordinates (Required for multi-scale domains)
-        x = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x)
+        # Normalize inputs to [-1, 1] for stable training 
+        x = Normalize(lx=domain_cfg["lx"], 
+                      ly=domain_cfg["ly"], 
+                      t_final=domain_cfg["t_final"])(x)
 
-        # 2. Hidden Layers: Scaled Linear -> Tanh [cite: 62]
+        # Hidden layers: NTKDense -> Tanh 
         for _ in range(model_cfg["depth"]):
+            # Corrected: NTKDense only takes features, not the config object 
             x = NTKDense(features=model_cfg["width"])(x)
             x = nn.tanh(x)
 
-        # 3. Output Layer (Scaled Linear only) [cite: 66]
+        # Output layer 
         return NTKDense(features=model_cfg["output_dim"])(x)
+
+def init_model(model_class: Any, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
+    """Initialize the PINN model and parameters."""
+    model = model_class(config=config)
+    # Initialize with a dummy input (batch=1, dim=3 for x,y,t) 
+    variables = model.init(key, jnp.zeros((1, 3), dtype=DTYPE))
+    return model, {'params': variables['params']}
