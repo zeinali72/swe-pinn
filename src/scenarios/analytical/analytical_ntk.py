@@ -1,31 +1,28 @@
 # src/scenarios/analytical/analytical_ntk.py
 import os
-import sys
 import time
 import copy
 import argparse
 import importlib
 from typing import Any, Dict, Tuple
-import shutil
 
 import jax
 import jax.numpy as jnp
 from jax import random, lax
 import optax
 from flax.core import FrozenDict
-import numpy as np 
 
-from src.config import load_config, DTYPE
+from src.config import load_config
 from src.data import sample_domain, get_batches_tensor, get_sample_count
 from src.models import init_model
 from src.losses import (
-    compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
-    compute_data_loss, compute_neg_h_loss
+    compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss, compute_neg_h_loss
 )
-from src.ntk import compute_ntk_traces, update_ntk_weights_stable
+# Using corrected Algorithm 1 functions
+from src.ntk import compute_ntk_traces, update_ntk_weights_algo1
 from src.utils import nse, rmse, generate_trial_name, save_model, ask_for_confirmation
 from src.physics import h_exact
-from src.reporting import print_epoch_stats, log_metrics, print_final_summary
+from src.reporting import print_epoch_stats, print_final_summary
 
 def train_step(model, params, opt_state, all_batches, weights_dict, optimiser, config, data_free):
     def loss_fn(p):
@@ -52,28 +49,32 @@ def main(config_path: str):
     m_key, train_key, v_key = random.split(key, 3)
     model, params = init_model(model_class, m_key, cfg)
 
-    # NTK Configuration
+    # NTK State Setup
     ntk_freq = cfg.get("ntk", {}).get("update_freq", 100)
     ema = cfg.get("ntk", {}).get("ema_alpha", 0.1)
-    static_w = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
+    static_w = {k.replace('_weight',''): v for k, v in cfg["loss_weights"].items()}
     
-    # FIX: Cast active_keys to TUPLE for JAX JIT hashability
+    # FIX: Cast active_keys to Tuple to fix JIT TypeError (unhashable list)
     active_keys = tuple([k for k, v in static_w.items() if v > 0 and k != 'building_bc'])
     current_weights = {k: jnp.array(1.0) for k in active_keys}
 
     # JIT Wrappers
     train_step_jit = jax.jit(train_step, static_argnames=('model', 'optimiser', 'config', 'data_free'))
     ntk_jit = jax.jit(compute_ntk_traces, static_argnames=('model', 'config', 'active_keys'))
-    weights_jit = jax.jit(update_ntk_weights_stable)
+    weights_jit = jax.jit(update_ntk_weights_algo1)
 
     # Optimizer Setup
-    lr_sch = optax.piecewise_constant_schedule(cfg["training"]["learning_rate"], {int(k): v for k, v in cfg.get("training", {}).get("lr_boundaries", {}).items()})
-    opt = optax.chain(optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)), optax.adam(learning_rate=lr_sch))
+    lr_sch = optax.piecewise_constant_schedule(cfg["training"]["learning_rate"], 
+                {int(k): v for k, v in cfg.get("training", {}).get("lr_boundaries", {}).items()})
+    opt = optax.chain(optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)), 
+                      optax.adam(learning_rate=lr_sch))
     opt_state = opt.init(params)
     
     # Data Sampling
     samp = cfg["sampling"]; b_size = cfg["training"]["batch_size"]; dom = cfg["domain"]
-    n_pde = get_sample_count(samp, "n_points_pde", 1000); n_ic = get_sample_count(samp, "n_points_ic", 100); n_bc = get_sample_count(samp, "n_points_bc_domain", 100)
+    n_pde = get_sample_count(samp, "n_points_pde", 1000)
+    n_ic = get_sample_count(samp, "n_points_ic", 100)
+    n_bc = get_sample_count(samp, "n_points_bc_domain", 100)
     num_b = max(n_pde // b_size, 1)
 
     @jax.jit
@@ -82,30 +83,24 @@ def main(config_path: str):
         pde_pts = sample_domain(k1, n_pde, (0., dom["lx"]), (0., dom["ly"]), (0., dom["t_final"]))
         ic_pts = sample_domain(k2, n_ic, (0., dom["lx"]), (0., dom["ly"]), (0., 0.))
         bc_struct = {
-            'left': sample_domain(bc_k[0], n_bc//4, (0.,0.), (0., dom["ly"]), (0., dom["t_final"])),
-            'right': sample_domain(bc_k[1], n_bc//4, (dom["lx"],dom["lx"]), (0., dom["ly"]), (0., dom["t_final"])),
-            'bottom': sample_domain(bc_k[2], n_bc//4, (0., dom["lx"]), (0.,0.), (0., dom["t_final"])),
-            'top': sample_domain(bc_k[3], n_bc//4, (0., dom["lx"]), (dom["ly"], dom["ly"]), (0., dom["t_final"]))
+            'left': get_batches_tensor(bc_k[0], sample_domain(bc_k[0], n_bc//4, (0.,0.), (0., dom["ly"]), (0., dom["t_final"])), b_size, num_b),
+            'right': get_batches_tensor(bc_k[1], sample_domain(bc_k[1], n_bc//4, (dom["lx"],dom["lx"]), (0., dom["ly"]), (0., dom["t_final"])), b_size, num_b),
+            'bottom': get_batches_tensor(bc_k[2], sample_domain(bc_k[2], n_bc//4, (0., dom["lx"]), (0.,0.), (0., dom["t_final"])), b_size, num_b),
+            'top': get_batches_tensor(bc_k[3], sample_domain(bc_k[3], n_bc//4, (0., dom["lx"]), (dom["ly"], dom["ly"]), (0., dom["t_final"])), b_size, num_b)
         }
-        # Batching for lax.scan
-        return {
-            'pde': get_batches_tensor(k1, pde_pts, b_size, num_b), 
-            'ic': get_batches_tensor(k2, ic_pts, b_size, num_b), 
-            'bc': {k: get_batches_tensor(bc_k[i], v, b_size, num_b) for i, (k, v) in enumerate(bc_struct.items())}
-        }
+        return {'pde': get_batches_tensor(k1, pde_pts, b_size, num_b), 'ic': get_batches_tensor(k2, ic_pts, b_size, num_b), 'bc': bc_struct}
 
-    # Training Scan Body
+    # Scan Body (GPU execution)
     def body(carry, batch):
         p, os, w, step = carry
-        # Conditionally update NTK weights
+        # Conditionally update NTK weights every ntk_freq steps [cite: 336, 348]
         w = lax.cond(jnp.logical_and(cfg.get("ntk", {}).get("enable", True), (step % ntk_freq == 0)), 
                      lambda _: weights_jit(ntk_jit(model, p, batch, cfg, active_keys), w, ema), 
                      lambda _: w, None)
         p, os, terms, total = train_step_jit(model, p, os, batch, w, opt, cfg, cfg.get("data_free", True))
         return (p, os, w, step + 1), (terms, total)
 
-    # Training Execution
-    stats = {'nse': -jnp.inf, 'rmse': jnp.inf, 'epoch': 0, 'global_step': 0, 'total_weighted_loss': 0.0}
+    stats = {'nse': -jnp.inf, 'rmse': jnp.inf, 'epoch': 0, 'global_step': 0}
     g_step = 0; start = time.time()
     val_pts = sample_domain(v_key, cfg["validation_grid"]["n_points_val"], (0., dom["lx"]), (0., dom["ly"]), (0., dom["t_final"]))
     h_true = h_exact(val_pts[:, 0], val_pts[:, 2], cfg["physics"]["n_manning"], cfg["physics"]["u_const"])
@@ -123,15 +118,17 @@ def main(config_path: str):
             if cur_nse > stats['nse']:
                 stats.update({'nse': cur_nse, 'rmse': float(rmse(h_pred, h_true)), 'epoch': ep, 'global_step': int(g_step)})
                 best_params_nse = copy.deepcopy(params)
-                print(f"Epoch {ep+1}: New best NSE {cur_nse:.4f} | Weights: {[f'{k}:{float(v):.1e}' for k,v in current_weights.items()]}")
+                w_str = {k: f"{float(v):.1e}" for k, v in current_weights.items()}
+                print(f"Epoch {ep+1}: New best NSE {cur_nse:.4f} | Weights: {w_str}")
 
             if (ep + 1) % 100 == 0:
-                print_epoch_stats(ep, int(g_step), start, float(jnp.mean(b_totals)), avg_uw.get('pde', 0.0), avg_uw.get('ic', 0.0), avg_uw.get('bc', 0.0), 0.0, 0.0, avg_uw.get('neg_h', 0.0), cur_nse, float(rmse(h_pred, h_true)), time.time()-ep_start)
-
+                print_epoch_stats(ep, int(g_step), start, float(jnp.mean(b_totals)), avg_uw.get('pde', 0.0), 
+                                  avg_uw.get('ic', 0.0), avg_uw.get('bc', 0.0), 0.0, 0.0, 
+                                  avg_uw.get('neg_h', 0.0), cur_nse, float(rmse(h_pred, h_true)), time.time()-ep_start)
     finally:
         print_final_summary(time.time() - start, stats, {})
         if 'best_params_nse' in locals() and ask_for_confirmation():
-            save_model(best_params_nse, os.path.join("models", generate_trial_name(config_base)), "final_model")
+            save_model(best_params_nse, os.path.join("models", generate_trial_name(os.path.basename(config_path))), "final")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(); parser.add_argument("--config", type=str, required=True); main(parser.parse_args().config)
