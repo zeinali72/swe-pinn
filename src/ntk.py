@@ -52,7 +52,6 @@ def update_ntk_weights(traces: Dict[str, jnp.ndarray], current_weights: Dict[str
     
     for key, trace in traces.items():
         # Lambda_i = Trace(PDE) / Trace(i)
-        # This naturally gives small gradients (PDE) a huge weight multiplier.
         target_weight = pde_trace / jnp.maximum(trace, 1e-12)
         
         # Apply EMA: weight = (1-alpha)*old + alpha*new
