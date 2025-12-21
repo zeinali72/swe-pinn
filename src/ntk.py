@@ -67,15 +67,24 @@ def compute_ntk_traces(model: Any, params: Any, batch: Dict[str, Any], config: A
     return traces
 
 def update_ntk_weights_algo1(traces: Dict[str, jnp.ndarray], current_weights: Dict[str, jnp.ndarray], ema_alpha: float = 0.1):
-    """Implements Algorithm 1 (Wang et al. 2020): lambda_i = Tr(K_total) / Tr(K_i)."""
-    # The sum of eigenvalues is equivalent to the trace of the kernel [cite: 263, 337, 352]
-    total_trace = jnp.sum(jnp.array(list(traces.values())))
+    """
+    Implements Algorithm 1 (Wang et al. 2020) with neg_h fixed at 1.0.
+    """
+    # Exclude 'neg_h' from the total trace sum to focus balancing on PDE, IC, and BC [cite: 256, 352]
+    adaptive_traces = {k: v for k, v in traces.items() if k != 'neg_h'}
+    total_trace = jnp.sum(jnp.array(list(adaptive_traces.values())))
     
     new_weights = {}
     for key, trace in traces.items():
-        # Calibrate weights to balance convergence rates [cite: 334, 352, 362]
+        if key == 'neg_h':
+            # Force weight to 1.0 regardless of trace magnitude
+            new_weights[key] = jnp.array(1.0)
+            continue
+            
+        # Standard Algorithm 1 logic for remaining terms [cite: 352]
         target_weight = total_trace / jnp.maximum(trace, 1e-8)
-        target_weight = jnp.clip(target_weight, 1e-2, 1e6) 
+        target_weight = jnp.clip(target_weight, 1e-2, 1e4) # Lowered max clamp for stability
+        
         new_weights[key] = (1.0 - ema_alpha) * current_weights.get(key, 1.0) + ema_alpha * target_weight
         
     return new_weights

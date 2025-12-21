@@ -12,8 +12,8 @@ training:
 
 model:
   name: "NTK_MLP"
-  width: 512
-  depth: 3
+  width: 1024
+  depth: 5
   output_dim: 3
   ff_dims: 512
   fourier_scale: 15.0
@@ -35,8 +35,8 @@ validation_grid:
 
 ntk:
   enable: true
-  update_freq: 25600
-  ema_alpha: 0.1
+  update_freq: 1000
+  ema_alpha: 1.0
 
 physics:
   u_const: 0.29
