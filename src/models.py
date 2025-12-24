@@ -216,6 +216,12 @@ class DeepONet(nn.Module):
         Returns:
             Predicted output U(x,y,t), shape (batch, output_dim)
         """
+        # Handle unbatched inputs (e.g. inside vmap)
+        is_unbatched = (x_trunk.ndim == 1)
+        if is_unbatched:
+            x_branch = x_branch[None, ...]
+            x_trunk = x_trunk[None, ...]
+
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
         
@@ -250,22 +256,12 @@ class DeepONet(nn.Module):
         bias_t = self.param('bias_t', nn.initializers.zeros, (output_dim,))
 
         # --- Combine outputs ---
-        # (batch, output_dim, p_dim) * (batch, 1, p_dim) -> (batch, output_dim, p_dim)
-        # Then sum over the latent dimension (axis=-1)
-        # Resulting shape: (batch, output_dim)
-        output = jnp.sum(branch_out * trunk_out[:, None, :], axis=-1)
-        
-        # Add trunk bias
-        output = output + bias_t
-        
-        # This is the "shared layer" for GradNorm. We rename the trunk_output.
-        # This is a trick: GradNorm will compute gradients w.r.t. the trunk_output layer,
-        # which is a good representation of the shared computation.
-        s = nn.Dense(output_dim, name='output_layer', kernel_init=kernel_init, bias_init=bias_init)(trunk_out) 
-        
-        # Final combination
         # (batch, output_dim, p_dim) * (batch, 1, p_dim) -> sum -> (batch, output_dim)
         output = jnp.sum(branch_out * trunk_out[:, None, :], axis=-1) + bias_t
+        
+        if is_unbatched:
+            output = output[0]
+            
         return output
 
 

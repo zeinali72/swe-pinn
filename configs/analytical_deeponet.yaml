@@ -1,0 +1,89 @@
+
+# DeepONet Configuration for Analytical SWE
+
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+
+physics:
+  g: 9.81
+  inflow: 0.0 # No source by default
+  # Parameter bounds for operator learning
+  # {param_name: [min, max]}
+  param_bounds:
+    n_manning: [0.03, 0.12]
+    u_const: [0.05, 0.34]
+  
+  # Default values (used if logic falls back, or for validation reference)
+  n_manning: 0.03
+  u_const: 0.29
+model:
+  name: "DeepONet"
+  # Branch Net (processes parameters)
+  branch_depth: 5
+  branch_width: 512
+  
+  # Trunk Net (processes coordinates)
+  trunk_depth: 5
+  trunk_width: 512
+  
+  # Latent dimension (shared output size of branch/trunk before dot product)
+  latent_dim: 512
+  
+  # Output dim (h, hu, hv)
+  output_dim: 3
+  
+  bias_init: 0.0
+
+training:
+  epochs: 5000  # Set to a small number for testing/verification as requested
+  batch_size: 512
+  learning_rate: 1.0e-3
+  seed: 42
+  
+  # Sample counts per epoch (approximate, total samples drawn)
+  # DeepONet needs more data generally, but we keep it moderate for testing
+  log_freq_steps: 10
+  
+sampling:
+  n_points_pde: 20000
+  n_points_ic: 5000
+  n_points_bc_domain: 5000
+
+loss_weights:
+  pde_weight: 10.0
+  ic_weight: 10.0
+  bc_weight: 10.0
+  data_weight: 10.0 # Active data loss
+  neg_h_weight: 10.0
+  
+data_free: false
+  
+train_data_sampling:
+  n_train_functions: 1 # Number of parameter sets to sample for training data
+  n_train_points_per_function: 2000 # Points per function
+
+
+
+numerics:
+  eps: 1.0e-6
+
+validation_grid:
+  n_points_val: 10000
+
+# Validation sets for operator learning
+validation_params:
+  # List of test cases to validate against
+  # Each item is a dict of {param_name: value}
+  - {n_manning: 0.03, u_const: 0.29}  # Baseline
+  - {n_manning: 0.10, u_const: 0.1}  # High friction, low velocity
+  - {n_manning: 0.06, u_const: 0.33}  # Mid friction, high velocity
+
+plotting:
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 50.0
+
+device:
+  dtype: "float32"

@@ -89,3 +89,73 @@ def get_batches_tensor(key, data, batch_size, total_batches):
 def get_sample_count(sampling_cfg, name, default):
     """Helper to safely get sample counts from config."""
     return sampling_cfg.get(name, default)
+
+from typing import Tuple, Dict
+
+class DeepONetParametricSampler:
+    """
+    Unified sampler for DeepONet training.
+    Handles both physical parameter sampling (branch input) and coordinate sampling (trunk input).
+    """
+    def __init__(self, config: FrozenDict):
+        self.config = config
+        self.physics_cfg = config["physics"]
+        self.domain_cfg = config["domain"]
+        self.param_bounds = self.physics_cfg.get("param_bounds", {})
+        
+        # Parse parameter names to ensure consistent order
+        self.param_names = tuple(sorted(self.param_bounds.keys()))
+        self.n_params = len(self.param_names)
+        
+    def sample_parameters(self, key: jax.random.PRNGKey, n_samples: int) -> jnp.ndarray:
+        """Helper to sample just the parameters."""
+        if self.n_params == 0:
+             return jnp.zeros((n_samples, 0), dtype=DTYPE)
+
+        keys = random.split(key, self.n_params)
+        samples = []
+        for i, name in enumerate(self.param_names):
+            min_val, max_val = self.param_bounds[name]
+            # Use uniform sampling
+            p_sample = random.uniform(keys[i], (n_samples, 1), minval=min_val, maxval=max_val, dtype=DTYPE)
+            samples.append(p_sample)
+            
+        return jnp.hstack(samples)
+        
+    def sample_batch(self, key: jax.random.PRNGKey, n_samples: int, 
+                    mode: str = 'pde', 
+                    x_bounds: Tuple[float, float] = None,
+                    y_bounds: Tuple[float, float] = None,
+                    t_bounds: Tuple[float, float] = None) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        """
+        Generates a batch of (branch_input, trunk_input).
+        
+        Args:
+            key: PRNG key
+            n_samples: Number of samples
+            mode: 'pde', 'ic', 'bc' (affects default bounds if not provided)
+            x_bounds, y_bounds, t_bounds: Optional overrides for domain bounds
+            
+        Returns:
+            branch_batch: (n_samples, n_params)
+            trunk_batch: (n_samples, 3) -> (x, y, t)
+        """
+        k1, k2 = random.split(key)
+        
+        # 1. Sample Parameters (Branch Input)
+        branch_batch = self.sample_parameters(k1, n_samples)
+        
+        # 2. Sample Coordinates (Trunk Input)
+        if x_bounds is None: x_bounds = (0., self.domain_cfg["lx"])
+        if y_bounds is None: y_bounds = (0., self.domain_cfg["ly"])
+        
+        if t_bounds is None:
+            if mode == 'ic':
+                t_bounds = (0., 0.)
+            else:
+                t_bounds = (0., self.domain_cfg["t_final"])
+                
+        trunk_batch = sample_domain(k2, n_samples, x_bounds, y_bounds, t_bounds)
+        
+        return branch_batch, trunk_batch
+

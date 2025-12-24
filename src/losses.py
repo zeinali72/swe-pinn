@@ -4,10 +4,11 @@ import jax.numpy as jnp
 import jax.nn
 from flax import linen as nn
 from flax.core import FrozenDict
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 from src.physics import SWEPhysics, h_exact
-from src.utils import mask_points_inside_building # <-- Import the masking function
+from src.utils import mask_points_inside_building 
+from src.config import DTYPE
 
 def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray,
                      config: FrozenDict, pde_mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
@@ -157,7 +158,7 @@ def compute_building_bc_loss(model: nn.Module, params: Dict[str, Any],
 
     return loss_left + loss_right + loss_bottom + loss_top
 
-# --- NEW: Function to compute data loss ---
+# --- Function to compute data loss ---
 def compute_data_loss(model: nn.Module, params: Dict[str, Any], data_batch: jnp.ndarray, config: FrozenDict) -> jnp.ndarray:
     """
     Compute the Mean Squared Error (MSE) loss between model predictions and provided data points.
@@ -196,24 +197,164 @@ def compute_data_loss(model: nn.Module, params: Dict[str, Any], data_batch: jnp.
     # Combine the losses (could also return individual components if needed)
     total_data_loss = loss_h + loss_hu + loss_hv
     return total_data_loss
-# --- END NEW ---
+
+# ==========================================
+# OPERATOR LEARNING LOSSES (Parametric)
+# ==========================================
+
+def _get_op_params_from_batch(branch_batch: jnp.ndarray, config: FrozenDict) -> Dict[str, jnp.ndarray]:
+    """Helper: Extracts parameter arrays (n_manning, u_const) from the branch batch."""
+    param_bounds = config["physics"].get("param_bounds", {})
+    # Use sorted keys to match Sampler order
+    param_names = tuple(sorted(param_bounds.keys()))
+    param_map = {name: i for i, name in enumerate(param_names)}
+    
+    n_manning_idx = param_map.get('n_manning')
+    u_const_idx = param_map.get('u_const')
+    
+    n_manning_default = config["physics"]["n_manning"]
+    u_const_default = config["physics"]["u_const"]
+    
+    n_manning = branch_batch[..., n_manning_idx] if n_manning_idx is not None else jnp.full(branch_batch.shape[0], n_manning_default, dtype=DTYPE)
+    u_const = branch_batch[..., u_const_idx] if u_const_idx is not None else jnp.full(branch_batch.shape[0], u_const_default, dtype=DTYPE)
+    
+    return {'n_manning': n_manning, 'u_const': u_const}
+
+def compute_operator_pde_loss(model: nn.Module, params: Dict[str, Any],
+                              branch_batch: jnp.ndarray,
+                              trunk_batch: jnp.ndarray,
+                              config: FrozenDict) -> jnp.ndarray:
+    """Compute the PDE residual MSE for Operator Learning."""
+    
+    def U_fn(b_batch, t_batch):
+        return model.apply({'params': params['params']}, b_batch, t_batch, train=False)
+
+    jac_U = jax.vmap(jax.jacfwd(U_fn, argnums=1))(branch_batch, trunk_batch)
+    dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
+
+    U_pred = U_fn(branch_batch, trunk_batch)
+
+    phys_params = _get_op_params_from_batch(branch_batch, config)
+    eps = config["numerics"]["eps"]
+    g = config["physics"]["g"]
+    inflow = config["physics"]["inflow"]
+
+    physics = SWEPhysics(U_pred, eps=eps)
+    JF, JG = physics.flux_jac(g=g)
+    
+    S = physics.source(g=g, n_manning=phys_params['n_manning'], inflow=inflow)
+
+    div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
+    div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
+    
+    residual = (dU_dt + div_F + div_G - S)
+    h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
+    
+    final_residual = residual * h_mask[..., None]
+    return jnp.mean(final_residual ** 2)
+
+def compute_operator_neg_h_loss(model: nn.Module, params: Dict[str, Any],
+                                branch_batch: jnp.ndarray,
+                                trunk_batch: jnp.ndarray,
+                                config: FrozenDict) -> jnp.ndarray:
+    """Compute penalty for negative water height for Operator Learning."""
+    U_pred = model.apply({'params': params['params']}, branch_batch, trunk_batch, train=False)
+    h_pred = U_pred[..., 0]
+    neg_h_penalty = jax.nn.relu(-h_pred)
+    return jnp.mean(neg_h_penalty ** 2)
+
+def compute_operator_ic_loss(model: nn.Module, params: Dict[str, Any],
+                             branch_batch: jnp.ndarray,
+                             trunk_batch: jnp.ndarray, # t=0
+                             config: FrozenDict) -> jnp.ndarray:
+    """Compute IC loss for Operator Learning."""
+    U_pred = model.apply({'params': params['params']}, branch_batch, trunk_batch, train=False)
+    err = U_pred[..., 0]**2 + U_pred[..., 1]**2 + U_pred[..., 2]**2
+    return jnp.mean(err)
+
+def compute_operator_bc_loss(model: nn.Module, params: Dict[str, Any],
+                             batches: Dict[str, Dict[str, jnp.ndarray]],
+                             config: FrozenDict) -> jnp.ndarray:
+    """Compute BC loss for Operator Learning (left, right, bottom, top)."""
+    
+    # Left
+    b_left = batches['left']['branch']
+    t_left = batches['left']['trunk']
+    params_left = _get_op_params_from_batch(b_left, config)
+    
+    U_left = model.apply({'params': params['params']}, b_left, t_left, train=False)
+    h_pred_left, hu_pred_left = U_left[..., 0], U_left[..., 1]
+    
+    t_vals_left = t_left[..., 2]
+    h_true_left = h_exact(0.0, t_vals_left, params_left['n_manning'], params_left['u_const'])
+    hu_true_left = h_true_left * params_left['u_const']
+    
+    res_left_h = h_pred_left - h_true_left
+    res_left_hu = hu_pred_left - hu_true_left
+
+    # Right
+    b_right = batches['right']['branch']
+    t_right = batches['right']['trunk']
+    
+    def U_fn_right(b, t):
+        return model.apply({'params': params['params']}, b, t, train=False)
+    jac_U_right = jax.vmap(jax.jacfwd(U_fn_right, argnums=1))(b_right, t_right)
+    dU_dx_right = jac_U_right[..., 0]
+    res_right_grad = dU_dx_right
+
+    # Bottom
+    b_bottom = batches['bottom']['branch']
+    t_bottom = batches['bottom']['trunk']
+    U_bottom = model.apply({'params': params['params']}, b_bottom, t_bottom, train=False)
+    res_bottom_hv = U_bottom[..., 2]
+
+    # Top
+    b_top = batches['top']['branch']
+    t_top = batches['top']['trunk']
+    U_top = model.apply({'params': params['params']}, b_top, t_top, train=False)
+    res_top_hv = U_top[..., 2]
+
+    loss = (jnp.mean(res_left_h**2) + jnp.mean(res_left_hu**2) +
+            jnp.mean(res_right_grad**2) +
+            jnp.mean(res_bottom_hv**2) +
+            jnp.mean(res_top_hv**2))
+    return loss
 
 def total_loss(terms: Dict[str, jnp.ndarray], weights: Dict[str, float]) -> jnp.ndarray:
     """Compute the weighted sum of loss terms."""
-    loss = (weights.get('pde', 0.0) * terms.get('pde', 0.0) +
-            weights.get('ic', 0.0) * terms.get('ic', 0.0) +
-            weights.get('bc', 0.0) * terms.get('bc', 0.0))
+    # This function is generic enough to handle both provided keys match
+    loss = 0.0
+    for key in terms.keys():
+        if key in weights:
+             loss += weights[key] * terms[key]
+    return loss
 
-    # Conditionally add building loss if it exists in both terms and weights
-    if 'building_bc' in terms and 'building_bc' in weights:
-        loss += weights['building_bc'] * terms.get('building_bc', 0.0)
-
-    # --- NEW: Conditionally add data loss ---
-    if 'data' in terms and 'data' in weights:
-        loss += weights['data'] * terms.get('data', 0.0)
+def compute_operator_data_loss(model: nn.Module, params: Dict[str, Any],
+                               branch_batch: jnp.ndarray,
+                               trunk_batch: jnp.ndarray,
+                               h_true: jnp.ndarray, # (Batch, 1) or (Batch,)
+                               config: FrozenDict) -> jnp.ndarray:
+    """
+    Compute MSE loss for operator learning against ground truth h values.
+    
+    Args:
+        model: The DeepONet model.
+        params: Model parameters.
+        branch_batch: Branch inputs (parameters), shape (N, n_params).
+        trunk_batch: Trunk inputs (coords), shape (N, 3).
+        h_true: Ground truth water height, shape (N,) or (N, 1).
+        config: Configuration dictionary.
         
-    if 'neg_h' in terms and 'neg_h' in weights:
-        loss += weights['neg_h'] * terms.get('neg_h', 0.0)
-
-
+    Returns:
+        Scalar MSE loss.
+    """
+    # Predict U = [h, hu, hv]
+    U_pred = model.apply({'params': params['params']}, branch_batch, trunk_batch, train=False)
+    h_pred = U_pred[..., 0] # Extract h
+    
+    # Ensure h_true shape matches h_pred
+    if h_true.ndim == 2 and h_true.shape[1] == 1:
+        h_true = h_true.squeeze(1)
+        
+    loss = jnp.mean((h_pred - h_true)**2)
     return loss
