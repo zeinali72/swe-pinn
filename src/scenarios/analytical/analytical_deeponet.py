@@ -56,17 +56,21 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
 
     def loss_and_individual_terms(p):
         terms = {}
+        # Fetch PDE data (used for both PDE and Neg H loss)
+        pde_data = all_batches.get('pde', {})
+        has_pde_data = pde_data.get('branch') is not None
+
         # --- PDE Residual Loss ---
-        if 'pde' in active_loss_keys_base:
-            pde_data = all_batches.get('pde', {})
-            if pde_data.get('branch') is not None:
-                terms['pde'] = compute_operator_pde_loss(
-                    model, p, pde_data['branch'], pde_data['trunk'], config
-                )
-                if 'neg_h' in active_loss_keys_base:
-                     terms['neg_h'] = compute_operator_neg_h_loss(
-                         model, p, pde_data['branch'], pde_data['trunk'], config
-                     )
+        if 'pde' in active_loss_keys_base and has_pde_data:
+            terms['pde'] = compute_operator_pde_loss(
+                model, p, pde_data['branch'], pde_data['trunk'], config
+            )
+
+        # --- Negative Height Loss ---
+        if 'neg_h' in active_loss_keys_base and has_pde_data:
+            terms['neg_h'] = compute_operator_neg_h_loss(
+                model, p, pde_data['branch'], pde_data['trunk'], config
+            )
 
         # --- Initial Condition Loss ---
         if 'ic' in active_loss_keys_base:
@@ -326,7 +330,7 @@ def main(config_path: str):
 
     # --- JIT Data Generator ---
     def generate_epoch_data(key):
-        key, pde_key, ic_key, bc_keys = random.split(key, 4)
+        key, pde_key, ic_key, bc_keys, data_key_epoch = random.split(key, 5)
         
         # Helper to get batched tensor pairs
         def get_op_batches(rng, n, mode, x_bounds=None, y_bounds=None, t_bounds=None):
@@ -363,7 +367,7 @@ def main(config_path: str):
         # Top (y=ly)
         bc_data['top'] = get_op_batches(t_key, n_bc_per_wall, 'bc', y_bounds=(ly,ly))
 
-        return {
+        ret_dict = {
             'pde': pde_data,
             'ic': ic_data,
             'bc': bc_data,

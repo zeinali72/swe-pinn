@@ -265,6 +265,86 @@ class DeepONet(nn.Module):
         return output
 
 
+class FourierDeepONet(nn.Module):
+    """
+    DeepONet with Fourier-enhanced trunk network for better high-frequency capture.
+    - Branch net processes parameters (e.g., n_manning, u_const) - standard MLP
+    - Trunk net processes coordinates (x, y, t) with Fourier feature mapping
+    - Output dimension must match PINN models (e.g., 3 for [h, hu, hv])
+      to be compatible with the physics loss functions.
+    """
+    config: FrozenDict
+
+    @nn.compact
+    def __call__(self, x_branch: jnp.ndarray, x_trunk: jnp.ndarray, train: bool = True) -> jnp.ndarray:
+        """
+        Forward pass for the Fourier-enhanced DeepONet.
+
+        Args:
+            x_branch: Branch inputs (physical parameters), shape (batch, n_params)
+            x_trunk: Trunk inputs (coordinates x, y, t), shape (batch, 3)
+            train: (Unused) Kept for compatibility with some loss function calls.
+
+        Returns:
+            Predicted output U(x,y,t), shape (batch, output_dim)
+        """
+        # Handle unbatched inputs (e.g. inside vmap)
+        is_unbatched = (x_trunk.ndim == 1)
+        if is_unbatched:
+            x_branch = x_branch[None, ...]
+            x_trunk = x_trunk[None, ...]
+
+        model_cfg = self.config["model"]
+        domain_cfg = self.config["domain"]
+        
+        # Latent dimension
+        p_dim = model_cfg["latent_dim"]
+        output_dim = model_cfg["output_dim"]  # e.g., 3 for [h, hu, hv]
+        kernel_init = nn.initializers.glorot_uniform()
+        bias_init = nn.initializers.constant(model_cfg.get("bias_init", 0.0))
+
+        # --- Branch Network (processes parameters) - Standard MLP ---
+        b = x_branch
+        for _ in range(model_cfg["branch_depth"]):
+            b = nn.Dense(model_cfg["branch_width"], kernel_init=kernel_init, bias_init=bias_init)(b)
+            b = nn.tanh(b)
+        # Branch output, shape (batch, p_dim * output_dim)
+        # We need p_dim outputs for *each* output variable (h, hu, hv)
+        branch_out = nn.Dense(p_dim * output_dim, name="branch_output", kernel_init=kernel_init, bias_init=bias_init)(b)
+        # Reshape to (batch, output_dim, p_dim)
+        branch_out = branch_out.reshape(-1, output_dim, p_dim)
+
+        # --- Trunk Network (processes coordinates [x, y, t]) with Fourier Features ---
+        # Normalize coordinates first
+        t = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x_trunk)
+        
+        # Apply Fourier feature mapping
+        fourier_dims = model_cfg.get("trunk_fourier_dims", 256)
+        fourier_scale = model_cfg.get("trunk_fourier_scale", 1.0)
+        t = FourierFeatures(output_dims=fourier_dims, scale=fourier_scale)(t)
+        
+        # MLP layers on top of Fourier features
+        for _ in range(model_cfg["trunk_depth"]):
+            t = nn.Dense(model_cfg["trunk_width"], kernel_init=kernel_init, bias_init=bias_init)(t)
+            t = nn.tanh(t)
+        # Trunk output, shape (batch, p_dim)
+        trunk_out = nn.Dense(p_dim, name="trunk_output", kernel_init=kernel_init, bias_init=bias_init)(t)
+
+        # --- Add bias term (as in the original DeepONet paper) ---
+        # One bias per output dimension
+        bias_t = self.param('bias_t', nn.initializers.zeros, (output_dim,))
+
+        # --- Combine outputs ---
+        # (batch, output_dim, p_dim) * (batch, 1, p_dim) -> sum -> (batch, output_dim)
+        output = jnp.sum(branch_out * trunk_out[:, None, :], axis=-1) + bias_t
+        
+        if is_unbatched:
+            output = output[0]
+            
+        return output
+
+
+
 def init_deeponet_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
     """
     Initialize the DeepONet model and parameters.

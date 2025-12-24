@@ -12,20 +12,21 @@ physics:
   # Parameter bounds for operator learning
   # {param_name: [min, max]}
   param_bounds:
-    n_manning: [0.03, 0.12]
-    u_const: [0.05, 0.34]
+    n_manning: [0.02, 0.12]
+    u_const: [0.05, 0.333]
   
   # Default values (used if logic falls back, or for validation reference)
   n_manning: 0.03
   u_const: 0.29
 model:
-  name: "DeepONet"
+  name: "FourierDeepONet"  # Options: "DeepONet" or "FourierDeepONet"
+  
   # Branch Net (processes parameters)
   branch_depth: 3
   branch_width: 258
   
   # Trunk Net (processes coordinates)
-  trunk_depth: 5
+  trunk_depth: 4
   trunk_width: 512
   
   # Latent dimension (shared output size of branch/trunk before dot product)
@@ -35,11 +36,17 @@ model:
   output_dim: 3
   
   bias_init: 0.0
+  
+  # Fourier Feature Parameters (only used by FourierDeepONet)
+  # These are ignored by standard DeepONet
+  trunk_fourier_dims: 128   # Fourier embedding dimension
+  trunk_fourier_scale: 5.0  # Fourier scale parameter (controls frequency range)
+
 
 training:
   epochs: 5000  # Set to a small number for testing/verification as requested
-  batch_size: 512
-  learning_rate: 1.0e-3
+  batch_size: 1024
+  learning_rate: 0.000631136282084027
   seed: 42
   
   # Sample counts per epoch (approximate, total samples drawn)
@@ -47,14 +54,14 @@ training:
   log_freq_steps: 10
   
 sampling:
-  n_points_pde: 20000
-  n_points_ic: 5000
-  n_points_bc_domain: 5000
+  n_points_pde: 10000
+  n_points_ic: 10000
+  n_points_bc_domain: 10000
 
 loss_weights:
-  pde_weight: 100.0
+  pde_weight: 10.0
   ic_weight: 10.0
-  bc_weight: 10.0
+  bc_weight: 1000.0
   data_weight: 10.0 # Active data loss
   neg_h_weight: 10.0
   
