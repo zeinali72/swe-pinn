@@ -424,6 +424,52 @@ def main(config_path: str):
         )
         return (new_params, new_opt_state), (terms, total)
 
+    # --- Pre-Generate Static Validation Data (Before Training Loop) ---
+    print("\n--- Generating Static Validation Data ---")
+    val_params_list = cfg.get("validation_params", [])
+    validation_data_static = []  # List of dicts: {'branch', 'trunk', 'h_true', 'params'}
+    
+    if val_params_list:
+        p_names = sorted(cfg['physics']['param_bounds'].keys())
+        n_val_points = cfg["validation_grid"]["n_points_val"]
+        
+        for i, val_p in enumerate(val_params_list):
+            # Construct branch input for this validation scenario
+            b_input = []
+            for name in p_names:
+                b_input.append(val_p.get(name, cfg['physics'][name]))
+            b_tensor = jnp.array([b_input], dtype=DTYPE)  # (1, n_params)
+            
+            # Generate validation points (trunk) - use deterministic key per scenario
+            val_scenario_key = random.fold_in(val_key, i)
+            v_points = sample_domain(
+                val_scenario_key, n_val_points,
+                (0., cfg["domain"]["lx"]), 
+                (0., cfg["domain"]["ly"]), 
+                (0., cfg["domain"]["t_final"])
+            )
+            
+            # Repeat branch input for all points
+            b_inputs = jnp.repeat(b_tensor, v_points.shape[0], axis=0)
+            
+            # Pre-compute ground truth
+            h_true = h_exact(
+                v_points[:, 0],  # x
+                v_points[:, 2],  # t
+                val_p['n_manning'], 
+                val_p['u_const']
+            )
+            
+            validation_data_static.append({
+                'branch': b_inputs,
+                'trunk': v_points,
+                'h_true': h_true,
+                'params': val_p
+            })
+            print(f"  Scenario {i+1}/{len(val_params_list)}: n={val_p['n_manning']:.4f}, u={val_p['u_const']:.4f}, points={n_val_points}")
+    
+    print(f"Generated {len(validation_data_static)} static validation scenarios.\n")
+
     # --- 10. Main Loop ---
     try:
         for epoch in range(cfg["training"]["epochs"]):
@@ -442,46 +488,36 @@ def main(config_path: str):
             avg_losses_unweighted = {k: float(v) / num_batches for k, v in epoch_losses_unweighted_sum.items()}
             avg_total_weighted_loss = float(epoch_total_weighted_loss_sum) / num_batches
 
-            # --- Validation (Generalized) ---
-            val_params_list = cfg.get("validation_params", [])
+            # --- Validation Using Static Pre-Generated Data ---
             nse_vals = []
             rmse_vals = []
             
-            if val_params_list and (epoch + 1) % 10 == 0: # Check frequency
-                for val_p in val_params_list:
-                    # Construct branch input
-                    p_names = sorted(cfg['physics']['param_bounds'].keys())
-                    b_input = []
-                    for name in p_names:
-                        b_input.append(val_p.get(name, cfg['physics'][name]))
-                    b_tensor = jnp.array([b_input], dtype=DTYPE) # (1, n_params)
+            if validation_data_static and (epoch + 1) % 10 == 0:  # Check frequency
+                for val_scenario in validation_data_static:
+                    # Use pre-computed static data
+                    b_inputs = val_scenario['branch']
+                    v_points = val_scenario['trunk']
+                    h_true = val_scenario['h_true']
                     
-                    # Create grid
-                    v_points = sample_domain(
-                         val_key, cfg["validation_grid"]["n_points_val"],
-                         (0., cfg["domain"]["lx"]), (0., cfg["domain"]["ly"]), (0., cfg["domain"]["t_final"])
-                    )
-                    
-                    # Repeat branch input
-                    b_inputs = jnp.repeat(b_tensor, v_points.shape[0], axis=0)
-                    
-                    # Predict
+                    # Predict using current model parameters
                     U_pred = model.apply({'params': params['params']}, b_inputs, v_points, train=False)
                     h_pred = U_pred[..., 0]
                     
-                    # Ground Truth
-                    h_true = h_exact(v_points[:,0], v_points[:,2], val_p['n_manning'], val_p['u_const'])
+                    # Calculate NSE and RMSE for THIS SCENARIO (not globally)
+                    scenario_nse = float(nse(h_pred, h_true))
+                    scenario_rmse = float(rmse(h_pred, h_true))
                     
-                    nse_vals.append(float(nse(h_pred, h_true)))
-                    rmse_vals.append(float(rmse(h_pred, h_true)))
+                    nse_vals.append(scenario_nse)
+                    rmse_vals.append(scenario_rmse)
                 
+                # Average across scenarios (scenario-wise averaging, not global)
                 avg_nse = np.mean(nse_vals) if nse_vals else -jnp.inf
                 avg_rmse = np.mean(rmse_vals) if rmse_vals else jnp.inf
             else:
                 avg_nse = -jnp.inf
                 avg_rmse = jnp.inf
 
-            # Update best
+            # Update best model based on HIGHEST NSE (maximization)
             if avg_nse > best_nse_stats['nse']:
                 best_nse_stats.update({
                     'nse': avg_nse, 'rmse': avg_rmse, 'epoch': epoch, 'global_step': global_step,
@@ -564,9 +600,8 @@ def main(config_path: str):
                     
                     # 1D plot only (simple)
                     # We need to choose ONE parameter set to plot, e.g. the first one in validation list (baseline)
-                    val_params_list = cfg.get("validation_params", [])
-                    if val_params_list:
-                         plot_p = val_params_list[0]
+                    if validation_data_static:
+                         plot_p = validation_data_static[0]['params']
                          print(f"  Generating 1D validation plot for params: {plot_p}")
                          
                          p_names = sorted(cfg['physics']['param_bounds'].keys())
