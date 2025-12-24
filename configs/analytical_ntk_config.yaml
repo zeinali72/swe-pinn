@@ -1,22 +1,22 @@
 # configs/analytical_ntk_config.yaml
 data_free: true
 training:
-  learning_rate: 0.000001
+  learning_rate: 0.00000005
   epochs: 20000
   batch_size: 512
   seed: 42
   clip_norm: 1.0
   lr_boundaries:
-    15000: 0.1
-    30000: 0.1
+    1500000: 0.1
+    3000000: 0.1
 
 model:
   name: "NTK_MLP"
-  width: 1024
-  depth: 5
+  width: 512
+  depth: 6
   output_dim: 3
   ff_dims: 512
-  fourier_scale: 15.0
+  fourier_scale: 10.0
   kernel_init: "glorot_uniform"
   bias_init: 0.0
 
@@ -26,16 +26,16 @@ domain:
   t_final: 3600.0
 
 sampling:
-  n_points_pde: 50000
-  n_points_ic: 5000
+  n_points_pde: 10000
+  n_points_ic: 10000
   n_points_bc_domain: 10000
 
 validation_grid:
-  n_points_val: 2000
+  n_points_val: 45000
 
 ntk:
   enable: true
-  update_freq: 1000
+  update_freq: 100
   ema_alpha: 1.0
 
 physics:
