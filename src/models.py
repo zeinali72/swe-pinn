@@ -28,6 +28,43 @@ class FourierFeatures(nn.Module):
         features = jnp.concatenate([jnp.sin(x_proj), jnp.cos(x_proj)], axis=-1)
         return features
 
+
+class AdaptiveFourierFeatures(nn.Module):
+    """Fourier features with learnable frequency scales and optional phase."""
+
+    output_dims: int
+    base_scale: float = 1.0
+    learnable_scale: bool = True
+    use_phase: bool = True
+
+    @nn.compact
+    def __call__(self, x):
+        if self.output_dims % 2 != 0:
+            raise ValueError("output_dims must be even to form sin/cos pairs")
+
+        freq = self.param(
+            "freq",
+            nn.initializers.normal(stddev=self.base_scale),
+            (x.shape[-1], self.output_dims // 2),
+        )
+
+        if self.learnable_scale:
+            # Per-frequency log-scale to allow data-driven bandwidth adaptation.
+            log_scale = self.param(
+                "log_scale", nn.initializers.zeros, (self.output_dims // 2,)
+            )
+            freq = freq * jnp.exp(log_scale)
+
+        phase = 0.0
+        if self.use_phase:
+            phase = self.param(
+                "phase", nn.initializers.normal(stddev=1e-2), (self.output_dims // 2,)
+            )
+
+        x_proj = x @ freq + phase
+        features = jnp.concatenate([jnp.sin(x_proj), jnp.cos(x_proj)], axis=-1)
+        return features
+
 class FourierPINN(nn.Module):
     """PINN with Fourier Feature Mapping."""
     config: FrozenDict
@@ -56,6 +93,54 @@ class FourierPINN(nn.Module):
             model_cfg["output_dim"],
             kernel_init=nn.initializers.glorot_uniform(),
             bias_init=nn.initializers.constant(model_cfg["bias_init"])
+        )
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, train: bool = True) -> jnp.ndarray:
+        x_norm = self.normalizer(x)
+        x_features = self.fourier_features(x_norm)
+
+        for layer in self.dense_layers:
+            x_features = nn.tanh(layer(x_features))
+
+        return self.output_layer(x_features)
+
+
+class AdaptiveFourierPINN(nn.Module):
+    """PINN variant with learnable Fourier features for adaptive bandwidth."""
+
+    config: FrozenDict
+
+    def setup(self):
+        model_cfg = self.config["model"]
+        domain_cfg = self.config["domain"]
+
+        self.normalizer = Normalize(
+            lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"]
+        )
+
+        self.fourier_features = AdaptiveFourierFeatures(
+            output_dims=model_cfg["ff_dims"],
+            base_scale=model_cfg.get("fourier_scale", 1.0),
+            learnable_scale=model_cfg.get("learnable_fourier_scale", True),
+            use_phase=model_cfg.get("fourier_phase", True),
+        )
+
+        dense_layers = []
+        for _ in range(model_cfg["depth"]):
+            dense_layers.append(
+                nn.Dense(
+                    model_cfg["width"],
+                    kernel_init=nn.initializers.glorot_uniform(),
+                    bias_init=nn.initializers.constant(model_cfg.get("bias_init", 0.0)),
+                )
+            )
+        self.dense_layers = dense_layers
+
+        self.output_layer = nn.Dense(
+            model_cfg["output_dim"],
+            kernel_init=nn.initializers.glorot_uniform(),
+            bias_init=nn.initializers.constant(model_cfg.get("bias_init", 0.0)),
         )
 
     @nn.compact
@@ -440,3 +525,80 @@ class FourierNTK_MLP(nn.Module):
 
         # 4. Final NTK Output Layer
         return NTKDense(features=model_cfg["output_dim"])(x)
+
+
+class FourierMixing1D(nn.Module):
+    """Spectral mixing layer used inside a lightweight FNO block."""
+
+    modes: int
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        # x: (batch, width)
+        x_ft = jnp.fft.rfft(x, axis=-1)
+        n_modes = min(self.modes, x_ft.shape[-1])
+
+        # Complex weights for the retained modes
+        weight_scale = 1.0 / max(1, x.shape[-1])
+        w_real = self.param("w_real", nn.initializers.normal(stddev=weight_scale), (n_modes,))
+        w_imag = self.param("w_imag", nn.initializers.normal(stddev=weight_scale), (n_modes,))
+        weights = w_real + 1j * w_imag
+
+        out_ft = jnp.zeros_like(x_ft)
+        out_ft = out_ft.at[..., :n_modes].set(x_ft[..., :n_modes] * weights)
+
+        return jnp.fft.irfft(out_ft, n=x.shape[-1], axis=-1)
+
+
+class FourierFNOBlock(nn.Module):
+    """Residual block combining Fourier mixing and pointwise MLP updates."""
+
+    width: int
+    modes: int
+    mlp_width: int
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        residual = x
+        x = FourierMixing1D(self.modes)(x)
+        x = nn.Dense(self.mlp_width, kernel_init=nn.initializers.glorot_uniform())(x)
+        x = nn.tanh(x)
+        x = nn.Dense(self.width, kernel_init=nn.initializers.glorot_uniform())(x)
+        return residual + x
+
+
+class FourierFNO(nn.Module):
+    """
+    Pointwise Fourier Neural Operator variant for coordinate-based PINN training.
+
+    This model mixes frequencies along the feature dimension, enabling global
+    spectral interactions while remaining compatible with scattered (x, y, t)
+    inputs used by the existing training loop.
+    """
+
+    config: FrozenDict
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, train: bool = True) -> jnp.ndarray:
+        model_cfg = self.config["model"]
+        domain_cfg = self.config["domain"]
+
+        width = model_cfg.get("width", 256)
+        depth = model_cfg.get("depth", 4)
+        modes = model_cfg.get("fno_modes", 16)
+        mlp_width = model_cfg.get("mlp_width", width * 2)
+
+        # Normalize coordinates and lift to model width
+        x = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x)
+        x = nn.Dense(width, kernel_init=nn.initializers.glorot_uniform())(x)
+
+        for _ in range(depth):
+            x = FourierFNOBlock(width=width, modes=modes, mlp_width=mlp_width)(x)
+            x = nn.tanh(x)
+
+        return nn.Dense(
+            model_cfg["output_dim"],
+            kernel_init=nn.initializers.glorot_uniform(),
+            bias_init=nn.initializers.constant(model_cfg.get("bias_init", 0.0)),
+            name="output_layer",
+        )(x)
