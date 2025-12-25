@@ -1,0 +1,63 @@
+# Fourier Neural Operator-inspired configuration
+# Maintains pointwise (x, y, t) interface while adding spectral mixing blocks.
+data_free: true
+training:
+  learning_rate: 0.0005
+  epochs: 20000
+  batch_size: 512
+  seed: 42
+
+model:
+  name: "FourierFNO"
+  width: 256
+  depth: 4
+  mlp_width: 512
+  fno_modes: 32
+  output_dim: 3
+  bias_init: 0.0
+
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+
+grid:
+  nx: 48
+  ny: 23
+  nt: 21
+
+ic_bc_grid:
+  nx_ic: 39
+  ny_ic: 33
+  ny_bc_left: 24
+  nt_bc_left: 18
+  ny_bc_right: 33
+  nt_bc_right: 11
+  nx_bc_bottom: 70
+  nt_bc_other: 15
+  nx_bc_top: 69
+
+physics:
+  u_const: 0.29
+  n_manning: 0.03
+  inflow: null
+  g: 9.81
+
+loss_weights:
+  pde_weight: 1.0
+  bc_weight: 1.0
+  ic_weight: 1.0
+  neg_h_weight: 5.0
+
+plotting:
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 0
+
+device:
+  dtype: "float32"
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+
+numerics:
+  eps: 1e-6
