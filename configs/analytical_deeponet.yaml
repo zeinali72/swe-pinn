@@ -19,28 +19,24 @@ physics:
   n_manning: 0.03
   u_const: 0.29
 model:
-  name: "FourierDeepONet"  # Options: "DeepONet" or "FourierDeepONet"
+  name: "DeepONet"  # Options: "DeepONet" or "FourierDeepONet"
   
   # Branch Net (processes parameters)
-  branch_depth: 3
-  branch_width: 258
+  branch_depth: 4
+  branch_width: 512
   
   # Trunk Net (processes coordinates)
-  trunk_depth: 4
+  trunk_depth: 5
   trunk_width: 512
   
   # Latent dimension (shared output size of branch/trunk before dot product)
-  latent_dim: 128
+  latent_dim: 64
   
   # Output dim (h, hu, hv)
   output_dim: 3
   
   bias_init: 0.0
-  
-  # Fourier Feature Parameters (only used by FourierDeepONet)
-  # These are ignored by standard DeepONet
-  trunk_fourier_dims: 128   # Fourier embedding dimension
-  trunk_fourier_scale: 5.0  # Fourier scale parameter (controls frequency range)
+
 
 
 training:
@@ -69,7 +65,7 @@ data_free: false
   
 train_data_sampling:
   n_train_functions: 1 # Number of parameter sets to sample for training data
-  n_train_points_per_function: 2000 # Points per function
+  n_train_points_per_function: 10000 # Points per function
 
 
 

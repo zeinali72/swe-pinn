@@ -384,7 +384,9 @@ def main(config_path: str):
              # usage: get_batches_tensor(key, data, batch_size, total_batches)
              # It does random permutation inside.
              
-             b_data = get_batches_tensor(data_key_epoch, b_full, batch_size, num_batches)
+             # usage: get_batches_tensor(key, data, batch_size, total_batches)
+             # It does random permutation inside.
+             
              # We need to use SAME permutation for t and h
              # get_batches_tensor shuffles internally with key. 
              # We need a synchronised shuffle helper or manually shuffle here.
