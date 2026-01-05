@@ -1,0 +1,57 @@
+scenario: no_building_scenario
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+physics:
+  g: 9.81
+  inflow: null
+  n_manning: 0.03
+  u_const: 0.29
+device:
+  dtype: float32
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+numerics:
+  eps: 1.0e-06
+plotting:
+  nx_val: 101
+  plot_resolution: 150
+  t_const_val: 1800.0
+  y_const_plot: 0
+training:
+  epochs: 50000
+  seed: 42
+  learning_rate: 0.0006984150930531603
+  batch_size: 256
+  reduce_on_plateau:
+    factor: 0.5                    # Factor by which the learning rate will be reduced (new_lr = lr * factor)
+    patience: 5                 # Number of steps with no improvement after which learning rate will be reduced
+    rtol: 1e-4                     # Relative tolerance for measuring new optimum
+    atol: 0.0                      # Absolute tolerance for measuring new optimum
+    cooldown: 1                  # Number of steps to wait before resuming normal operation after lr has been reduced
+    accumulation_size: 235          # Number of steps to accumulate the metric (loss) before checking for plateau
+    min_scale: 1e-4                # Minimum scaling factor allowed
+
+validation_grid:
+  n_points_val: 45000
+model:
+  name: MLP
+  output_dim: 3
+  width: 512
+  depth: 5
+sampling:
+  n_points_pde: 60201
+  n_points_ic: 1857
+  n_points_bc_domain: 22000
+loss_weights:
+  pde_weight: 414759.9286194015
+  ic_weight: 1.0
+  bc_weight: 431.6350485748533
+  neg_h_weight: 1.0
+  data_weight: 10.0
+gradnorm:
+  enable: false
+data_free: true
+train_grid:
+  n_points_train: 1000

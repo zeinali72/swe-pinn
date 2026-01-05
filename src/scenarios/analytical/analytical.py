@@ -96,7 +96,10 @@ def train_step(model: Any, params: FrozenDict, opt_state: Any,
         return total, terms
 
     (total_loss_val, individual_terms_val), grads = jax.value_and_grad(loss_and_individual_terms, has_aux=True)(params)
-    updates, new_opt_state = optimiser.update(grads, opt_state, params)
+    
+    # MODIFIED: Pass 'value' (loss) to update for reduce_on_plateau
+    updates, new_opt_state = optimiser.update(grads, opt_state, params, value=total_loss_val)
+    
     new_params = optax.apply_updates(params, updates)
     return new_params, new_opt_state, individual_terms_val, total_loss_val
 
@@ -137,20 +140,22 @@ def main(config_path: str):
     os.makedirs(model_dir, exist_ok=True)
 
     # --- 3. Setup Optimizer ---
-    # Get the boundaries dict, which might have string keys from the config
-    raw_boundaries = cfg.get("training", {}).get("lr_boundaries", {15000: 0.1, 30000: 0.1})
+    # Get configuration for reduce_on_plateau
+    reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
 
-    # --- FIX: Convert string keys to int keys for Optax ---
-    boundaries_and_scales_int_keys = {int(k): v for k, v in raw_boundaries.items()}
-    # --- END FIX ---
-
-    lr_schedule = optax.piecewise_constant_schedule(
-        init_value=cfg["training"]["learning_rate"],
-        boundaries_and_scales=boundaries_and_scales_int_keys # Use the converted dict
-    )
     optimiser = optax.chain(
         optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)),
-        optax.adam(learning_rate=lr_schedule)
+        optax.adam(learning_rate=cfg["training"]["learning_rate"]),
+        # CHANGE: metric-driven LR scaling (reduces LR when loss plateaus)
+        optax.contrib.reduce_on_plateau(
+            factor=float(reduce_on_plateau_cfg.get("factor", 0.5)),
+            patience=int(reduce_on_plateau_cfg.get("patience", 5)),
+            rtol=float(reduce_on_plateau_cfg.get("rtol", 1e-4)),
+            atol=float(reduce_on_plateau_cfg.get("atol", 0.0)),
+            cooldown=int(reduce_on_plateau_cfg.get("cooldown", 1)),
+            accumulation_size=int(reduce_on_plateau_cfg.get("accumulation_size", 235)),
+            min_scale=float(reduce_on_plateau_cfg.get("min_scale", 1e-6)),
+        ),
     )
     opt_state = optimiser.init(params)
 
@@ -459,6 +464,19 @@ def main(config_path: str):
 
             avg_losses_unweighted = {k: float(v) / num_batches for k, v in epoch_losses_unweighted_sum.items()}
             avg_total_weighted_loss = float(epoch_total_weighted_loss_sum) / num_batches
+            
+            # --- LR Extraction (Calculate every epoch for Aim, but print conditionally) ---
+            # Extract LR status from opt_state (chain: clip, adam, reduce_on_plateau)
+            current_lr = cfg["training"]["learning_rate"]
+            current_scale = 1.0
+            base_lr_val = cfg["training"]["learning_rate"]
+            try:
+                # Access the state of the last transformation (reduce_on_plateau)
+                # opt_state is a tuple corresponding to the chain elements
+                current_scale = opt_state[-1].scale 
+                current_lr = base_lr_val * current_scale
+            except Exception:
+                pass # fallback to default
 
             # --- Validation ---
             nse_val, rmse_val = -jnp.inf, jnp.inf
@@ -506,6 +524,8 @@ def main(config_path: str):
                     avg_losses_unweighted.get('neg_h', 0.0),
                     nse_val, rmse_val, epoch_time
                 )
+                # MOVED: Printing LR status here
+                print(f"    LR Status: LR={current_lr:.2e}, Base={base_lr_val:.2e}, Scale={current_scale:.2e}")
 
             if aim_run:
                 epoch_metrics_to_log = {
@@ -513,7 +533,7 @@ def main(config_path: str):
                     'epoch_avg_losses': avg_losses_unweighted,
                     'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
                     'system_metrics': {'epoch_time': epoch_time},
-                    'training_metrics': {'learning_rate': float(lr_schedule(global_step))}
+                    'training_metrics': {'learning_rate': float(current_lr)}
                 }
                 log_metrics(aim_run, step=global_step, epoch=epoch, metrics=epoch_metrics_to_log)
 

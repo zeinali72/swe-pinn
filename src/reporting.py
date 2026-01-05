@@ -58,6 +58,7 @@ def log_metrics(aim_run: Run, step: int, epoch: int, metrics: Dict):
             for key, val in metrics.get('epoch_avg_losses', {}).items():
                 aim_run.track(_safe_float(val), name=f'losses/epoch_avg/unweighted/{key}', epoch=epoch, context={'subset': 'train'})
 
+            # Note: This is inside the if block, but uses 'epoch_avg_total_weighted_loss' from the root metrics dict
             aim_run.track(_safe_float(metrics.get('epoch_avg_total_weighted_loss')), name='losses/epoch_avg/total_weighted', epoch=epoch, context={'subset': 'train'})
 
         # 3. Log Per-Epoch Validation Metrics (epoch only)
@@ -68,6 +69,13 @@ def log_metrics(aim_run: Run, step: int, epoch: int, metrics: Dict):
         # 4. Log Per-Epoch System Metrics (epoch only)
         if 'system_metrics' in metrics:
             aim_run.track(_safe_float(metrics['system_metrics'].get('epoch_time')), name='system/epoch_time', epoch=epoch, context={'subset': 'system'})
+
+        # 5. Log Training Metrics (e.g. learning rate) - NEW ADDITION
+        # This catches the 'training_metrics' dictionary sent from analytical.py
+        if 'training_metrics' in metrics:
+            for key, val in metrics.get('training_metrics', {}).items():
+                # Logs as "training/learning_rate" in Aim
+                aim_run.track(_safe_float(val), name=f'training/{key}', epoch=epoch, context={'subset': 'train'})
 
     except Exception as e:
         print(f"Warning: Failed to log metrics to Aim at epoch {epoch}: {e}")
