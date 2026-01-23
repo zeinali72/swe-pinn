@@ -161,6 +161,7 @@ def main(config_path: str):
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
+
     # --- 3. Setup Optimizer ---
     # Get configuration for reduce_on_plateau
     reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
@@ -175,11 +176,12 @@ def main(config_path: str):
             rtol=float(reduce_on_plateau_cfg.get("rtol", 1e-4)),
             atol=float(reduce_on_plateau_cfg.get("atol", 0.0)),
             cooldown=int(reduce_on_plateau_cfg.get("cooldown", 1)),
-            accumulation_size=int(reduce_on_plateau_cfg.get("accumulation_size", 235)),
+            accumulation_size=int(reduce_on_plateau_cfg.get("accumulation_size", 1)),
             min_scale=float(reduce_on_plateau_cfg.get("min_scale", 1e-6)),
         ),
     )
     opt_state = optimiser.init(params)
+
 
     # --- 4. Prepare Loss Weights ---
     static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
@@ -387,6 +389,8 @@ def main(config_path: str):
     if num_batches == 0:
         print(f"Error: Batch size {batch_size} is too large for configured sample counts or data. No training will occur.")
         return -1.0
+    print(f"Calculated number of batches per epoch: {num_batches}")
+
 
     # --- Define JIT Data Generator ---
     def generate_epoch_data(key):
