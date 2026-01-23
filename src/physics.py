@@ -34,14 +34,15 @@ class SWEPhysics:
         ], axis=-2)
         return F, G
 
-    def source(self, g: float, n_manning: float, inflow: float) -> jnp.ndarray:
+    def source(self, g: float, n_manning: float, inflow: float, 
+               bed_grad_x: jnp.ndarray = None, bed_grad_y: jnp.ndarray = None) -> jnp.ndarray:
         """Compute source terms for SWE."""
         vel = jnp.sqrt(self.u**2 + self.v**2)
         sfx = n_manning**2 * self.u * vel / (self.h_safe**(4 / 3))
         sfy = n_manning**2 * self.v * vel / (self.h_safe**(4 / 3))
         sox = soy = 0.0
-        if self.bed is not None:
-            sox, soy = -jnp.gradient(self.bed, axis=-2), -jnp.gradient(self.bed, axis=-1)
+        sox = -bed_grad_x if bed_grad_x is not None else 0.0
+        soy = -bed_grad_y if bed_grad_y is not None else 0.0
 
         R = 0.0 if inflow is None else inflow
         s_mass = R * jnp.ones_like(self.h_safe)

@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, Tuple
 from src.physics import SWEPhysics, h_exact
 from src.utils import mask_points_inside_building 
 from src.config import DTYPE
+from src.data import bathymetry_fn  # <--- IMPORT THIS
 
 def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray,
                      config: FrozenDict, pde_mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
@@ -26,6 +27,14 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
     dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
 
+    x_batch = pde_batch[..., 0]
+    y_batch = pde_batch[..., 1]
+
+    # 2. Get Bathymetry Slopes
+    # We call the function imported from data.py. 
+    # It knows the bounds internally (captured in closure), so we just pass x, y.
+    _, bed_grad_x, bed_grad_y = bathymetry_fn(x_batch, y_batch)
+
     eps = config["numerics"]["eps"]
     physics = SWEPhysics(U_pred, eps=eps)
 
@@ -36,7 +45,9 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     JF, JG = physics.flux_jac(g=g)
     div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
     div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
-    S = physics.source(g=g, n_manning=n_manning, inflow=inflow)
+
+
+    S = physics.source(g=g, n_manning=n_manning, inflow=inflow, bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
 
     residual = (dU_dt + div_F + div_G - S)
 

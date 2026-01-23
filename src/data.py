@@ -158,4 +158,99 @@ class DeepONetParametricSampler:
         trunk_batch = sample_domain(k2, n_samples, x_bounds, y_bounds, t_bounds)
         
         return branch_batch, trunk_batch
+    
+import jax.scipy.ndimage
+from jax import grad, jit, vmap
 
+# Global variable to hold the JIT-compiled interpolator
+_BATHYMETRY_FN = None
+
+def load_bathymetry(dem_path: str):
+    """
+    Loads the DEM, creates the differentiable interpolator, and assigns it globally.
+    Call this ONCE at the start of your training script.
+    """
+    global _BATHYMETRY_FN
+    
+    # 1. Read .asc file
+    header = {}
+    try:
+        with open(dem_path, 'r') as f:
+            for _ in range(6):
+                line = f.readline().split()
+                header[line[0].lower()] = float(line[1])
+        dem_numpy = np.loadtxt(dem_path, skiprows=6)
+    except FileNotFoundError:
+        print(f"Warning: DEM file not found at {dem_path}. Bathymetry will be flat.")
+        return
+
+    # 2. Extract metadata
+    xll = header['xllcorner']
+    yll = header['yllcorner']
+    cellsize = header['cellsize']
+    nrows = int(header['nrows'])
+    ncols = int(header['ncols'])
+    dem_jax = jnp.array(dem_numpy, dtype=DTYPE)
+
+    # 3. Define the interpolator (Closure captures dem_jax and metadata)
+    def get_elevation_scalar(x, y):
+        # Map physical (x, y) to grid indices
+        col_idx = (x - xll) / cellsize
+        # Row 0 is Y_max in .asc files
+        y_max = yll + nrows * cellsize
+        row_idx = (y_max - y) / cellsize
+        
+        coords = jnp.array([row_idx, col_idx])
+        # Order 1 = Bilinear interpolation (differentiable)
+        return jax.scipy.ndimage.map_coordinates(dem_jax, coords, order=1, mode='nearest')
+
+    # 4. Create gradients using Autograd
+    grad_z = grad(get_elevation_scalar, argnums=(0, 1))
+
+    @jit
+    def bathymetry_fn_point(x, y):
+        z = get_elevation_scalar(x, y)
+        dz_dx, dz_dy = grad_z(x, y)
+        return z, dz_dx, dz_dy
+
+    # 5. Vectorize and assign to global
+    _BATHYMETRY_FN = vmap(bathymetry_fn_point)
+    print(f"Bathymetry loaded from {dem_path}")
+
+def bathymetry_fn(x, y):
+    """
+    Public accessor for the bathymetry function.
+    Can be imported by losses.py.
+    """
+    if _BATHYMETRY_FN is None:
+        # Fallback: Flat bed (0 slope)
+        return jnp.zeros_like(x), jnp.zeros_like(x), jnp.zeros_like(x)
+    return _BATHYMETRY_FN(x, y)
+
+def load_boundary_condition(csv_path):
+    """
+    Reads Test1BC.csv and returns a JIT-compatible interpolation function.
+    """
+    # 1. Load Data (Standard Numpy)
+    # format: Time (mins), Water level (m)
+    data = np.loadtxt(csv_path, delimiter=',', skiprows=1)
+    
+    # 2. Convert Units
+    # CSV time is in Minutes -> Convert to Seconds for simulation
+    t_data_seconds = data[:, 0] * 60.0
+    h_data_meters = data[:, 1]
+    
+    # 3. Create JAX Arrays (Move to GPU/TPU)
+    t_ref = jnp.array(t_data_seconds)
+    h_ref = jnp.array(h_data_meters)
+    
+    # 4. Define Interpolator
+    def get_bc_h(t):
+        """
+        Input: t (scalar or vector in seconds)
+        Output: Water level h (meters)
+        """
+        # jnp.interp works exactly like np.interp (linear interpolation)
+        return jnp.interp(t, t_ref, h_ref)
+        
+    return get_bc_h
