@@ -4,35 +4,39 @@ import jax.numpy as jnp
 import jax.nn
 from flax import linen as nn
 from flax.core import FrozenDict
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Callable
 
 from src.physics import SWEPhysics, h_exact
-from src.utils import mask_points_inside_building 
+# If using the differentiable interpolator from data.py
+from src.data import bathymetry_fn 
 from src.config import DTYPE
-from src.data import bathymetry_fn  # <--- IMPORT THIS
+
+# ==========================================
+# 1. CORE PDE LOSS (Physics)
+# ==========================================
 
 def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray,
                      config: FrozenDict, pde_mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
     """Compute the PDE residual mean squared error (MSE) for the SWE."""
-    # Ensure pde_batch has the correct shape (N, 3) for model input
     if pde_batch.shape[-1] != 3:
         raise ValueError(f"PDE batch requires shape (N, 3), but got {pde_batch.shape}")
     if pde_mask is None:
         pde_mask = jnp.ones((pde_batch.shape[0],), dtype=bool)
+
     U_pred = model.apply({'params': params['params']}, pde_batch, train=True)
+    
     def U_fn(pts):
-        # Ensure input points for jacfwd also have shape (N, 3)
         return model.apply({'params': params['params']}, pts, train=False)
 
     jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
     dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
 
+    # 1. Unpack coordinates
     x_batch = pde_batch[..., 0]
     y_batch = pde_batch[..., 1]
 
-    # 2. Get Bathymetry Slopes
-    # We call the function imported from data.py. 
-    # It knows the bounds internally (captured in closure), so we just pass x, y.
+    # 2. Get Bathymetry Slopes (Differentiable)
+    # This uses the global interpolator defined in src/data.py
     _, bed_grad_x, bed_grad_y = bathymetry_fn(x_batch, y_batch)
 
     eps = config["numerics"]["eps"]
@@ -46,96 +50,175 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
     div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
 
-
-    S = physics.source(g=g, n_manning=n_manning, inflow=inflow, bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
+    # 3. Pass gradients to source term
+    S = physics.source(g=g, n_manning=n_manning, inflow=inflow, 
+                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
 
     residual = (dU_dt + div_F + div_G - S)
 
-    # Mask for physical realism (zero residual where water depth is near zero)
     h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
-
-    # --- NEW: EFFICIENT MASKING INSIDE JIT-COMPILED FUNCTION ---
     final_residual = residual * h_mask[..., None]* pde_mask[..., None]
     return jnp.mean(final_residual ** 2)
 
 def compute_neg_h_loss(model: nn.Module, params: Dict[str, Any], pde_points: jnp.ndarray,
                      pde_mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
-    """
-    Compute a penalty for negative water height (h_pred < 0).
-    Uses a quadratic penalty on the negative part: mean(relu(-h_pred)^2)
-    """
-    # We use the pde_batch as it covers the whole domain/time
+    """Compute penalty for negative water height."""
     U_pred = model.apply({'params': params['params']}, pde_points, train=False)
     h_pred = U_pred[..., 0]
-
-    # jnp.relu(-h_pred) is equivalent to max(0, -h_pred)
-    # This is 0 if h_pred is positive, and |-h_pred| if h_pred is negative.
-    if pde_mask is None:
-        pde_mask = jnp.ones((pde_points.shape[0],), dtype=bool)
-
-    # Apply the mask *before* the relu
-    h_pred = h_pred * pde_mask
-
-    neg_h_penalty = jax.nn.relu(-h_pred)
-
-    # Return the mean squared penalty
-    return jnp.mean(neg_h_penalty ** 2)
-
+    if pde_mask is not None:
+        h_pred = h_pred * pde_mask
+    return jnp.mean(jax.nn.relu(-h_pred) ** 2)
 
 def compute_ic_loss(model: nn.Module, params: Dict[str, Any], ic_batch: jnp.ndarray) -> jnp.ndarray:
     """Compute initial condition loss for h=0, hu=0, hv=0 at t=0."""
-    # Ensure ic_batch has the correct shape (N, 3) for model input
-    if ic_batch.shape[-1] != 3:
-         raise ValueError(f"IC batch requires shape (N, 3), but got {ic_batch.shape}")
     U_pred = model.apply({'params': params['params']}, ic_batch, train=False)
-    # Target is U = [0, 0, 0]
-    err = U_pred[..., 0]**2 + U_pred[..., 1]**2 + U_pred[..., 2]**2
-    return jnp.mean(err)
+    return jnp.mean(U_pred**2)
+
+# ==========================================
+# 2. ATOMIC BOUNDARY LOSSES (New)
+# ==========================================
+
+def loss_boundary_dirichlet_h(model: nn.Module, params: Dict[str, Any],
+                              batch: jnp.ndarray,
+                              h_target: jnp.ndarray) -> jnp.ndarray:
+    """
+    Enforces a prescribed water level h.
+    The target 'h_target' can be constant or dynamic (time-varying vector).
+    """
+    U_pred = model.apply({'params': params['params']}, batch, train=False)
+    h_pred = U_pred[..., 0]
+    
+    if h_target.ndim != h_pred.ndim:
+        h_target = h_target.squeeze()
+        
+    return jnp.mean((h_pred - h_target)**2)
+
+
+def loss_boundary_dirichlet_hu(model: nn.Module, params: Dict[str, Any],
+                               batch: jnp.ndarray,
+                               hu_target: jnp.ndarray) -> jnp.ndarray:
+    """
+    Enforces a prescribed momentum hu.
+    The target 'hu_target' can be constant or dynamic.
+    """
+    U_pred = model.apply({'params': params['params']}, batch, train=False)
+    hu_pred = U_pred[..., 1]
+    
+    if hu_target.ndim != hu_pred.ndim:
+        hu_target = hu_target.squeeze()
+        
+    return jnp.mean((hu_pred - hu_target)**2)
+
+
+def loss_boundary_wall_slip_general(model: nn.Module, params: Dict[str, Any],
+                                    wall_batch: jnp.ndarray,
+                                    normal_vectors: jnp.ndarray) -> jnp.ndarray:
+    """
+    General 'Slip' condition for walls of ANY orientation.
+    Enforces dot(velocity, normal) = 0.
+    
+    Args:
+        wall_batch: Shape (N, 3) -> [x, y, t]
+        normal_vectors: Shape (N, 2) -> [nx, ny]
+    """
+    U_pred = model.apply({'params': params['params']}, wall_batch, train=False)
+    
+    h_pred = U_pred[..., 0]
+    hu_pred = U_pred[..., 1]
+    hv_pred = U_pred[..., 2]
+    
+    # Calculate Velocity (u, v) with safety epsilon
+    # We use a small epsilon to avoid division by zero in dry areas
+    h_safe = jnp.maximum(h_pred, 1e-6)
+    u_pred = hu_pred / h_safe
+    v_pred = hv_pred / h_safe
+    
+    # Stack velocity vector: Shape (N, 2)
+    vel_vectors = jnp.stack([u_pred, v_pred], axis=-1)
+    
+    # Compute dot product: v . n
+    # sum along the last axis (components)
+    normal_flux = jnp.sum(vel_vectors * normal_vectors, axis=-1)
+    
+    return jnp.mean(normal_flux**2)
+
+
+def loss_boundary_wall_vertical(model: nn.Module, params: Dict[str, Any],
+                                batch: jnp.ndarray) -> jnp.ndarray:
+    """
+    Optimization: Enforces hu = 0 (No flow through X-boundary).
+    Equivalent to general slip with normal=[1,0] or [-1,0], but more stable.
+    """
+    U_pred = model.apply({'params': params['params']}, batch, train=False)
+    hu_pred = U_pred[..., 1]
+    return jnp.mean(hu_pred**2)
+
+
+def loss_boundary_wall_horizontal(model: nn.Module, params: Dict[str, Any],
+                                  batch: jnp.ndarray) -> jnp.ndarray:
+    """
+    Optimization: Enforces hv = 0 (No flow through Y-boundary).
+    Equivalent to general slip with normal=[0,1] or [0,-1], but more stable.
+    """
+    U_pred = model.apply({'params': params['params']}, batch, train=False)
+    hv_pred = U_pred[..., 2]
+    return jnp.mean(hv_pred**2)
+
+
+def loss_boundary_neumann_outflow_x(model: nn.Module, params: Dict[str, Any],
+                                    batch: jnp.ndarray) -> jnp.ndarray:
+    """
+    Enforces Zero Gradient ONLY in the x-direction (Normal to boundary).
+    Mathematically: d(U)/dx = 0.
+    """
+    def U_fn(pts):
+        return model.apply({'params': params['params']}, pts, train=False)
+    
+    # Calculate Jacobian: [N, 3 (outputs), 3 (inputs)]
+    jac_U = jax.vmap(jax.jacfwd(U_fn))(batch)
+    
+    # Gradient w.r.t X is index 0
+    dU_dx = jac_U[..., 0] 
+    
+    return jnp.mean(dU_dx**2)
+
+
+# ==========================================
+# 3. LEGACY / COMPATIBILITY WRAPPERS
+# ==========================================
 
 def compute_bc_loss(model: nn.Module, params: Dict[str, Any],
                     left_batch: jnp.ndarray, right_batch: jnp.ndarray,
                     bottom_batch: jnp.ndarray, top_batch: jnp.ndarray,
-                    config: FrozenDict) -> jnp.ndarray:
-    """Compute boundary condition loss for all domain boundaries."""
-    # Ensure BC batches have the correct shape (N, 3) for model input
-    for name, batch in [('left', left_batch), ('right', right_batch), ('bottom', bottom_batch), ('top', top_batch)]:
-        if batch.shape[-1] != 3:
-             raise ValueError(f"BC batch '{name}' requires shape (N, 3), but got {batch.shape}")
+                    config: FrozenDict,
+                    bc_fn: Optional[Callable] = None) -> jnp.ndarray:
+    """
+    Legacy wrapper that composes the atomic losses for standard rectangular domains.
+    """
+    # 1. Left Boundary
+    if bc_fn is not None:
+        # Test 1: Time-varying Height Only
+        t_left = left_batch[..., 2]
+        h_target = bc_fn(t_left)
+        loss_left = loss_boundary_dirichlet_h(model, params, left_batch, h_target)
+    else:
+        # Analytical: Exact H and HU
+        u_const = config["physics"]["u_const"]
+        n_manning = config["physics"]["n_manning"]
+        t_left = left_batch[..., 2]
+        h_true = h_exact(0.0, t_left, n_manning, u_const)
+        hu_true = h_true * u_const
+        loss_left = (loss_boundary_dirichlet_h(model, params, left_batch, h_true) + 
+                     loss_boundary_dirichlet_hu(model, params, left_batch, hu_true))
 
-    u_const = config["physics"]["u_const"]
-    n_manning = config["physics"]["n_manning"]
+    # 2. Right Boundary (Neumann Outflow)
+    loss_right = loss_boundary_neumann_outflow_x(model, params, right_batch)
 
-    # Left Boundary (Dirichlet for h and hu)
-    U_left = model.apply({'params': params['params']}, left_batch, train=False)
-    h_pred_left, hu_pred_left = U_left[..., 0], U_left[..., 1]
-    t_left = left_batch[..., 2] # Time coordinate is the 3rd column (index 2)
-    h_true_left = h_exact(0.0, t_left, n_manning, u_const) # x=0 for left boundary
-    hu_true_left = h_true_left * u_const
-    res_left_h = h_pred_left - h_true_left
-    res_left_hu = hu_pred_left - hu_true_left
+    # 3. Top/Bottom (Horizontal Walls)
+    loss_bottom = loss_boundary_wall_horizontal(model, params, bottom_batch)
+    loss_top = loss_boundary_wall_horizontal(model, params, top_batch)
 
-    # Right Boundary (Zero Gradient)
-    def U_fn_right(pts):
-        return model.apply({'params': params['params']}, pts, train=False)
-    # Compute Jacobian w.r.t inputs (x, y, t)
-    jac_U_right = jax.vmap(jax.jacfwd(U_fn_right))(right_batch)
-    # dU/dx corresponds to the gradient along the first input dimension (index 0)
-    dU_dx_right = jac_U_right[..., 0] # Shape: (batch_size, output_dim=3)
-    res_right_grad = dU_dx_right # Target is zero gradient [0, 0, 0]
-
-    # Bottom Boundary (No-flux: hv = 0)
-    U_bottom = model.apply({'params': params['params']}, bottom_batch, train=False)
-    res_bottom_hv = U_bottom[..., 2] # Target is hv = 0
-
-    # Top Boundary (No-flux: hv = 0)
-    U_top = model.apply({'params': params['params']}, top_batch, train=False)
-    res_top_hv = U_top[..., 2] # Target is hv = 0
-
-    loss = (jnp.mean(res_left_h**2) + jnp.mean(res_left_hu**2) +
-            jnp.mean(res_right_grad**2) + # Compare all components [dh/dx, d(hu)/dx, d(hv)/dx] to zero
-            jnp.mean(res_bottom_hv**2) +
-            jnp.mean(res_top_hv**2))
-    return loss
+    return loss_left + loss_right + loss_bottom + loss_top
 
 def compute_building_bc_loss(model: nn.Module, params: Dict[str, Any],
                              building_left_batch: jnp.ndarray,
@@ -143,229 +226,40 @@ def compute_building_bc_loss(model: nn.Module, params: Dict[str, Any],
                              building_bottom_batch: jnp.ndarray,
                              building_top_batch: jnp.ndarray) -> jnp.ndarray:
     """
-    Compute slip boundary condition loss for a rectangular building obstacle.
-    Ensures normal velocity component is zero at each wall.
+    Computes slip loss for a rectangular building obstacle.
     """
-    # Ensure Building BC batches have the correct shape (N, 3) for model input
-    for name, batch in [('left', building_left_batch), ('right', building_right_batch), ('bottom', building_bottom_batch), ('top', building_top_batch)]:
-        if batch.ndim == 0 or batch.shape[-1] != 3: # Check also if batch is potentially empty/scalar
-             raise ValueError(f"Building BC batch '{name}' requires shape (N, 3), but got {batch.shape}")
-
-    # Left wall (normal is in +x direction, so u=0 -> hu=0)
-    U_left = model.apply({'params': params['params']}, building_left_batch, train=False)
-    loss_left = jnp.mean(U_left[..., 1]**2)  # hu**2 should be 0
-
-    # Right wall (normal is in -x direction, so u=0 -> hu=0)
-    U_right = model.apply({'params': params['params']}, building_right_batch, train=False)
-    loss_right = jnp.mean(U_right[..., 1]**2)  # hu**2 should be 0
-
-    # Bottom wall (normal is in +y direction, so v=0 -> hv=0)
-    U_bottom = model.apply({'params': params['params']}, building_bottom_batch, train=False)
-    loss_bottom = jnp.mean(U_bottom[..., 2]**2)  # hv**2 should be 0
-
-    # Top wall (normal is in -y direction, so v=0 -> hv=0)
-    U_top = model.apply({'params': params['params']}, building_top_batch, train=False)
-    loss_top = jnp.mean(U_top[..., 2]**2)  # hv**2 should be 0
+    loss_left = loss_boundary_wall_vertical(model, params, building_left_batch)
+    loss_right = loss_boundary_wall_vertical(model, params, building_right_batch)
+    loss_bottom = loss_boundary_wall_horizontal(model, params, building_bottom_batch)
+    loss_top = loss_boundary_wall_horizontal(model, params, building_top_batch)
 
     return loss_left + loss_right + loss_bottom + loss_top
 
-# --- Function to compute data loss ---
 def compute_data_loss(model: nn.Module, params: Dict[str, Any], data_batch: jnp.ndarray, config: FrozenDict) -> jnp.ndarray:
-    """
-    Compute the Mean Squared Error (MSE) loss between model predictions and provided data points.
-    Assumes data_batch has shape (N, 6) with columns [t, x, y, h, u, v].
-    We need to predict [h, hu, hv].
-    """
-    # Ensure data_batch has the correct shape (N, 6)
-    if data_batch.shape[-1] != 6:
-        raise ValueError(f"Data batch requires shape (N, 6), but got {data_batch.shape}")
-
-    # Extract input points (t, x, y) - Note the order change to match model input (x, y, t)
-    points_batch = data_batch[:, [1, 2, 0]] # Columns x, y, t
-    # Extract true output values (h, u, v)
+    """Data loss for sparse observations."""
+    points_batch = data_batch[:, [1, 2, 0]] # x, y, t
     h_true = data_batch[:, 3]
     u_true = data_batch[:, 4]
     v_true = data_batch[:, 5]
 
-    # Predict U = [h, hu, hv] using the model
     U_pred = model.apply({'params': params['params']}, points_batch, train=False)
     h_pred = U_pred[..., 0]
     hu_pred = U_pred[..., 1]
     hv_pred = U_pred[..., 2]
-
-    # Calculate true hu and hv from the data
+    
+    # Recalculate true momentum for consistency
     eps = config["numerics"]["eps"]
-    # Ensure h_true is safe for division, though it's used multiplicatively here
     h_true_safe = jnp.maximum(h_true, eps)
     hu_true = h_true_safe * u_true
     hv_true = h_true_safe * v_true
 
-    # Calculate the MSE between predicted [h, hu, hv] and true [h, hu, hv]
-    loss_h = jnp.mean((h_pred - h_true)**2)
-    loss_hu = jnp.mean((hu_pred - hu_true)**2)
-    loss_hv = jnp.mean((hv_pred - hv_true)**2)
-
-    # Combine the losses (could also return individual components if needed)
-    total_data_loss = loss_h + loss_hu + loss_hv
-    return total_data_loss
-
-# ==========================================
-# OPERATOR LEARNING LOSSES (Parametric)
-# ==========================================
-
-def _get_op_params_from_batch(branch_batch: jnp.ndarray, config: FrozenDict) -> Dict[str, jnp.ndarray]:
-    """Helper: Extracts parameter arrays (n_manning, u_const) from the branch batch."""
-    param_bounds = config["physics"].get("param_bounds", {})
-    # Use sorted keys to match Sampler order
-    param_names = tuple(sorted(param_bounds.keys()))
-    param_map = {name: i for i, name in enumerate(param_names)}
-    
-    n_manning_idx = param_map.get('n_manning')
-    u_const_idx = param_map.get('u_const')
-    
-    n_manning_default = config["physics"]["n_manning"]
-    u_const_default = config["physics"]["u_const"]
-    
-    n_manning = branch_batch[..., n_manning_idx] if n_manning_idx is not None else jnp.full(branch_batch.shape[0], n_manning_default, dtype=DTYPE)
-    u_const = branch_batch[..., u_const_idx] if u_const_idx is not None else jnp.full(branch_batch.shape[0], u_const_default, dtype=DTYPE)
-    
-    return {'n_manning': n_manning, 'u_const': u_const}
-
-def compute_operator_pde_loss(model: nn.Module, params: Dict[str, Any],
-                              branch_batch: jnp.ndarray,
-                              trunk_batch: jnp.ndarray,
-                              config: FrozenDict) -> jnp.ndarray:
-    """Compute the PDE residual MSE for Operator Learning."""
-    
-    def U_fn(b_batch, t_batch):
-        return model.apply({'params': params['params']}, b_batch, t_batch, train=False)
-
-    jac_U = jax.vmap(jax.jacfwd(U_fn, argnums=1))(branch_batch, trunk_batch)
-    dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
-
-    U_pred = U_fn(branch_batch, trunk_batch)
-
-    phys_params = _get_op_params_from_batch(branch_batch, config)
-    eps = config["numerics"]["eps"]
-    g = config["physics"]["g"]
-    inflow = config["physics"]["inflow"]
-
-    physics = SWEPhysics(U_pred, eps=eps)
-    JF, JG = physics.flux_jac(g=g)
-    
-    S = physics.source(g=g, n_manning=phys_params['n_manning'], inflow=inflow)
-
-    div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
-    div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
-    
-    residual = (dU_dt + div_F + div_G - S)
-    h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
-    
-    final_residual = residual * h_mask[..., None]
-    return jnp.mean(final_residual ** 2)
-
-def compute_operator_neg_h_loss(model: nn.Module, params: Dict[str, Any],
-                                branch_batch: jnp.ndarray,
-                                trunk_batch: jnp.ndarray,
-                                config: FrozenDict) -> jnp.ndarray:
-    """Compute penalty for negative water height for Operator Learning."""
-    U_pred = model.apply({'params': params['params']}, branch_batch, trunk_batch, train=False)
-    h_pred = U_pred[..., 0]
-    neg_h_penalty = jax.nn.relu(-h_pred)
-    return jnp.mean(neg_h_penalty ** 2)
-
-def compute_operator_ic_loss(model: nn.Module, params: Dict[str, Any],
-                             branch_batch: jnp.ndarray,
-                             trunk_batch: jnp.ndarray, # t=0
-                             config: FrozenDict) -> jnp.ndarray:
-    """Compute IC loss for Operator Learning."""
-    U_pred = model.apply({'params': params['params']}, branch_batch, trunk_batch, train=False)
-    err = U_pred[..., 0]**2 + U_pred[..., 1]**2 + U_pred[..., 2]**2
-    return jnp.mean(err)
-
-def compute_operator_bc_loss(model: nn.Module, params: Dict[str, Any],
-                             batches: Dict[str, Dict[str, jnp.ndarray]],
-                             config: FrozenDict) -> jnp.ndarray:
-    """Compute BC loss for Operator Learning (left, right, bottom, top)."""
-    
-    # Left
-    b_left = batches['left']['branch']
-    t_left = batches['left']['trunk']
-    params_left = _get_op_params_from_batch(b_left, config)
-    
-    U_left = model.apply({'params': params['params']}, b_left, t_left, train=False)
-    h_pred_left, hu_pred_left = U_left[..., 0], U_left[..., 1]
-    
-    t_vals_left = t_left[..., 2]
-    h_true_left = h_exact(0.0, t_vals_left, params_left['n_manning'], params_left['u_const'])
-    hu_true_left = h_true_left * params_left['u_const']
-    
-    res_left_h = h_pred_left - h_true_left
-    res_left_hu = hu_pred_left - hu_true_left
-
-    # Right
-    b_right = batches['right']['branch']
-    t_right = batches['right']['trunk']
-    
-    def U_fn_right(b, t):
-        return model.apply({'params': params['params']}, b, t, train=False)
-    jac_U_right = jax.vmap(jax.jacfwd(U_fn_right, argnums=1))(b_right, t_right)
-    dU_dx_right = jac_U_right[..., 0]
-    res_right_grad = dU_dx_right
-
-    # Bottom
-    b_bottom = batches['bottom']['branch']
-    t_bottom = batches['bottom']['trunk']
-    U_bottom = model.apply({'params': params['params']}, b_bottom, t_bottom, train=False)
-    res_bottom_hv = U_bottom[..., 2]
-
-    # Top
-    b_top = batches['top']['branch']
-    t_top = batches['top']['trunk']
-    U_top = model.apply({'params': params['params']}, b_top, t_top, train=False)
-    res_top_hv = U_top[..., 2]
-
-    loss = (jnp.mean(res_left_h**2) + jnp.mean(res_left_hu**2) +
-            jnp.mean(res_right_grad**2) +
-            jnp.mean(res_bottom_hv**2) +
-            jnp.mean(res_top_hv**2))
-    return loss
+    return (jnp.mean((h_pred - h_true)**2) + 
+            jnp.mean((hu_pred - hu_true)**2) + 
+            jnp.mean((hv_pred - hv_true)**2))
 
 def total_loss(terms: Dict[str, jnp.ndarray], weights: Dict[str, float]) -> jnp.ndarray:
-    """Compute the weighted sum of loss terms."""
-    # This function is generic enough to handle both provided keys match
     loss = 0.0
     for key in terms.keys():
         if key in weights:
              loss += weights[key] * terms[key]
-    return loss
-
-def compute_operator_data_loss(model: nn.Module, params: Dict[str, Any],
-                               branch_batch: jnp.ndarray,
-                               trunk_batch: jnp.ndarray,
-                               h_true: jnp.ndarray, # (Batch, 1) or (Batch,)
-                               config: FrozenDict) -> jnp.ndarray:
-    """
-    Compute MSE loss for operator learning against ground truth h values.
-    
-    Args:
-        model: The DeepONet model.
-        params: Model parameters.
-        branch_batch: Branch inputs (parameters), shape (N, n_params).
-        trunk_batch: Trunk inputs (coords), shape (N, 3).
-        h_true: Ground truth water height, shape (N,) or (N, 1).
-        config: Configuration dictionary.
-        
-    Returns:
-        Scalar MSE loss.
-    """
-    # Predict U = [h, hu, hv]
-    U_pred = model.apply({'params': params['params']}, branch_batch, trunk_batch, train=False)
-    h_pred = U_pred[..., 0] # Extract h
-    
-    # Ensure h_true shape matches h_pred
-    if h_true.ndim == 2 and h_true.shape[1] == 1:
-        h_true = h_true.squeeze(1)
-        
-    loss = jnp.mean((h_pred - h_true)**2)
     return loss
