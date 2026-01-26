@@ -161,6 +161,7 @@ class DeepONetParametricSampler:
     
 import jax.scipy.ndimage
 from jax import grad, jit, vmap
+import numpy as np
 
 # Global variable to hold the JIT-compiled interpolator
 _BATHYMETRY_FN = None
