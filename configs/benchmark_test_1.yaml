@@ -25,7 +25,7 @@ training:
     rtol: 1.0e-04
     atol: 0.0
     cooldown: 1
-    accumulation_size: 320
+    accumulation_size: 312
     min_scale: 1.0e-04
 model:
   name: FourierPINN
