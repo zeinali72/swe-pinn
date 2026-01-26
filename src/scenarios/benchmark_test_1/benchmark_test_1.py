@@ -170,23 +170,6 @@ def main(config_path: str):
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    # --- 3. Setup Optimizer ---
-    reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
-    optimiser = optax.chain(
-        optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)),
-        optax.adam(learning_rate=cfg["training"]["learning_rate"]),
-        optax.contrib.reduce_on_plateau(
-            factor=float(reduce_on_plateau_cfg.get("factor", 0.5)),
-            patience=int(reduce_on_plateau_cfg.get("patience", 5)),
-            rtol=float(reduce_on_plateau_cfg.get("rtol", 1e-4)),
-            atol=float(reduce_on_plateau_cfg.get("atol", 0.0)),
-            cooldown=int(reduce_on_plateau_cfg.get("cooldown", 1)),
-            accumulation_size=int(reduce_on_plateau_cfg.get("accumulation_size", 235)),
-            min_scale=float(reduce_on_plateau_cfg.get("min_scale", 1e-6)),
-        ),
-    )
-    opt_state = optimiser.init(params)
-
     # --- 4. Prepare Loss Weights (Moved Up) ---
     static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
     active_loss_term_keys = [k for k, v in static_weights_dict.items() if v > 0]
@@ -361,6 +344,23 @@ def main(config_path: str):
         print(f"Error: Batch size {batch_size} is too large for sample counts.")
         return -1.0
     print(f"Batches per epoch: {num_batches}")
+
+        # --- 3. Setup Optimizer ---
+    reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
+    optimiser = optax.chain(
+        optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)),
+        optax.adam(learning_rate=cfg["training"]["learning_rate"]),
+        optax.contrib.reduce_on_plateau(
+            factor=float(reduce_on_plateau_cfg.get("factor", 0.5)),
+            patience=int(reduce_on_plateau_cfg.get("patience", 5)),
+            rtol=float(reduce_on_plateau_cfg.get("rtol", 1e-4)),
+            atol=float(reduce_on_plateau_cfg.get("atol", 0.0)),
+            cooldown=int(reduce_on_plateau_cfg.get("cooldown", 1)),
+            accumulation_size=num_batches*int(reduce_on_plateau_cfg.get("accumulation_factor", 1)),
+            min_scale=float(reduce_on_plateau_cfg.get("min_scale", 1e-6)),
+        ),
+    )
+    opt_state = optimiser.init(params)
 
     # JIT Data Generator
     def generate_epoch_data(key):
