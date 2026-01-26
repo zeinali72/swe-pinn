@@ -270,11 +270,13 @@ def main(config_path: str):
     # C. Load Validation Data (Optional)
     validation_data_file = os.path.join(base_data_path, "validation_gauges.npy")
     validation_data_loaded = False
+    full_val_data = None
     
     if os.path.exists(validation_data_file):
         try:
             print(f"Loading VALIDATION data from: {validation_data_file}")
             loaded_val_data = jnp.load(validation_data_file).astype(DTYPE)
+            full_val_data = loaded_val_data # Keep reference to full data for plotting
             val_points = loaded_val_data[:, [1, 2, 0]]
             h_true_val = loaded_val_data[:, 3]
             num_val_points = val_points.shape[0]
@@ -517,9 +519,9 @@ def main(config_path: str):
                     avg_losses_unweighted.get('pde', 0.0), 
                     avg_losses_unweighted.get('ic', 0.0), 
                     avg_losses_unweighted.get('bc', 0.0),
+                    0.0, # Placeholder for unused loss term to satisfy signature
                     avg_losses_unweighted.get('data', 0.0),
                     avg_losses_unweighted.get('neg_h', 0.0),
-                    0.0, # Placeholder for unused loss term to satisfy signature
                     nse_val, rmse_val, epoch_time
                 )
                 # MOVED: Printing LR status here
@@ -604,6 +606,20 @@ def main(config_path: str):
                     h_pred = U[..., 0]
                     
                     plt.figure(figsize=(10, 6))
+
+                    # Plot Baseline if available
+                    if full_val_data is not None:
+                        # Convert to numpy for flexible boolean indexing
+                        val_np = np.array(full_val_data)
+                        # Filter for current gauge coordinates
+                        mask = np.isclose(val_np[:, 1], x) & np.isclose(val_np[:, 2], y)
+                        gauge_data = val_np[mask]
+                        
+                        if gauge_data.shape[0] > 0:
+                            # Sort by time
+                            gauge_data = gauge_data[gauge_data[:, 0].argsort()]
+                            plt.plot(gauge_data[:, 0], gauge_data[:, 3], 'k--', linewidth=1.5, alpha=0.7, label=f'Baseline {name}')
+
                     plt.plot(t_plot, h_pred, label=f'Predicted h @ ({x},{y})', color=color)
                     plt.xlabel('Time (s)')
                     plt.ylabel('Water Level h (m)')
@@ -616,8 +632,8 @@ def main(config_path: str):
                     if aim_run:
                         aim_run.track(Image(path), name=filename)
 
-                plot_gauge(400.0, 50.0, "Point 1", "blue", "P1_timeseries.png")
-                plot_gauge(600.0, 50.0, "Point 2", "red",  "P2_timeseries.png")
+                plot_gauge(3.9587225e+02, 4.9646515e+01, "Point 1", "blue", "P1_timeseries.png")
+                plot_gauge(6.0435474e+02, 5.0565735e+01, "Point 2", "red",  "P2_timeseries.png")
                 print(f"Plots saved to {results_dir}")
             else:
                 print("No model parameters found to save.")
