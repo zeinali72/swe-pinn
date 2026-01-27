@@ -25,7 +25,7 @@ training:
     rtol: 1.0e-04
     atol: 0.0
     cooldown: 1
-    accumulation_size: 312
+    accumulation_factor: 1
     min_scale: 1.0e-04
 model:
   name: FourierPINN
@@ -49,5 +49,8 @@ loss_weights:
 gradnorm:
   enable: false
 data_free: true
+
+reporting:
+  epoch_freq: 100
 # --- REQUIRED: Needed for folder naming ---
 CONFIG_PATH: configs/train/test1_fourier_final.yaml

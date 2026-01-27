@@ -8,6 +8,8 @@ import itertools
 from typing import Any, Dict, Tuple
 import shutil
 
+from jaxtyping import config
+
 import jax
 import jax.numpy as jnp
 from jax import random, lax
@@ -25,7 +27,8 @@ from src.data import (
     get_sample_count,
     bathymetry_fn,
     load_boundary_condition,
-    load_bathymetry 
+    load_bathymetry,
+    sample_lhs 
 )
 from src.models import init_model
 from src.losses import (
@@ -368,14 +371,14 @@ def main(config_path: str):
         
         # PDE
         if n_pde // batch_size > 0:
-            pde_pts = sample_domain(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            pde_pts = sample_lhs(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
             pde_data = get_batches_tensor(pde_key, pde_pts, batch_size, num_batches)
         else:
             pde_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
 
         # IC
         if n_ic // batch_size > 0:
-            ic_pts = sample_domain(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
+            ic_pts = sample_lhs(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
             ic_data = get_batches_tensor(ic_key, ic_pts, batch_size, num_batches)
         else:
             ic_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
@@ -384,7 +387,7 @@ def main(config_path: str):
         l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
         def get_wall(k, n, x_b, y_b):
             if n // batch_size > 0:
-                pts = sample_domain(k, n, x_b, y_b, (0., domain_cfg["t_final"]))
+                pts = sample_lhs(k, n, x_b, y_b, (0., domain_cfg["t_final"]))
                 return get_batches_tensor(k, pts, batch_size, num_batches)
             return jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
 
@@ -512,8 +515,9 @@ def main(config_path: str):
                     'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
                 })
 
+            freq = cfg.get("reporting", {}).get("epoch_freq", 100)
             epoch_time = time.time() - epoch_start_time
-            if (epoch + 1) % 100 == 0:
+            if (epoch + 1) % freq == 0:
                 print_epoch_stats(
                     epoch, global_step, start_time, avg_total_weighted_loss,
                     avg_losses_unweighted.get('pde', 0.0), 

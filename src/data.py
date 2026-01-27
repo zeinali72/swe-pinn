@@ -255,3 +255,40 @@ def load_boundary_condition(csv_path):
         return jnp.interp(t, t_ref, h_ref)
         
     return get_bc_h
+
+from functools import partial  # Add this line
+@partial(jax.jit, static_argnums=(1,))
+def sample_lhs(key: jax.random.PRNGKey, n_points: int, 
+               x_bounds: tuple, y_bounds: tuple, t_bounds: tuple) -> jnp.ndarray:
+    """
+    JIT-compatible Latin Hypercube Sampling on GPU.
+    """
+    if n_points <= 0:
+        return jnp.empty((0, 3), dtype=DTYPE)
+
+    keys = jax.random.split(key, 4)
+    
+    # 1. Create a grid of points representing the centers of N partitions
+    # Each dimension is partitioned into n_points intervals
+    r = jnp.arange(n_points, dtype=DTYPE)
+    
+    # 2. Add random jitter within each interval [0, 1/n_points]
+    # This transforms discrete grid points to continuous uniform intervals
+    offsets = jax.random.uniform(keys[0], (n_points, 3), dtype=DTYPE)
+    
+    # 3. Create the LHS structure by shuffling indices independently for each dimension
+    # (n_points, 3)
+    perms = jnp.stack([
+        jax.random.permutation(keys[1], r),
+        jax.random.permutation(keys[2], r),
+        jax.random.permutation(keys[3], r)
+    ], axis=-1)
+    
+    # Combined LHS points in [0, 1] range
+    lhs_samples = (perms + offsets) / n_points
+    
+    # 4. Scale to physical bounds
+    starts = jnp.array([x_bounds[0], y_bounds[0], t_bounds[0]], dtype=DTYPE)
+    ends = jnp.array([x_bounds[1], y_bounds[1], t_bounds[1]], dtype=DTYPE)
+    
+    return starts + lhs_samples * (ends - starts)
