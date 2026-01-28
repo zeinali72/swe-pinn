@@ -1,0 +1,58 @@
+CONFIG_PATH: "configs/pix2pix_test1.yaml"
+scenario: "benchmark_test_1"
+
+domain:
+  lx: 700.0
+  ly: 100.0
+  t_final: 72000.0
+
+data:
+  nx: 256
+  ny: 32
+
+model:
+  filters: 32
+  n_downsample: 5
+  n_res_blocks: 10
+  compute_dtype: "float32"     # big VRAM + speed win on Ampere+
+  use_remat: false          # turn on only if still OOM
+
+training:
+  seed: 42
+  epochs: 10000
+  batch_size: 4
+
+  learning_rate: 0.000002
+
+  # Time grid sampling (your nt requirement)
+  nt: 512
+  time_sampling: "grid_sweep"   # deterministic coverage across epochs
+
+  # Patch training (key for convergence + VRAM)
+  use_patches: false
+  patch_nx: 350
+  patch_ny: 25                # divisible by 8 (2**n_downsample)
+  # If OOM: set patch_ny=64 or batch_size=2
+
+numerics:
+  eps: 1.0e-6
+
+physics:
+  g: 9.81
+  n_manning: 0.03
+  ic_eta0: 9.7
+  ic_t_window: 720.0
+
+loss_weights:
+  pde_weight: 4000.0
+  bc_weight: 4000.0
+  ic_weight: 10.0
+  neg_h_weight: 10.0
+
+reporting:
+  epoch_freq: 2
+  val_freq: 1
+
+device:
+  dtype: "float32"
+
