@@ -5,14 +5,16 @@ import copy
 import argparse
 import importlib
 import itertools
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Tuple
+import shutil
+
+from jaxtyping import config
 
 import jax
 import jax.numpy as jnp
 from jax import random, lax
 import optax
 from aim import Repo, Run, Image
-from flax import linen as nn
 from flax.core import FrozenDict
 import numpy as np 
 import matplotlib.pyplot as plt 
@@ -20,11 +22,24 @@ import matplotlib.pyplot as plt
 # Local application imports
 from src.config import load_config, DTYPE
 from src.data import (
+    sample_domain, 
+    get_batches_tensor,
+    get_sample_count,
     bathymetry_fn,
     load_boundary_condition,
-    load_bathymetry 
+    load_bathymetry,
+    sample_lhs 
 )
-# Note: We define Pix2Pix inline or assume it's in models. If not, I include it here for completeness.
+from src.models import init_model
+from src.losses import (
+    compute_pde_loss,
+    loss_boundary_dirichlet_h,
+    loss_boundary_wall_horizontal,
+    loss_boundary_wall_vertical,
+    compute_neg_h_loss,
+    compute_data_loss,
+    total_loss
+)
 from src.utils import ( 
    nse, rmse, generate_trial_name, save_model, ask_for_confirmation
 )
@@ -33,279 +48,122 @@ from src.reporting import (
     print_epoch_stats, log_metrics, print_final_summary
 )
 
-# ==============================================================================
-# 1. PIX2PIX MODEL ARCHITECTURE (Included here to ensure it works immediately)
-# ==============================================================================
-
-class ResBlock(nn.Module):
-    filters: int
-    norm: nn.Module = nn.BatchNorm
-    act: Any = nn.relu
-
-    @nn.compact
-    def __call__(self, x, training: bool = True):
-        residual = x
-        y = nn.Conv(self.filters, kernel_size=(3, 3), strides=1, padding='SAME')(x)
-        y = self.norm(use_running_average=not training)(y)
-        y = self.act(y)
-        y = nn.Conv(self.filters, kernel_size=(3, 3), strides=1, padding='SAME')(y)
-        y = self.norm(use_running_average=not training)(y)
-        return self.act(residual + y)
-
-class Pix2PixGenerator(nn.Module):
-    """
-    Pix2Pix-style Generator: Downscaling -> Residual Blocks -> Upscaling.
-    """
-    output_dim: int
-    filters: int = 64
-    n_downsample: int = 3
-    n_res_blocks: int = 6
-    
-    @nn.compact
-    def __call__(self, x, training: bool = True):
-        # x shape: [Batch, H, W, Channels]
-        
-        # 1. Initial Convolution
-        x = nn.Conv(self.filters, kernel_size=(7, 7), strides=1, padding='SAME')(x)
-        x = nn.BatchNorm(use_running_average=not training)(x)
-        x = nn.relu(x)
-
-        # 2. Downscaling
-        curr_filters = self.filters
-        for _ in range(self.n_downsample):
-            curr_filters *= 2
-            x = nn.Conv(curr_filters, kernel_size=(3, 3), strides=2, padding='SAME')(x)
-            x = nn.BatchNorm(use_running_average=not training)(x)
-            x = nn.relu(x)
-
-        # 3. Bottleneck (ResBlocks)
-        for _ in range(self.n_res_blocks):
-            x = ResBlock(curr_filters)(x, training=training)
-
-        # 4. Upscaling
-        for _ in range(self.n_downsample):
-            curr_filters //= 2
-            x = nn.ConvTranspose(curr_filters, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
-            x = nn.BatchNorm(use_running_average=not training)(x)
-            x = nn.relu(x)
-
-        # 5. Output
-        x = nn.Conv(self.output_dim, kernel_size=(7, 7), strides=1, padding='SAME')(x)
-        # No activation for regression (h, hu, hv)
-        return x
-
-# ==============================================================================
-# 2. NEW STRUCTURED DATA PIPELINE
-# ==============================================================================
-
-class StructuredDataGenerator:
-    """Generates dense grid batches (B, H, W, C) for CNNs."""
-    def __init__(self, cfg):
-        self.lx = cfg['domain']['lx']
-        self.ly = cfg['domain']['ly']
-        self.t_final = cfg['domain']['t_final']
-        
-        # Resolution: 256x64 is roughly 2.7m x 1.5m for 700x100 domain
-        # You can adjust this in config or hardcode
-        self.nx = 256
-        self.ny = 64 
-        
-        x = jnp.linspace(0, self.lx, self.nx)
-        y = jnp.linspace(0, self.ly, self.ny)
-        self.X, self.Y = jnp.meshgrid(x, y) # Shape: (ny, nx)
-        
-        # Precompute bathymetry Z
-        z_vals, _, _ = bathymetry_fn(self.X.flatten(), self.Y.flatten())
-        self.Z = z_vals.reshape((self.ny, self.nx, 1))
-        
-        # Pre-calculate deltas for FD loss
-        self.dx = x[1] - x[0]
-        self.dy = y[1] - y[0]
-
-    def get_batch(self, key, batch_size):
-        t_key, _ = random.split(key)
-        # Sample random times
-        t_samples = random.uniform(t_key, (batch_size, 1, 1, 1), minval=0, maxval=self.t_final)
-        
-        # Broadcast Spatial Grids
-        X_b = jnp.tile(self.X[None, ..., None], (batch_size, 1, 1, 1))
-        Y_b = jnp.tile(self.Y[None, ..., None], (batch_size, 1, 1, 1))
-        Z_b = jnp.tile(self.Z[None, ...], (batch_size, 1, 1, 1))
-        T_b = jnp.tile(t_samples, (1, self.ny, self.nx, 1))
-        
-        # Inputs: [x, y, t, z]
-        inputs = jnp.concatenate([X_b, Y_b, T_b, Z_b], axis=-1)
-        bc_times = t_samples.reshape((batch_size,))
-        return inputs, bc_times
-
-# ==============================================================================
-# 3. LOSS FUNCTIONS (Finite Difference for Grid)
-# ==============================================================================
-
-def fd_gradient(u, dx, dy):
-    """Computes gradients using central difference convolution."""
-    k_x = jnp.array([[[0, 0, 0], [-0.5, 0, 0.5], [0, 0, 0]]]).transpose((1, 2, 0))[:, :, None, :]
-    k_y = jnp.array([[[0, 0.5, 0], [0, 0, 0], [0, -0.5, 0]]]).transpose((1, 2, 0))[:, :, None, :]
-    
-    u_exp = u[..., None]
-    du_dx = lax.conv(u_exp, k_x, (1, 1), 'SAME') / dx
-    du_dy = lax.conv(u_exp, k_y, (1, 1), 'SAME') / dy
-    return du_dx[..., 0], du_dy[..., 0]
-
-def compute_grid_losses(model, params, batch_stats, inputs, bc_times, config, bc_fn):
-    """Computes PDE and BC losses for the grid output."""
-    
-    # Forward Pass
-    variables = {'params': params, 'batch_stats': batch_stats}
-    U_pred, mutable_vars = model.apply(variables, inputs, training=True, mutable=['batch_stats'])
-    h, hu, hv = U_pred[..., 0], U_pred[..., 1], U_pred[..., 2]
-    
-    # --- 1. PDE Loss (Finite Difference) ---
-    # Extract grid props
-    dx = (inputs[0, 0, 1, 0] - inputs[0, 0, 0, 0])
-    dy = (inputs[0, 1, 0, 1] - inputs[0, 0, 0, 1])
-    
-    # Time derivative (via JVP trick or simple assumption)
-    # We use JVP to get d(Output)/dt exactly from the network without stepping time
-    tangent_t = jnp.concatenate([jnp.zeros_like(inputs[..., :2]), 
-                                 jnp.ones_like(inputs[..., 2:3]), 
-                                 jnp.zeros_like(inputs[..., 3:])], axis=-1)
-    
-    def forward_fn(x): return model.apply(variables, x, training=True, mutable=False)
-    _, dU_dt = jax.jvp(forward_fn, (inputs,), (tangent_t,))
-    dh_dt, dhu_dt, dhv_dt = dU_dt[..., 0], dU_dt[..., 1], dU_dt[..., 2]
-
-    # Fluxes
-    h_safe = jnp.maximum(h, 1e-5)
-    u, v = hu/h_safe, hv/h_safe
-    
-    dFh_dx, _ = fd_gradient(hu, dx, dy)
-    _, dGh_dy = fd_gradient(hv, dx, dy)
-    
-    dFhu_dx, _ = fd_gradient(hu*u + 0.5*9.81*h**2, dx, dy)
-    _, dGhu_dy = fd_gradient(hu*v, dx, dy)
-    
-    dFhv_dx, _ = fd_gradient(hu*v, dx, dy)
-    _, dGhv_dy = fd_gradient(hv*v + 0.5*9.81*h**2, dx, dy)
-    
-    # Sources (Bathymetry + Friction)
-    z = inputs[..., 3]
-    dz_dx, dz_dy = fd_gradient(z, dx, dy)
-    n_m = config['physics']['n_manning']
-    vel = jnp.sqrt(u**2 + v**2)
-    
-    Sx = -9.81 * h * dz_dx - (n_m**2 * u * vel)/(h_safe**(4/3))
-    Sy = -9.81 * h * dz_dy - (n_m**2 * v * vel)/(h_safe**(4/3))
-    
-    # Residuals
-    res_h = dh_dt + dFh_dx + dGh_dy
-    res_hu = dhu_dt + dFhu_dx + dGhu_dy - Sx
-    res_hv = dhv_dt + dFhv_dx + dGhv_dy - Sy
-    
-    # Mask boundaries (FD invalid at edges)
-    mask = jnp.ones_like(res_h)
-    mask = mask.at[:, 0, :].set(0).at[:, -1, :].set(0).at[:, :, 0].set(0).at[:, :, -1].set(0)
-    
-    loss_pde = jnp.mean((res_h*mask)**2 + (res_hu*mask)**2 + (res_hv*mask)**2)
-    loss_neg_h = jnp.mean(jax.nn.relu(-h)**2)
-
-    # --- 2. Boundary Conditions ---
-    # Left (Col 0): Time-varying H
-    t_vals = bc_times
-    h_target_raw = bc_fn(t_vals)[:, None] # (B, 1)
-    z_left = inputs[:, :, 0, 3] # (B, H)
-    h_target = jnp.maximum(0, h_target_raw - z_left)
-    loss_bc_left = jnp.mean((h[:, :, 0] - h_target)**2)
-    
-    # Right (Col -1): Wall (hu=0)
-    loss_bc_right = jnp.mean(hu[:, :, -1]**2)
-    
-    # Top/Bot (Row -1, 0): Wall (hv=0)
-    loss_bc_top = jnp.mean(hv[:, -1, :]**2)
-    loss_bc_bot = jnp.mean(hv[:, 0, :]**2)
-    
-    total_bc = loss_bc_left + loss_bc_right + loss_bc_top + loss_bc_bot
-    
-    # --- 3. Initial Condition ---
-    # Enforce only if t < small_epsilon, or just regularize everywhere (soft constraint)
-    # Ideally checking t approx 0. For this benchmark, we weight it globally or ignore if data not present
-    t_grid = inputs[..., 2]
-    mask_ic = (t_grid < 1.0).astype(jnp.float32) # Simple threshold
-    h_ic_target = jnp.maximum(0, 9.7 - z)
-    loss_ic = jnp.sum(mask_ic * ((h - h_ic_target)**2 + hu**2 + hv**2)) / (jnp.sum(mask_ic) + 1e-6)
-
-    terms = {
-        'pde': loss_pde,
-        'neg_h': loss_neg_h,
-        'ic': loss_ic,
-        'bc': total_bc
-    }
-    
-    return terms, mutable_vars
 
 def train_step(
         model: Any, 
         optimiser: optax.GradientTransformation, 
         params: FrozenDict, 
-        batch_stats: FrozenDict,
         opt_state: optax.OptState, 
-        inputs: jnp.ndarray,
-        bc_times: jnp.ndarray,
+        batch: Dict[str, jnp.ndarray], 
         config: Dict[str, Any],
+        data_free: bool,
         bc_fn_static: Any,
-        weights_dict: FrozenDict 
-        ) -> Tuple[FrozenDict, FrozenDict, optax.OptState, Dict[str, float], float]:
+        weights_dict: FrozenDict # Type hint updated
+        ) -> Tuple[FrozenDict, optax.OptState, Dict[str, float], float]:
+    """
+    Performs one step of gradient descent.
+    """
     
-    def loss_fn(params, batch_stats):
-        terms, mutable_vars = compute_grid_losses(
-            model, params, batch_stats, inputs, bc_times, config, bc_fn_static
-        )
+    # weights_dict is now a FrozenDict (hashable), so .keys() works fine
+    active_loss_keys_base = list(weights_dict.keys())
+
+    def loss_fn(params):
         
-        # Weighted Sum
-        total = 0.0
-        for k, v in terms.items():
-            w = weights_dict.get(k, 1.0) # Default to 1.0 if missing
-            total += w * v
-            
-        return total, (terms, mutable_vars)
+        terms = {}
+        # --- 1. PDE Loss (Physics + Bathymetry) ---
+        loss_pde = compute_pde_loss(model, params, batch['pde'], config)
+        loss_neg_h = compute_neg_h_loss(model, params, batch['pde'])
+        
+        # --- 2. Initial Condition Loss (t=0, h=9.7) ---
+        U_ic = model.apply(params, batch['ic'], train=True)        
+        h_ic_pred = U_ic[..., 0]
+        hu_ic_pred = U_ic[..., 1]
+        hv_ic_pred = U_ic[..., 2]
 
-    (loss_val, (terms, mutable_vars)), grads = jax.value_and_grad(loss_fn, has_aux=True)(params, batch_stats)
+        # Get bathymetry at IC points
+        z_ic, _, _ = bathymetry_fn(batch['ic'][..., 0], batch['ic'][..., 1])
+        
+        # Calculate target depth based on absolute water level 9.7m
+        # h_target = max(0, 9.7 - z)
+        h_target_ic = jnp.maximum(0.0, 9.7 - z_ic)
+
+        loss_ic_h = jnp.mean((h_ic_pred - h_target_ic)**2)
+        # Enforce zero velocity at t=0
+        loss_ic_vel = jnp.mean(hu_ic_pred**2 + hv_ic_pred**2) 
+        loss_ic = loss_ic_h + loss_ic_vel
+
+        # --- 3. Boundary Conditions ---
+        
+        # A. Left Boundary (x=0): Time-Varying Water Level
+        t_left = batch['bc_left'][..., 2]
+        bc_level_abs = bc_fn_static(t_left) # Interpolate target Absolute Level
+        
+        # Get Z at boundary to calculate depth h = Level - Z
+        z_left, _, _ = bathymetry_fn(batch['bc_left'][..., 0], batch['bc_left'][..., 1])
+        h_target_left = jnp.maximum(0.0, bc_level_abs - z_left)
+        
+        loss_bc_left = loss_boundary_dirichlet_h(model, params, batch['bc_left'], h_target_left)
+        
+        # B. Right Boundary (x=700): Slip Walls (No flux x)
+        loss_bc_right = loss_boundary_wall_vertical(model, params, batch['bc_right'])
+        
+        # C. Top & Bottom Boundaries (y=0, y=100): Slip Walls (No flux y)
+        loss_bc_top = loss_boundary_wall_horizontal(model, params, batch['bc_top'])
+        loss_bc_bottom = loss_boundary_wall_horizontal(model, params, batch['bc_bottom'])
+        
+        total_bc = loss_bc_left + loss_bc_right + loss_bc_top + loss_bc_bottom
+
+        data_batch_data = batch.get('data', jnp.empty((0,6), dtype=DTYPE))
+        if not data_free and 'data' in active_loss_keys_base and data_batch_data.shape[0] > 0:
+             loss_data = compute_data_loss(model, params, data_batch_data, config)
+
+        terms = {
+            'pde': loss_pde,
+            'neg_h': loss_neg_h,
+            'ic': loss_ic,
+            'bc': total_bc, # Renamed to 'bc' to match weights keys if needed, or 'total_bc'
+            'data': loss_data if not data_free and 'data' in active_loss_keys_base and data_batch_data.shape[0] > 0 else 0.0
+        }
+
+        # --- 4. Weighted Sum ---
+        # Helper to safely get term or 0.0
+        terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
+        total = total_loss(terms_with_defaults, weights_dict)
+        
+        return total, terms
+
+    # Calculate Gradients
+    (loss_val, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
     
-    updates, new_opt_state = optimiser.update(grads, opt_state, params)
+    # Update Parameters
+    updates, new_opt_state = optimiser.update(grads, opt_state, params, value=loss_val)
     new_params = optax.apply_updates(params, updates)
-    new_batch_stats = mutable_vars['batch_stats']
     
-    return new_params, new_batch_stats, new_opt_state, terms, loss_val
+    return new_params, new_opt_state, metrics, loss_val
 
-train_step_jitted = jax.jit(train_step, static_argnames=['model', 'optimiser', 'config', 'bc_fn_static', 'weights_dict'])
-
-# ==============================================================================
-# 4. MAIN EXECUTION
-# ==============================================================================
+# JIT Compile
+train_step_jitted = jax.jit(train_step, static_argnames=['model', 'optimiser', 'config', 'bc_fn_static', 'weights_dict', 'data_free'])
 
 def main(config_path: str):
+    """
+    Main training loop for Benchmark Test 1 scenario.
+    """
     
     #--- 1. LOAD CONFIGURATION ---
     cfg_dict = load_config(config_path)
     cfg = FrozenDict(cfg_dict)
 
-    print("Info: Running Benchmark Test 1 - Pix2Pix Version...")
+    print("Info: Running Benchmark Test 1 Scenario model training...")
 
-    # Initialize Model
-    # Note: We use the inline Pix2PixGenerator, replacing dynamic import for safety in this rewrite
-    model = Pix2PixGenerator(output_dim=3, filters=32) 
+    try:
+        models_module = importlib.import_module("src.models")
+        model_class = getattr(models_module, cfg["model"]["name"])
+    except (ImportError, AttributeError) as e:
+        raise ValueError(f"Could not find model class '{cfg['model']['name']}' in src/models.py") from e
     
     key = random.PRNGKey(cfg["training"]["seed"])
-    
-    # Initialize Data Generator
-    data_gen = StructuredDataGenerator(cfg_dict)
-    
-    # Init Model (Needs dummy input of correct shape)
-    # Shape: (Batch, H, W, 4)
-    dummy_input = jnp.zeros((1, data_gen.ny, data_gen.nx, 4), dtype=DTYPE)
-    variables = model.init(key, dummy_input)
-    params = variables['params']
-    batch_stats = variables['batch_stats']
+    model_key, train_key, val_key = random.split(key, 3)
+    model, params = init_model(model_class, model_key, cfg)
 
     # --- 2. Setup Directories ---
     config_base = os.path.splitext(os.path.basename(cfg['CONFIG_PATH']))[0]
@@ -315,144 +173,485 @@ def main(config_path: str):
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    # --- 3. Loss Weights ---
+    # --- 4. Prepare Loss Weights (Moved Up) ---
     static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
-    current_weights_dict = FrozenDict(static_weights_dict)
+    active_loss_term_keys = [k for k, v in static_weights_dict.items() if v > 0]
+    
+    # FIX: Convert to FrozenDict so it is Hashable for JAX Static Args
+    current_weights_dict = FrozenDict({k: static_weights_dict[k] for k in active_loss_term_keys})
 
-    # --- 4. Load Data Assets ---
+    # --- 5. Load Data Assets ---
     scenario_name = cfg.get('scenario')
+    if not scenario_name:
+         print(f"Error: 'scenario' key must be set in config '{config_path}'.")
+         sys.exit(1)
+         
     base_data_path = os.path.join("data", scenario_name)
     
+    # A. Load Bathymetry (REQUIRED)
     dem_path = os.path.join(base_data_path, "test1DEM.asc")
-    load_bathymetry(dem_path) # Sets global bathymetry for data generator
+    if not os.path.exists(dem_path):
+        print(f"Error: DEM file not found at {dem_path}")
+        sys.exit(1)
+    print(f"Loading Bathymetry from {dem_path}...")
+    load_bathymetry(dem_path)
 
+    # B. Load Boundary Condition Function
     bc_csv_path = os.path.join(base_data_path, "Test1BC.csv")
+    if not os.path.exists(bc_csv_path):
+        print(f"Error: Boundary condition CSV file not found at {bc_csv_path}.")
+        sys.exit(1)
     bc_fn_static = load_boundary_condition(bc_csv_path)
 
-    # --- 5. Validation Data Support ---
-    # We keep the sparse validation logic by INTERPOLATING the grid output
-    validation_data_file = os.path.join(base_data_path, "validation_gauges.npy")
+    # --- 5b. Load Validation and Training Data ---
     val_points, h_true_val = None, None
+    data_points_full = None
+    
+    # === START MODIFIED BLOCK ===
+    # This logic now mirrors analytical.py
+    data_free_flag = cfg.get("data_free") # Get the flag (might be None)
+    
+    if data_free_flag is False:
+        print("Info: 'data_free: false' found in config. Activating data-driven mode.")
+        has_data_loss = True
+        data_free = False
+    else:
+        if data_free_flag is None:
+            print("Warning: 'data_free' flag not specified in config. Defaulting to 'data_free: true'.")
+        else:
+            # This catches 'data_free: true'
+            print("Info: 'data_free: true' found in config. Data loss term will be disabled.")
+        has_data_loss = False
+        data_free = True
+    # === END MODIFIED BLOCK ===
+
+    training_data_file = os.path.join(base_data_path, "training_dataset_sample.npy")
+    if has_data_loss: # This flag is now set *only* by the data_free_flag
+        if os.path.exists(training_data_file):
+            try:
+                print(f"Loading TRAINING data from: {training_data_file}")
+                data_points_full = jnp.load(training_data_file).astype(DTYPE) 
+                if data_points_full.shape[0] == 0:
+                     print("Warning: Training data file is empty. Disabling data loss.")
+                     data_points_full = None
+                     has_data_loss = False
+                else:
+                     # Get the weight (it might be 0, but we load anyway if flag is false)
+                     data_weight = static_weights_dict.get('data', 0.0)
+                     print(f"Using {data_points_full.shape[0]} points for data loss term (weight={data_weight:.2e}).")
+                     if data_weight == 0.0:
+                         print("Warning: 'data_free: false' but 'data_weight' is 0. Data will be loaded but loss term will be 0.")
+            except Exception as e:
+                print(f"Error loading training data file {training_data_file}: {e}")
+                print("Disabling data loss term due to loading error.")
+                data_points_full = None
+                has_data_loss = False
+        else:
+            print(f"Warning: Training data file not found at {training_data_file}.")
+            print("Data loss term cannot be computed and will be disabled.")
+            has_data_loss = False
+    
+    data_free = not has_data_loss # Final determination
+
+    # C. Load Validation Data (Optional)
+    validation_data_file = os.path.join(base_data_path, "validation_gauges.npy")
+    validation_data_loaded = False
+    full_val_data = None
     
     if os.path.exists(validation_data_file):
         try:
             print(f"Loading VALIDATION data from: {validation_data_file}")
             loaded_val_data = jnp.load(validation_data_file).astype(DTYPE)
-            # stored as (t, x, y, h, u, v)
-            val_t = loaded_val_data[:, 0]
-            val_x = loaded_val_data[:, 1]
-            val_y = loaded_val_data[:, 2]
+            full_val_data = loaded_val_data # Keep reference to full data for plotting
+            val_points = loaded_val_data[:, [1, 2, 0]]
             h_true_val = loaded_val_data[:, 3]
-            validation_loaded = True
+            num_val_points = val_points.shape[0]
+            if num_val_points > 0:
+                validation_data_loaded = True
+                val_points_all = val_points 
+                h_true_val_all = h_true_val
+            else:
+                 print("Warning: No validation points remaining after masking. NSE/RMSE calculation will be skipped.")
         except Exception as e:
-            print(f"Error loading validation: {e}")
-            validation_loaded = False
+            print(f"Error loading or processing validation data file {validation_data_file}: {e}")
+            val_points, h_true_val = None, None
+            print("NSE/RMSE calculation using loaded data will be skipped.")
     else:
-        validation_loaded = False
+        print(f"Warning: Validation data not found. Skipping dense validation.")
 
-    # --- 6. Initialize Aim ---
+    # --- 6. Initialize Aim & Log Source Code ---
+    aim_repo = None
     aim_run = None
+    run_hash = None
     try:
         aim_repo_path = "aim_repo"
-        if not os.path.exists(aim_repo_path): os.makedirs(aim_repo_path, exist_ok=True)
+        if not os.path.exists(aim_repo_path):
+             os.makedirs(aim_repo_path, exist_ok=True)
         aim_repo = Repo(path=aim_repo_path, init=True)
         aim_run = Run(repo=aim_repo, experiment=trial_name)
-        
-        aim_run["hparams"] = copy.deepcopy(cfg_dict)
-        aim_run['flags'] = {"type": "pix2pix_grid"}
-        print(f"Aim tracking initialized: {trial_name}")
-    except Exception as e:
-        print(f"Warning: Aim failed: {e}")
+        run_hash = aim_run.hash
 
-    # --- 7. Optimizer ---
+        artifact_storage_path = os.path.join(aim_repo_path, "aim_artifacts")
+        os.makedirs(artifact_storage_path, exist_ok=True)
+        abs_artifact_path = os.path.abspath(artifact_storage_path)
+        aim_run.set_artifacts_uri(f"file://{abs_artifact_path}")
+        print(f"Set Aim artifact storage to: {abs_artifact_path}")
+        
+        # Log basics
+        hparams_to_log = copy.deepcopy(cfg_dict)
+        aim_run["hparams"] = hparams_to_log
+        aim_run['flags'] = {"scenario_type": "benchmark_test_1"}
+        
+        # --- Log Config and Script as Artifacts ---
+        try:
+            aim_run.log_artifact(config_path, name='run_config.yaml')
+            current_script_path = os.path.abspath(__file__)
+            aim_run.log_artifact(current_script_path, name='source_script.py')
+            print("Logged config and source script to Aim.")
+        except Exception as e_art: 
+            print(f"Warning: Failed to log initial artifacts: {e_art}")
+            
+        print(f"Aim tracking initialized: {trial_name} ({run_hash})")
+    except Exception as e:
+        print(f"Warning: Aim tracking failed to initialize: {e}")
+
+    # --- 7. Summary ---
+    print(f"\n--- Training Started: {trial_name} ---")
+    print(f"Model: {cfg['model']['name']}, Epochs: {cfg['training']['epochs']}")
+    print(f"Data Loss Active: {has_data_loss} (Final Data-Free: {data_free})")
+    print(f"Active Loss Terms: {active_loss_term_keys}")
+    print(f"Initial Weights: {current_weights_dict}")
+
+    start_time = time.time()
+    global_step = 0
+
+    # --- 8. Data Generation Setup ---
+    sampling_cfg = cfg["sampling"]
+    batch_size = cfg["training"]["batch_size"]
+    domain_cfg = cfg["domain"]
+    
+    n_pde = get_sample_count(sampling_cfg, "n_points_pde", 1000)
+    n_ic = get_sample_count(sampling_cfg, "n_points_ic", 100)
+    n_bc_domain = get_sample_count(sampling_cfg, "n_points_bc_domain", 100)
+    n_bc_per_wall = max(5, n_bc_domain // 4)
+
+    # Check batch size viability
+    bc_counts = [n_pde//batch_size, n_ic//batch_size, n_bc_per_wall//batch_size]
+
+    if not data_free and data_points_full is not None:
+        bc_counts.append(data_points_full.shape[0] // batch_size)
+
+    num_batches = max(bc_counts) if bc_counts else 0
+    
+    if num_batches == 0:
+        print(f"Error: Batch size {batch_size} is too large for sample counts.")
+        return -1.0
+    print(f"Batches per epoch: {num_batches}")
+
+        # --- 3. Setup Optimizer ---
+    reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
     optimiser = optax.chain(
-        optax.clip_by_global_norm(1.0),
+        optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)),
         optax.adam(learning_rate=cfg["training"]["learning_rate"]),
+        optax.contrib.reduce_on_plateau(
+            factor=float(reduce_on_plateau_cfg.get("factor", 0.5)),
+            patience=int(reduce_on_plateau_cfg.get("patience", 5)),
+            rtol=float(reduce_on_plateau_cfg.get("rtol", 1e-4)),
+            atol=float(reduce_on_plateau_cfg.get("atol", 0.0)),
+            cooldown=int(reduce_on_plateau_cfg.get("cooldown", 1)),
+            accumulation_size=num_batches*int(reduce_on_plateau_cfg.get("accumulation_factor", 1)),
+            min_scale=float(reduce_on_plateau_cfg.get("min_scale", 1e-6)),
+        ),
     )
     opt_state = optimiser.init(params)
 
-    # --- 8. Training Loop ---
-    start_time = time.time()
-    best_nse = -jnp.inf
-    best_params = None
-    
-    epochs = cfg["training"]["epochs"]
-    batch_size = 4 # Fixed small batch for CNNs
+    # JIT Data Generator
+    def generate_epoch_data(key):
+        key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
+        
+        # PDE
+        if n_pde // batch_size > 0:
+            pde_pts = sample_lhs(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
+            pde_data = get_batches_tensor(pde_key, pde_pts, batch_size, num_batches)
+        else:
+            pde_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
 
-    print(f"\n--- Training Started: {trial_name} ---")
+        # IC
+        if n_ic // batch_size > 0:
+            ic_pts = sample_lhs(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
+            ic_data = get_batches_tensor(ic_key, ic_pts, batch_size, num_batches)
+        else:
+            ic_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+            
+        # BCs
+        l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
+        def get_wall(k, n, x_b, y_b):
+            if n // batch_size > 0:
+                pts = sample_lhs(k, n, x_b, y_b, (0., domain_cfg["t_final"]))
+                return get_batches_tensor(k, pts, batch_size, num_batches)
+            return jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+
+        bc_left = get_wall(l_key, n_bc_per_wall, (0., 0.), (0., domain_cfg["ly"]))
+        bc_right = get_wall(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]))
+        bc_bot = get_wall(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.))
+        bc_top = get_wall(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]))
+
+        # Data
+        data_data = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
+        if not data_free and data_points_full is not None:
+             data_data = get_batches_tensor(data_key, data_points_full, batch_size, num_batches)
+
+        return {
+            'pde': pde_data,
+            'ic': ic_data,
+            'bc': {'left': bc_left, 'right': bc_right, 'bottom': bc_bot, 'top': bc_top}
+            ,'data': data_data
+        }
     
-    for epoch in range(epochs):
-        epoch_start = time.time()
+    generate_epoch_data_jitted = jax.jit(generate_epoch_data)
+
+    # Scan Body
+    def scan_body(carry, batch_data):
+        curr_params, curr_opt_state = carry
         
-        # Generate Data
-        key, step_key = random.split(key)
-        inputs, bc_times = data_gen.get_batch(step_key, batch_size)
-        
-        # Train Step
-        params, batch_stats, opt_state, terms, loss = train_step_jitted(
-            model, optimiser, params, batch_stats, opt_state, 
-            inputs, bc_times, cfg, bc_fn_static, current_weights_dict
+        current_all_batches = {
+            'pde': batch_data['pde'],
+            'ic': batch_data['ic'],
+            'bc_left': batch_data['bc']['left'],
+            'bc_right': batch_data['bc']['right'],
+            'bc_bottom': batch_data['bc']['bottom'],
+            'bc_top': batch_data['bc']['top'],
+            'data': batch_data['data'] # May be None
+        }
+
+        # current_weights_dict is now FrozenDict, so it's hashable
+        new_params, new_opt_state, terms, total = train_step_jitted(
+            model, optimiser, curr_params, curr_opt_state,
+            current_all_batches, cfg, data_free, bc_fn_static, current_weights_dict
         )
-        
-        # Logging & Validation
-        if (epoch + 1) % 100 == 0:
-            # 1. Validation Logic (Interpolate Grid -> Points)
-            nse_val, rmse_val = -jnp.inf, jnp.inf
-            if validation_loaded:
-                # We need to run the model on inputs corresponding to validation times
-                # This is tricky because val data has random times. 
-                # Approximation: Run 1 batch with specific times and see if we cover domain?
-                # BETTER: For benchmark, just sample a batch, and check scalar metrics for now, 
-                # or strictly: generate inputs matching val_t (if val set is small).
-                # Simplified: skip dense validation every step, do it at end or roughly.
-                pass 
+        return (new_params, new_opt_state), (terms, total)
 
-            print_epoch_stats(
-                epoch, epoch, start_time, loss,
-                terms.get('pde',0), terms.get('ic',0), terms.get('bc',0), 
-                0.0, 0.0, terms.get('neg_h',0),
-                nse_val, rmse_val, time.time() - epoch_start
-            )
-
-            if aim_run:
-                metrics = {
-                    'loss': {'total': float(loss), **{k:float(v) for k,v in terms.items()}},
-                }
-                aim_run.track(metrics, step=epoch)
-
-            # Checkpoint
-            if loss < 0.1 and best_params is None: # Simple heuristic
-                best_params = copy.deepcopy(params)
-
-    # --- 9. Final Wrap up ---
-    print_final_summary(time.time() - start_time, {'nse': best_nse}, {'total_weighted_loss': loss})
+    # --- 9. Training Loop ---
+    best_nse_stats = {
+        'nse': -jnp.inf, 'rmse': jnp.inf, 'epoch': 0, 'global_step': 0,
+        'time_elapsed_seconds': 0.0, 'total_weighted_loss': 0.0, 'unweighted_losses': {}
+    }
     
-    if ask_for_confirmation():
-        save_model(params, model_dir, trial_name)
-        
-        # Plotting - MUCH easier with Grid
-        print("Generating Grid Plots...")
-        # Create a test input at t=final
-        t_final = cfg['domain']['t_final']
-        test_inp, _ = data_gen.get_batch(key, 1)
-        test_inp = test_inp.at[..., 2].set(t_final) # Force time
-        
-        U_out = model.apply({'params': params, 'batch_stats': batch_stats}, test_inp, training=False)
-        h_final = U_out[0, :, :, 0]
-        
-        plt.figure(figsize=(10, 4))
-        plt.imshow(h_final, origin='lower', aspect='auto', cmap='viridis')
-        plt.colorbar(label='H (m)')
-        plt.title(f"Predicted H at t={t_final}s")
-        save_path = os.path.join(results_dir, "final_grid.png")
-        plt.savefig(save_path)
-        if aim_run: aim_run.track(Image(save_path), name='final_grid')
-        print(f"Saved plot to {save_path}")
+    best_loss_stats = {
+        'total_weighted_loss': jnp.inf, 'epoch': 0, 'global_step': 0,
+        'time_elapsed_seconds': 0.0, 'nse': -jnp.inf, 'rmse': jnp.inf, 'unweighted_losses': {}
+    }
+    
+    best_params_nse = None
+    best_params_loss = None # Added tracking for best loss model
+    
 
-    if aim_run: aim_run.close()
+    try:
+        for epoch in range(cfg["training"]["epochs"]):
+            epoch_start_time = time.time()
+
+            # Generate Data & Train
+            train_key, epoch_key = random.split(train_key)
+            scan_inputs = generate_epoch_data_jitted(epoch_key)
+            
+            # --- Run Training Steps with lax.scan ---
+            (params, opt_state), (batch_losses_unweighted_stacked, batch_total_weighted_loss_stacked) = lax.scan(
+                scan_body, (params, opt_state), scan_inputs
+            )
+            
+            global_step += num_batches
+
+            # --- Aggregate Losses ---
+            # Sum over batches dimension
+            epoch_losses_unweighted_sum = {k: jnp.sum(v) for k, v in batch_losses_unweighted_stacked.items()}
+            epoch_total_weighted_loss_sum = jnp.sum(batch_total_weighted_loss_stacked)
+
+            avg_losses_unweighted = {k: float(v) / num_batches for k, v in epoch_losses_unweighted_sum.items()}
+            avg_total_weighted_loss = float(epoch_total_weighted_loss_sum) / num_batches
+
+            # --- LR Extraction ---
+            # Extract LR status from opt_state (chain: clip, adam, reduce_on_plateau)
+            current_lr = cfg["training"]["learning_rate"]
+            current_scale = 1.0
+            base_lr_val = cfg["training"]["learning_rate"]
+            try:
+                # Access the state of the last transformation (reduce_on_plateau)
+                # opt_state is a tuple corresponding to the chain elements
+                # Ensure we cast the JAX array to a standard float
+                if hasattr(opt_state[-1], 'scale'):
+                    current_scale = float(opt_state[-1].scale)
+                    current_lr = base_lr_val * current_scale
+            except Exception as e:
+                # Removing silent failure to aid debugging
+                if epoch == 0: 
+                    print(f"Warning: Failed to extract LR scale: {e}")         
+
+            # Validation
+            nse_val, rmse_val = -jnp.inf, jnp.inf
+            if validation_data_loaded:
+                try:
+                    U_val = model.apply(params, val_points_all, train=False)
+                    nse_val = nse(h_true_val_all, U_val[..., 0])
+                    rmse_val = rmse(h_true_val_all, U_val[..., 0])
+                except: pass
+
+            # --- Update Best Model Statistics ---
+            if nse_val > best_nse_stats['nse']:
+                best_nse_stats.update({
+                    'nse': nse_val, 'rmse': rmse_val, 'epoch': epoch, 'global_step': global_step,
+                    'time_elapsed_seconds': time.time() - start_time,
+                    'total_weighted_loss': avg_total_weighted_loss,
+                    'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
+                })
+                best_params_nse = copy.deepcopy(params)
+                if nse_val > -jnp.inf:
+                    print(f"    ---> New best NSE: {best_nse_stats['nse']:.6f} at epoch {epoch+1}")
+            
+            if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
+                best_loss_stats.update({
+                    'total_weighted_loss': avg_total_weighted_loss, 'epoch': epoch, 'global_step': global_step,
+                    'time_elapsed_seconds': time.time() - start_time,
+                    'nse': nse_val, 'rmse': rmse_val,
+                    'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
+                })
+
+            freq = cfg.get("reporting", {}).get("epoch_freq", 100)
+            epoch_time = time.time() - epoch_start_time
+            if (epoch + 1) % freq == 0:
+                print_epoch_stats(
+                    epoch, global_step, start_time, avg_total_weighted_loss,
+                    avg_losses_unweighted.get('pde', 0.0), 
+                    avg_losses_unweighted.get('ic', 0.0), 
+                    avg_losses_unweighted.get('bc', 0.0),
+                    0.0, # Placeholder for unused loss term to satisfy signature
+                    avg_losses_unweighted.get('data', 0.0),
+                    avg_losses_unweighted.get('neg_h', 0.0),
+                    nse_val, rmse_val, epoch_time
+                )
+                # MOVED: Printing LR status here
+                print(f"    LR Status: LR={current_lr:.2e}, Base={base_lr_val:.2e}, Scale={current_scale:.2e}")
+
+            # --- Log to Aim ---
+            if aim_run:
+                epoch_metrics_to_log = {
+                    'validation_metrics': {'nse': nse_val, 'rmse': rmse_val},
+                    'epoch_avg_losses': avg_losses_unweighted,
+                    'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
+                    'system_metrics': {'epoch_time': epoch_time},
+                    'training_metrics': {'learning_rate': float(current_lr)}
+                }
+                log_metrics(aim_run, step=global_step, epoch=epoch, metrics=epoch_metrics_to_log)
+
+            # --- Early Stopping Check ---
+            min_epochs = cfg.get("device", {}).get("early_stop_min_epochs", float('inf'))
+            patience = cfg.get("device", {}).get("early_stop_patience", float('inf'))
+
+            if epoch >= min_epochs and (epoch - best_nse_stats['epoch']) >= patience:
+                print(f"--- Early stopping triggered at epoch {epoch+1} ---")
+                print(f"Best NSE {best_nse_stats['nse']:.6f} achieved at epoch {best_nse_stats['epoch']+1}.")
+                break
+
+    except KeyboardInterrupt:
+        print("\n--- Training interrupted ---")
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # --- 10. Post-Training (Save & Plot) ---
+    finally:
+        total_time = time.time() - start_time
+        print_final_summary(total_time, best_nse_stats, best_loss_stats)
+
+        # Decide which params to save (NSE preferred if available, else Loss)
+        final_params = best_params_nse if best_params_nse is not None else best_params_loss
+
+        if aim_run:
+            try:
+                summary_best_nse = best_nse_stats.copy()
+                summary_best_nse['epoch'] = best_nse_stats.get('epoch', 0) + 1
+                summary_best_loss = best_loss_stats.copy()
+                summary_best_loss['epoch'] = best_loss_stats.get('epoch', 0) + 1
+                
+                summary_metrics = {
+                    'best_validation_model': summary_best_nse,
+                    'best_loss_model': summary_best_loss,
+                    'final_system': {
+                        'total_training_time_seconds': total_time,
+                        'total_epochs_run': (epoch + 1) if 'epoch' in locals() else 0,
+                        'total_steps_run': global_step
+                    }
+                }
+                aim_run['summary'] = summary_metrics
+                print("Summary metrics logged to Aim.")
+            except Exception as e:
+                 print(f"Warning: Error logging summary metrics to Aim: {e}")        
+
+        if ask_for_confirmation():
+            if final_params is not None:
+                # Capture the path where the model is saved locally
+                saved_model_path = save_model(final_params, model_dir, trial_name)
+                
+                # --- NEW: Log Model as Artifact to Aim ---
+                if aim_run and saved_model_path:
+                    try:
+                        aim_run.log_artifact(saved_model_path, name='model_weights.pkl')
+                        print(f"Logged model artifact to Aim.")
+                    except Exception as e_mod:
+                        print(f"Warning: Failed to log model artifact: {e_mod}")
+                
+                # --- Plotting Specific to Test 1 ---
+                print("Generating Test 1 plots...")
+                t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
+                
+                def plot_gauge(x, y, name, color, filename):
+                    pts = jnp.stack([jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot], axis=-1)
+                    U = model.apply(final_params, pts, train=False)
+                    h_pred = U[..., 0]
+                    
+                    plt.figure(figsize=(10, 6))
+
+                    # Plot Baseline if available
+                    if full_val_data is not None:
+                        # Convert to numpy for flexible boolean indexing
+                        val_np = np.array(full_val_data)
+                        # Filter for current gauge coordinates
+                        mask = np.isclose(val_np[:, 1], x) & np.isclose(val_np[:, 2], y)
+                        gauge_data = val_np[mask]
+                        
+                        if gauge_data.shape[0] > 0:
+                            # Sort by time
+                            gauge_data = gauge_data[gauge_data[:, 0].argsort()]
+                            plt.plot(gauge_data[:, 0], gauge_data[:, 3], 'k--', linewidth=1.5, alpha=0.7, label=f'Baseline {name}')
+
+                    plt.plot(t_plot, h_pred, label=f'Predicted h @ ({x},{y})', color=color)
+                    plt.xlabel('Time (s)')
+                    plt.ylabel('Water Level h (m)')
+                    plt.title(f'{name} - Water Level vs Time')
+                    plt.legend()
+                    plt.grid(True)
+                    path = os.path.join(results_dir, filename)
+                    plt.savefig(path)
+                    plt.close()
+                    if aim_run:
+                        aim_run.track(Image(path), name=filename)
+
+                plot_gauge(3.9587225e+02, 4.9646515e+01, "Point 1", "blue", "P1_timeseries.png")
+                plot_gauge(6.0435474e+02, 5.0565735e+01, "Point 2", "red",  "P2_timeseries.png")
+                print(f"Plots saved to {results_dir}")
+            else:
+                print("No model parameters found to save.")
+
+        if aim_run: aim_run.close()
+
+    return best_nse_stats['nse']
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Test 1).")
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    if project_root not in sys.path: sys.path.insert(0, project_root)
+
     main(args.config)
