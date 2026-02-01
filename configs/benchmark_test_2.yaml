@@ -1,8 +1,8 @@
-scenario: benchmark_test_1
+scenario: benchmark_test_2
 domain:
-  lx: 700.0
-  ly: 100.0
-  t_final: 72000.0         # 20 hours
+  lx: 2000.0
+  ly: 2000.0
+  t_final: 172800.0         # 20 hours
 physics:
   g: 9.81
   inflow: null
@@ -48,7 +48,7 @@ loss_weights:
   data_weight: 0.02411
 gradnorm:
   enable: false
-data_free: false
+data_free: true
 
 reporting:
   epoch_freq: 100
