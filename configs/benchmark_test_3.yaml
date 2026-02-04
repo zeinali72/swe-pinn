@@ -1,13 +1,12 @@
-scenario: benchmark_test_2
+scenario: benchmark_test_3
 domain:
-  lx: 2000.0
-  ly: 2000.0
-  t_final: 172800.0         # 48 hours
+  lx: 300.0
+  ly: 100.0
+  t_final: 900.0         # 15 minutes
 physics:
   g: 9.81
   inflow: null
-  n_manning: 0.03
-  u_const: 0.0
+  n_manning: 0.01
 device:
   dtype: float32
   early_stop_min_epochs: 1000
@@ -40,13 +39,12 @@ sampling:
   n_points_pde: 80000    # Increased to cover 48h simulation
   n_points_ic: 4000      # Sufficient for 2000x2000m area
   n_points_bc_domain: 30000 # Sufficient for time-varying BCs
-  n_points_bc_inflow: 1000
 loss_weights:
-  pde_weight: 1.0
+  pde_weight: 100.0
   ic_weight: 0.02411
-  bc_weight: 10.0
+  bc_weight: 0.2411
   neg_h_weight: 0.000002411
-  data_weight: 0.8
+  data_weight: 1.0
 gradnorm:
   enable: false
 data_free: false
@@ -54,5 +52,5 @@ data_free: false
 reporting:
   epoch_freq: 20
 # --- REQUIRED: Needed for folder naming ---
-CONFIG_PATH: configs/train/test2_dgm_final.yaml
+CONFIG_PATH: configs/train/test3_dgm_final.yaml
 

@@ -109,6 +109,21 @@ def loss_boundary_dirichlet_hu(model: nn.Module, params: Dict[str, Any],
         
     return jnp.mean((hu_pred - hu_target)**2)
 
+def loss_boundary_dirichlet_hv(model: nn.Module, params: Dict[str, Any],
+                               batch: jnp.ndarray,
+                               hv_target: jnp.ndarray) -> jnp.ndarray:
+    """
+    Enforces a prescribed momentum hv.
+    The target 'hv_target' can be constant or dynamic.
+    """
+    U_pred = model.apply({'params': params['params']}, batch, train=False)
+    hv_pred = U_pred[..., 2]
+    
+    if hv_target.ndim != hv_pred.ndim:
+        hv_target = hv_target.squeeze()
+        
+    return jnp.mean((hv_pred - hv_target)**2)
+
 
 def loss_boundary_wall_slip_general(model: nn.Module, params: Dict[str, Any],
                                     wall_batch: jnp.ndarray,
