@@ -300,33 +300,23 @@ def sample_lhs(key: jax.random.PRNGKey, n_points: int,
 import os  # Ensure os is imported
 import numpy as np
 
-# --- 1. JIT-Compiled Core Functions (The Engine) ---
+# --- Irregular Domain Sampler (UPDATED) ---
 
 @partial(jax.jit, static_argnames=['n_points', 't_bounds'])
 def _sample_interior_core(key, n_points, t_bounds, tri_coords, tri_cdf):
-    """
-    Static core function for interior sampling.
-    JIT-compiled for maximum performance.
-    """
     k_tri, k_bary, k_t = random.split(key, 3)
-    
-    # 1. Triangle Selection (Weighted)
-    # Use diff to get probabilities from CDF
     probs = jnp.diff(tri_cdf, prepend=0.0)
     tri_indices = random.choice(k_tri, tri_coords.shape[0], shape=(n_points,), p=probs)
     chosen = tri_coords[tri_indices]
     
-    # 2. Barycentric Coordinates (Uniform)
     r = random.uniform(k_bary, (n_points, 2), dtype=DTYPE)
     u, v = r[:, 0:1], r[:, 1:2]
     is_outside = (u + v) > 1.0
     u = jnp.where(is_outside, 1.0 - u, u)
     v = jnp.where(is_outside, 1.0 - v, v)
     
-    # P = A + u(B-A) + v(C-A)
     xy = chosen[:, 0] + u * (chosen[:, 1] - chosen[:, 0]) + v * (chosen[:, 2] - chosen[:, 0])
     
-    # 3. Time Sampling
     if t_bounds is not None:
         t = random.uniform(k_t, (n_points, 1), minval=t_bounds[0], maxval=t_bounds[1], dtype=DTYPE)
     else:
@@ -337,34 +327,44 @@ def _sample_interior_core(key, n_points, t_bounds, tri_coords, tri_cdf):
 @partial(jax.jit, static_argnames=['n_points', 't_bounds'])
 def _sample_boundary_core(key, n_points, t_bounds, starts, vecs, cdf):
     """
-    Static core function for boundary sampling.
+    Samples boundary points and calculates Unit Normal Vectors.
+    Returns: [x, y, t, nx, ny]
     """
     k_seg, k_pos, k_t = random.split(key, 3)
     
-    # 1. Segment Selection (Weighted)
+    # 1. Segment Selection
     probs = jnp.diff(cdf, prepend=0.0)
     seg_indices = random.choice(k_seg, starts.shape[0], shape=(n_points,), p=probs)
     
-    # 2. Random Position along segment
+    # 2. Position along segment
     pos = random.uniform(k_pos, (n_points, 1), dtype=DTYPE)
     xy = starts[seg_indices] + pos * vecs[seg_indices]
     
-    # 3. Time Sampling
+    # 3. Time
     if t_bounds is not None:
         t = random.uniform(k_t, (n_points, 1), minval=t_bounds[0], maxval=t_bounds[1], dtype=DTYPE)
     else:
         t = jnp.zeros((n_points, 1), dtype=DTYPE)
-        
-    return jnp.hstack([xy, t])
 
-
-# --- 2. The Sampler Class (The Interface) ---
+    # 4. Calculate Normals
+    # Given segment vector v=(vx, vy), the 2D normal is (-vy, vx).
+    # This assumes counter-clockwise winding for outward normals. 
+    # Even if winding is inverted, the slip condition (u.n)^2 is invariant.
+    selected_vecs = vecs[seg_indices]
+    vx = selected_vecs[:, 0:1]
+    vy = selected_vecs[:, 1:2]
+    
+    nx = -vy
+    ny = vx
+    
+    # Normalize
+    norm = jnp.sqrt(nx**2 + ny**2 + 1e-10)
+    nx = nx / norm
+    ny = ny / norm
+    
+    return jnp.hstack([xy, t, nx, ny])
 
 class IrregularDomainSampler:
-    """
-    Modular sampler for irregular domains.
-    Uses pre-compiled JAX kernels for high performance.
-    """
     def __init__(self, artifacts_path: str):
         if not os.path.exists(artifacts_path):
             raise FileNotFoundError(f"Artifacts not found at {artifacts_path}")
@@ -375,14 +375,12 @@ class IrregularDomainSampler:
         except Exception as e:
             raise RuntimeError(f"Failed to load .npz file: {e}")
         
-        # Load Interior Data
         try:
             self.tri_coords = jnp.array(data['tri_coords'], dtype=DTYPE)
             self.tri_cdf = jnp.array(data['tri_cdf'], dtype=DTYPE)
         except KeyError as e:
             raise KeyError(f"Missing mandatory interior mesh data: {e}")
 
-        # Load Boundary Data
         self.boundaries = {}
         all_keys = list(data.files)
         
@@ -399,22 +397,15 @@ class IrregularDomainSampler:
                     print(f"  - Registered boundary '{label}': {starts.shape[0]} segments")
 
     def sample_interior(self, key, n_points: int, t_bounds: tuple = None) -> jnp.ndarray:
-        """
-        Samples N points from the interior.
-        Automatically uses the JIT-compiled core.
-        """
         return _sample_interior_core(
             key, n_points, t_bounds, 
             self.tri_coords, self.tri_cdf
         )
 
     def sample_boundary(self, key, n_points: int, t_bounds: tuple, boundary_type: str = 'wall') -> jnp.ndarray:
-        """
-        Samples N points from a specific boundary.
-        Automatically uses the JIT-compiled core.
-        """
         if boundary_type not in self.boundaries:
-            return jnp.zeros((0, 3), dtype=DTYPE)
+            # Fallback: return empty (0, 5) to match new shape
+            return jnp.zeros((0, 5), dtype=DTYPE)
             
         starts, vecs, cdf = self.boundaries[boundary_type]
         

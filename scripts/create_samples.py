@@ -248,13 +248,13 @@ if __name__ == "__main__":
         "--train_samples", type=int, default=2000, help="Number of training samples (default: 2000)"
     )
     parser.add_argument(
-        "--train_max_time", type=float, default=900.0, help="Max time for training samples (default: 900.0)"
+        "--train_max_time", type=float, default=108000.0, help="Max time for training samples (default: 108000.0)"
     )
     parser.add_argument(
-        "--val_max_time", type=float, default=900.0, help="Max time for validation samples (default: 900.0)"
+        "--val_max_time", type=float, default=108000.0, help="Max time for validation samples (default: 108000.0)"
     )
     parser.add_argument(
-        "--plot_time", type=float, default=900.0, help="Time for plotting dataset (default: 900.0)"
+        "--plot_time", type=float, default=108000.0, help="Time for plotting dataset (default: 108000.0)"
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="Base random seed (default: 42)"

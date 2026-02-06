@@ -10,10 +10,14 @@ class Normalize(nn.Module):
     lx: float
     ly: float
     t_final: float
+    x_min: float = 0.0
+    y_min: float = 0.0
+
     @nn.compact
     def __call__(self, x):
-        x_scaled = 2. * x[..., 0] / self.lx - 1.
-        y_scaled = 2. * x[..., 1] / self.ly - 1.
+        # Correctly shift to [0, lx] first, then normalize to [-1, 1]
+        x_scaled = 2. * (x[..., 0] - self.x_min) / self.lx - 1.
+        y_scaled = 2. * (x[..., 1] - self.y_min) / self.ly - 1.
         t_scaled = 2. * x[..., 2] / self.t_final - 1.
         return jnp.stack([x_scaled, y_scaled, t_scaled], axis=-1)
 
@@ -36,7 +40,13 @@ class FourierPINN(nn.Module):
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
 
-        self.normalizer = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])
+        self.normalizer = Normalize(
+            lx=domain_cfg["lx"], 
+            ly=domain_cfg["ly"], 
+            t_final=domain_cfg["t_final"],
+            x_min=domain_cfg.get("x_min", 0.0),
+            y_min=domain_cfg.get("y_min", 0.0)
+        )
 
         self.fourier_features = FourierFeatures(
             output_dims=model_cfg["ff_dims"],
@@ -77,8 +87,14 @@ class MLP(nn.Module):
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
 
-        # Normalize input
-        x = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x)
+        # Normalize input with offsets
+        x = Normalize(
+            lx=domain_cfg["lx"], 
+            ly=domain_cfg["ly"], 
+            t_final=domain_cfg["t_final"],
+            x_min=domain_cfg.get("x_min", 0.0),
+            y_min=domain_cfg.get("y_min", 0.0)
+        )(x)
 
         # Hidden layers with tanh activation
         for _ in range(model_cfg["depth"]):
@@ -93,96 +109,68 @@ class MLP(nn.Module):
         x = nn.Dense(
             model_cfg["output_dim"],
             kernel_init=nn.initializers.glorot_uniform(),
-            bias_init=nn.initializers.constant(model_cfg.get("bias_init", 0.0))
-            ,name='output_layer'
+            bias_init=nn.initializers.constant(model_cfg.get("bias_init", 0.0)),
+            name='output_layer'
             )(x)
 
         return x
     
     
-# --- Add the DGMLayer Class ---
 class DGMLayer(nn.Module):
     """A single DGM layer inspired by LSTM."""
-    num_units: int # Number of units (M in the paper)
-    input_dim: int # Dimension of the original input x = (t, x_1, ..., x_d)
+    num_units: int 
+    input_dim: int 
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, s_prev: jnp.ndarray) -> jnp.ndarray:
-        """
-        Applies the DGM layer transformation.
-
-        Args:
-            x: The original network input (batch, input_dim).
-            s_prev: The state output from the previous layer (batch, num_units).
-
-        Returns:
-            s_next: The state output for the next layer (batch, num_units).
-        """
-        # Define dense layers for each gate/component
-        # Note: kernel_init can be customized, glorot_uniform is a common default
         Uz = nn.Dense(self.num_units, name='Uz', kernel_init=nn.initializers.glorot_uniform())
         Ug = nn.Dense(self.num_units, name='Ug', kernel_init=nn.initializers.glorot_uniform())
         Ur = nn.Dense(self.num_units, name='Ur', kernel_init=nn.initializers.glorot_uniform())
         Uh = nn.Dense(self.num_units, name='Uh', kernel_init=nn.initializers.glorot_uniform())
 
-        Wz = nn.Dense(self.num_units, use_bias=False, name='Wz', kernel_init=nn.initializers.glorot_uniform()) # Bias included in Uz
-        Wg = nn.Dense(self.num_units, use_bias=False, name='Wg', kernel_init=nn.initializers.glorot_uniform()) # Bias included in Ug
-        Wr = nn.Dense(self.num_units, use_bias=False, name='Wr', kernel_init=nn.initializers.glorot_uniform()) # Bias included in Ur
-        Wh = nn.Dense(self.num_units, use_bias=False, name='Wh', kernel_init=nn.initializers.glorot_uniform()) # Bias included in Uh
+        Wz = nn.Dense(self.num_units, use_bias=False, name='Wz', kernel_init=nn.initializers.glorot_uniform()) 
+        Wg = nn.Dense(self.num_units, use_bias=False, name='Wg', kernel_init=nn.initializers.glorot_uniform()) 
+        Wr = nn.Dense(self.num_units, use_bias=False, name='Wr', kernel_init=nn.initializers.glorot_uniform()) 
+        Wh = nn.Dense(self.num_units, use_bias=False, name='Wh', kernel_init=nn.initializers.glorot_uniform()) 
 
-        # Calculate gates Z, G, R (Equation 4.2 in PDF)
-        # Using tanh as the activation function sigma, as mentioned effective in paper
         Z = nn.tanh(Uz(x) + Wz(s_prev))
         G = nn.tanh(Ug(x) + Wg(s_prev))
         R = nn.tanh(Ur(x) + Wr(s_prev))
 
-        # Calculate candidate state H (Equation 4.2 in PDF)
-        H = nn.tanh(Uh(x) + Wh(s_prev * R)) # Element-wise product S * R
+        H = nn.tanh(Uh(x) + Wh(s_prev * R)) 
 
-        # Calculate next state S (Equation 4.2 in PDF)
-        s_next = (1 - G) * H + Z * s_prev # Element-wise products
+        s_next = (1 - G) * H + Z * s_prev 
 
         return s_next
 
-# --- Add the DGMNetwork Class ---
 class DGMNetwork(nn.Module):
     """Deep Galerkin Method Network."""
-    config: FrozenDict # Configuration dictionary
+    config: FrozenDict 
 
     @nn.compact
     def __call__(self, x_input: jnp.ndarray, train: bool = True) -> jnp.ndarray:
-        """
-        Applies the full DGM network transformation.
-
-        Args:
-            x_input: Input tensor (batch, input_dim = d+1 for space+time).
-                     Assumes input shape (batch, 3) for (x, y, t).
-            train: Boolean indicating if the model is in training mode (unused here).
-
-        Returns:
-            Output tensor (batch, output_dim).
-        """
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
 
-        # Configurable parameters (add these to your YAML)
-        num_layers = model_cfg.get("depth", 3) # L in the paper (number of hidden DGM layers)
-        num_units = model_cfg.get("width", 50) # M in the paper
-        output_dim = model_cfg.get("output_dim", 3) # Your output dim (h, hu, hv)
-        input_dim = x_input.shape[-1] # Should be 3 for (x, y, t)
+        num_layers = model_cfg.get("depth", 3)
+        num_units = model_cfg.get("width", 50) 
+        output_dim = model_cfg.get("output_dim", 3) 
+        input_dim = x_input.shape[-1] 
 
-        # Normalization layer (similar to your other models)
-        x_norm = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x_input)
+        # Normalization layer with Offsets
+        x_norm = Normalize(
+            lx=domain_cfg["lx"], 
+            ly=domain_cfg["ly"], 
+            t_final=domain_cfg["t_final"],
+            x_min=domain_cfg.get("x_min", 0.0),
+            y_min=domain_cfg.get("y_min", 0.0)
+        )(x_input)
 
-        # Initial layer S1 (Equation 4.2 in PDF)
         s_current = nn.tanh(nn.Dense(num_units, name='InitialDense', kernel_init=nn.initializers.glorot_uniform())(x_norm))
 
-        # Stacked DGM layers (L layers)
         for i in range(num_layers):
             s_current = DGMLayer(num_units=num_units, input_dim=input_dim, name=f'DGMLayer_{i}')(x_norm, s_current)
-            # Note: The paper passes the original input 'x' to each layer.
 
-        # Final output layer (Linear transformation, Equation 4.2 in PDF)
         output = nn.Dense(output_dim, name='output_layer', kernel_init=nn.initializers.glorot_uniform())(s_current)
 
         return output
@@ -194,29 +182,11 @@ def init_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str
     return model, {'params': variables['params']}
 
 class DeepONet(nn.Module):
-    """
-    DeepONet architecture for mapping parameters to solutions.
-    - Branch net processes parameters (e.g., n_manning, u_const).
-    - Trunk net processes coordinates (x, y, t).
-    - Output dimension must match PINN models (e.g., 3 for [h, hu, hv])
-      to be compatible with the physics loss functions.
-    """
+    """DeepONet architecture."""
     config: FrozenDict
 
     @nn.compact
     def __call__(self, x_branch: jnp.ndarray, x_trunk: jnp.ndarray, train: bool = True) -> jnp.ndarray:
-        """
-        Forward pass for the DeepONet.
-
-        Args:
-            x_branch: Branch inputs (physical parameters), shape (batch, n_params)
-            x_trunk: Trunk inputs (coordinates x, y, t), shape (batch, 3)
-            train: (Unused) Kept for compatibility with some loss function calls.
-
-        Returns:
-            Predicted output U(x,y,t), shape (batch, output_dim)
-        """
-        # Handle unbatched inputs (e.g. inside vmap)
         is_unbatched = (x_trunk.ndim == 1)
         if is_unbatched:
             x_branch = x_branch[None, ...]
@@ -225,38 +195,36 @@ class DeepONet(nn.Module):
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
         
-        # Latent dimension
         p_dim = model_cfg["latent_dim"]
-        output_dim = model_cfg["output_dim"] # e.g., 3 for [h, hu, hv]
+        output_dim = model_cfg["output_dim"] 
         kernel_init = nn.initializers.glorot_uniform()
         bias_init = nn.initializers.constant(model_cfg.get("bias_init", 0.0))
 
-        # --- Branch Network (processes parameters) ---
+        # --- Branch Network ---
         b = x_branch
         for _ in range(model_cfg["branch_depth"]):
             b = nn.Dense(model_cfg["branch_width"], kernel_init=kernel_init, bias_init=bias_init)(b)
             b = nn.tanh(b)
-        # Branch output, shape (batch, p_dim * output_dim)
-        # We need p_dim outputs for *each* output variable (h, hu, hv)
         branch_out = nn.Dense(p_dim * output_dim, name="branch_output", kernel_init=kernel_init, bias_init=bias_init)(b)
-        # Reshape to (batch, output_dim, p_dim)
         branch_out = branch_out.reshape(-1, output_dim, p_dim)
 
-        # --- Trunk Network (processes coordinates [x, y, t]) ---
-        # Normalize coordinates first
-        t = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x_trunk)
+        # --- Trunk Network ---
+        # Normalize with offsets
+        t = Normalize(
+            lx=domain_cfg["lx"], 
+            ly=domain_cfg["ly"], 
+            t_final=domain_cfg["t_final"],
+            x_min=domain_cfg.get("x_min", 0.0),
+            y_min=domain_cfg.get("y_min", 0.0)
+        )(x_trunk)
+
         for _ in range(model_cfg["trunk_depth"]):
             t = nn.Dense(model_cfg["trunk_width"], kernel_init=kernel_init, bias_init=bias_init)(t)
             t = nn.tanh(t)
-        # Trunk output, shape (batch, p_dim)
         trunk_out = nn.Dense(p_dim, name="trunk_output", kernel_init=kernel_init, bias_init=bias_init)(t)
 
-        # --- Add bias term (as in the original DeepONet paper) ---
-        # One bias per output dimension
         bias_t = self.param('bias_t', nn.initializers.zeros, (output_dim,))
 
-        # --- Combine outputs ---
-        # (batch, output_dim, p_dim) * (batch, 1, p_dim) -> sum -> (batch, output_dim)
         output = jnp.sum(branch_out * trunk_out[:, None, :], axis=-1) + bias_t
         
         if is_unbatched:
@@ -264,31 +232,12 @@ class DeepONet(nn.Module):
             
         return output
 
-
 class FourierDeepONet(nn.Module):
-    """
-    DeepONet with Fourier-enhanced trunk network for better high-frequency capture.
-    - Branch net processes parameters (e.g., n_manning, u_const) - standard MLP
-    - Trunk net processes coordinates (x, y, t) with Fourier feature mapping
-    - Output dimension must match PINN models (e.g., 3 for [h, hu, hv])
-      to be compatible with the physics loss functions.
-    """
+    """DeepONet with Fourier-enhanced trunk network."""
     config: FrozenDict
 
     @nn.compact
     def __call__(self, x_branch: jnp.ndarray, x_trunk: jnp.ndarray, train: bool = True) -> jnp.ndarray:
-        """
-        Forward pass for the Fourier-enhanced DeepONet.
-
-        Args:
-            x_branch: Branch inputs (physical parameters), shape (batch, n_params)
-            x_trunk: Trunk inputs (coordinates x, y, t), shape (batch, 3)
-            train: (Unused) Kept for compatibility with some loss function calls.
-
-        Returns:
-            Predicted output U(x,y,t), shape (batch, output_dim)
-        """
-        # Handle unbatched inputs (e.g. inside vmap)
         is_unbatched = (x_trunk.ndim == 1)
         if is_unbatched:
             x_branch = x_branch[None, ...]
@@ -297,45 +246,40 @@ class FourierDeepONet(nn.Module):
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
         
-        # Latent dimension
         p_dim = model_cfg["latent_dim"]
-        output_dim = model_cfg["output_dim"]  # e.g., 3 for [h, hu, hv]
+        output_dim = model_cfg["output_dim"]
         kernel_init = nn.initializers.glorot_uniform()
         bias_init = nn.initializers.constant(model_cfg.get("bias_init", 0.0))
 
-        # --- Branch Network (processes parameters) - Standard MLP ---
+        # --- Branch Network ---
         b = x_branch
         for _ in range(model_cfg["branch_depth"]):
             b = nn.Dense(model_cfg["branch_width"], kernel_init=kernel_init, bias_init=bias_init)(b)
             b = nn.tanh(b)
-        # Branch output, shape (batch, p_dim * output_dim)
-        # We need p_dim outputs for *each* output variable (h, hu, hv)
         branch_out = nn.Dense(p_dim * output_dim, name="branch_output", kernel_init=kernel_init, bias_init=bias_init)(b)
-        # Reshape to (batch, output_dim, p_dim)
         branch_out = branch_out.reshape(-1, output_dim, p_dim)
 
-        # --- Trunk Network (processes coordinates [x, y, t]) with Fourier Features ---
-        # Normalize coordinates first
-        t = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x_trunk)
+        # --- Trunk Network ---
+        # Normalize with offsets
+        t = Normalize(
+            lx=domain_cfg["lx"], 
+            ly=domain_cfg["ly"], 
+            t_final=domain_cfg["t_final"],
+            x_min=domain_cfg.get("x_min", 0.0),
+            y_min=domain_cfg.get("y_min", 0.0)
+        )(x_trunk)
         
-        # Apply Fourier feature mapping
         fourier_dims = model_cfg.get("trunk_fourier_dims", 256)
         fourier_scale = model_cfg.get("trunk_fourier_scale", 1.0)
         t = FourierFeatures(output_dims=fourier_dims, scale=fourier_scale)(t)
         
-        # MLP layers on top of Fourier features
         for _ in range(model_cfg["trunk_depth"]):
             t = nn.Dense(model_cfg["trunk_width"], kernel_init=kernel_init, bias_init=bias_init)(t)
             t = nn.tanh(t)
-        # Trunk output, shape (batch, p_dim)
         trunk_out = nn.Dense(p_dim, name="trunk_output", kernel_init=kernel_init, bias_init=bias_init)(t)
 
-        # --- Add bias term (as in the original DeepONet paper) ---
-        # One bias per output dimension
         bias_t = self.param('bias_t', nn.initializers.zeros, (output_dim,))
 
-        # --- Combine outputs ---
-        # (batch, output_dim, p_dim) * (batch, 1, p_dim) -> sum -> (batch, output_dim)
         output = jnp.sum(branch_out * trunk_out[:, None, :], axis=-1) + bias_t
         
         if is_unbatched:
@@ -343,23 +287,15 @@ class FourierDeepONet(nn.Module):
             
         return output
 
-
-
 def init_deeponet_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
-    """
-    Initialize the DeepONet model and parameters.
-    This is separate from init_model to avoid changing the original function.
-    """
     model = model_class(config=config)
-    
-    # DeepONet needs two dummy inputs for initialization
     param_names = tuple(config["physics"]["param_bounds"].keys())
     n_params = len(param_names)
     if n_params == 0:
         raise ValueError("Config 'physics.param_bounds' is empty. DeepONet branch net has no inputs.")
         
     dummy_input_branch = jnp.zeros((1, n_params), dtype=DTYPE)
-    dummy_input_trunk = jnp.zeros((1, 3), dtype=DTYPE) # (x, y, t)
+    dummy_input_trunk = jnp.zeros((1, 3), dtype=DTYPE) 
     
     print(f"Initializing DeepONet with branch input shape: {dummy_input_branch.shape} (params: {param_names})")
     print(f"Initializing DeepONet with trunk input shape: {dummy_input_trunk.shape} (coords: x, y, t)")
@@ -367,24 +303,20 @@ def init_deeponet_model(model_class: nn.Module, key: jax.random.PRNGKey, config:
     variables = model.init(key, dummy_input_branch, dummy_input_trunk)
     return model, {'params': variables['params']}
 
-
 class NTKDense(nn.Module):
-    """A Dense layer with NTK parameterization: N(0,1) init and 1/sqrt(n) scaling."""
+    """A Dense layer with NTK parameterization."""
     features: int
 
     @nn.compact
     def __call__(self, x):
-        # Corrected: Weight and bias initialized to N(0, 1) 
         kernel = self.param('kernel', 
                             jax.nn.initializers.normal(stddev=1.0), 
                             (x.shape[-1], self.features))
         
-        # FIX: Use self.features instead of features 
         bias = self.param('bias', 
                           jax.nn.initializers.normal(stddev=1.0), 
                           (self.features,))
         
-        # NTK scaling: (Wx / sqrt(fan_in)) + b 
         return jnp.dot(x, kernel) / jnp.sqrt(x.shape[-1]) + bias
 
 class NTK_MLP(nn.Module):
@@ -396,27 +328,20 @@ class NTK_MLP(nn.Module):
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
 
-        # Normalize inputs to [-1, 1] for stable training 
-        x = Normalize(lx=domain_cfg["lx"], 
-                      ly=domain_cfg["ly"], 
-                      t_final=domain_cfg["t_final"])(x)
+        # Normalize with offsets
+        x = Normalize(
+            lx=domain_cfg["lx"], 
+            ly=domain_cfg["ly"], 
+            t_final=domain_cfg["t_final"],
+            x_min=domain_cfg.get("x_min", 0.0),
+            y_min=domain_cfg.get("y_min", 0.0)
+        )(x)
 
-        # Hidden layers: NTKDense -> Tanh 
         for _ in range(model_cfg["depth"]):
-            # Corrected: NTKDense only takes features, not the config object 
             x = NTKDense(features=model_cfg["width"])(x)
             x = nn.tanh(x)
 
-        # Output layer 
         return NTKDense(features=model_cfg["output_dim"])(x)
-
-def init_model(model_class: Any, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
-    """Initialize the PINN model and parameters."""
-    model = model_class(config=config)
-    # Initialize with a dummy input (batch=1, dim=3 for x,y,t) 
-    variables = model.init(key, jnp.zeros((1, 3), dtype=DTYPE))
-    return model, {'params': variables['params']}
-
 
 class FourierNTK_MLP(nn.Module):
     """PINN combining Fourier Feature Mapping and NTK Parameterization."""
@@ -427,16 +352,19 @@ class FourierNTK_MLP(nn.Module):
         model_cfg = self.config["model"]
         domain_cfg = self.config["domain"]
 
-        # 1. Normalize Coordinates
-        x = Normalize(lx=domain_cfg["lx"], ly=domain_cfg["ly"], t_final=domain_cfg["t_final"])(x)
+        # Normalize with offsets
+        x = Normalize(
+            lx=domain_cfg["lx"], 
+            ly=domain_cfg["ly"], 
+            t_final=domain_cfg["t_final"],
+            x_min=domain_cfg.get("x_min", 0.0),
+            y_min=domain_cfg.get("y_min", 0.0)
+        )(x)
 
-        # 2. Fourier Feature Mapping (to handle Spectral Bias [cite: 1368, 1388])
         x = FourierFeatures(output_dims=model_cfg["ff_dims"], scale=model_cfg["fourier_scale"])(x)
 
-        # 3. NTK-Parameterized Hidden Layers [cite: 1207]
         for _ in range(model_cfg["depth"]):
             x = NTKDense(features=model_cfg["width"])(x)
             x = nn.tanh(x)
 
-        # 4. Final NTK Output Layer
         return NTKDense(features=model_cfg["output_dim"])(x)

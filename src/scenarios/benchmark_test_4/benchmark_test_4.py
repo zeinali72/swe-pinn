@@ -607,7 +607,7 @@ def main(config_path: str):
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
                 
                 # Try to load output points from CSV
-                output_csv_path = os.path.join(base_data_path, "Test2output.csv")
+                output_csv_path = os.path.join(base_data_path, "Test4output.csv")
                 output_points = []
                 if os.path.exists(output_csv_path):
                     try:

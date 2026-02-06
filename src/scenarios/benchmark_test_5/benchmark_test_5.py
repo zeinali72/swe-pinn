@@ -7,7 +7,7 @@ import importlib
 import itertools
 from typing import Any, Dict, Tuple
 import shutil
-import pandas as pd # Added for reading output CSV
+import pandas as pd 
 
 from jaxtyping import config
 
@@ -23,21 +23,18 @@ import matplotlib.pyplot as plt
 # Local application imports
 from src.config import load_config, DTYPE
 from src.data import (
-    sample_domain, 
     get_batches_tensor,
     get_sample_count,
-    bathymetry_fn,
     load_boundary_condition,
-    load_bathymetry,
-    sample_lhs 
+    IrregularDomainSampler,
+    load_bathymetry
 )
 from src.models import init_model
 from src.losses import (
     compute_pde_loss,
     loss_boundary_dirichlet_hu,
     loss_boundary_dirichlet_hv,
-    loss_boundary_wall_horizontal,
-    loss_boundary_wall_vertical,
+    loss_slip_wall_generalized,
     compute_neg_h_loss,
     compute_data_loss,
     total_loss
@@ -61,60 +58,36 @@ def train_step(
         bc_fn_static: Any,
         weights_dict: FrozenDict 
         ) -> Tuple[FrozenDict, optax.OptState, Dict[str, float], float]:
-    """
-    Performs one step of gradient descent for Benchmark Test 2.
-    """
     
     active_loss_keys_base = list(weights_dict.keys())
 
     def loss_fn(params):
         
-        terms = {}
-        # --- 1. PDE Loss (Physics + Bathymetry) ---
+        # --- 1. PDE Loss ---
         loss_pde = compute_pde_loss(model, params, batch['pde'], config)
         loss_neg_h = compute_neg_h_loss(model, params, batch['pde'])
         
-        # --- 2. Initial Condition Loss (Dry Bed: h=0, u=0, v=0) ---
-        # Test 2 Spec: "Initial condition: Dry bed."
+        # --- 2. Initial Condition Loss ---
         U_ic = model.apply(params, batch['ic'], train=True)        
-        h_ic_pred = U_ic[..., 0]
-        hu_ic_pred = U_ic[..., 1]
-        hv_ic_pred = U_ic[..., 2]
-
-        # Target is strictly zero
-        loss_ic_h = jnp.mean(h_ic_pred**2)
-        loss_ic_vel = jnp.mean(hu_ic_pred**2 + hv_ic_pred**2) 
-        loss_ic = loss_ic_h + loss_ic_vel
+        loss_ic = jnp.mean(U_ic[..., 0]**2) + jnp.mean(U_ic[..., 1]**2 + U_ic[..., 2]**2)
 
         # --- 3. Boundary Conditions ---
         
-        # A. Inflow Boundary (Part of Left Edge): Flux BC
-        # Test 2 Spec: Inflow hydrograph along 100m line from NW corner.
-        # We model this as imposing flux q = Q(t) / Width. Width = 100m.
-        
-        # Get Time and interpolated Flow Q(t)
+        # A. Inflow Boundary (Flux prescribed)
         t_inflow = batch['bc_inflow'][..., 2]
-        Q_target_x = bc_fn_static(t_inflow) # Returns m^3/s
-        flux_target_x = Q_target_x / 100.0    # Discharge per unit width (m^2/s)
+        Q_target = bc_fn_static(t_inflow) # m^3/s
+        flux_target_x = Q_target / 100.0  # m^2/s (assuming 100m width approx, or derived from edge)
 
-        loss_inflow_x=loss_boundary_dirichlet_hu(model, params, batch['bc_inflow'], flux_target_x)
-        loss_inflow_y=loss_boundary_dirichlet_hv(model, params, batch['bc_inflow'], jnp.zeros_like(flux_target_x))
-        
+        loss_inflow_x = loss_boundary_dirichlet_hu(model, params, batch['bc_inflow'], flux_target_x)
+        loss_inflow_y = loss_boundary_dirichlet_hv(model, params, batch['bc_inflow'], jnp.zeros_like(flux_target_x))
         loss_bc_inflow = loss_inflow_x + loss_inflow_y
 
-        # B. Left Wall (Remaining part of Left Edge): Slip Wall
-        loss_bc_left_wall = loss_boundary_wall_vertical(model, params, batch['bc_left_wall'])
+        # B. Wall Boundaries (Generalized Slip)
+        loss_bc_wall = loss_slip_wall_generalized(model, params, batch['bc_wall'])
         
-        # C. Right Boundary: Slip Walls (No flux x)
-        loss_bc_right = loss_boundary_wall_vertical(model, params, batch['bc_right'])
-        
-        # D. Top & Bottom Boundaries: Slip Walls (No flux y)
-        loss_bc_top = loss_boundary_wall_horizontal(model, params, batch['bc_top'])
-        loss_bc_bottom = loss_boundary_wall_horizontal(model, params, batch['bc_bottom'])
-        
-        # Aggregate BC losses
-        total_bc = loss_bc_inflow + loss_bc_left_wall + loss_bc_right + loss_bc_top + loss_bc_bottom
+        total_bc = loss_bc_inflow + loss_bc_wall
 
+        # Data Loss
         data_batch_data = batch.get('data', jnp.empty((0,6), dtype=DTYPE))
         if not data_free and 'data' in active_loss_keys_base and data_batch_data.shape[0] > 0:
              loss_data = compute_data_loss(model, params, data_batch_data, config)
@@ -126,22 +99,16 @@ def train_step(
             'neg_h': loss_neg_h,
             'ic': loss_ic,
             'bc': total_bc, 
-            'data': loss_data if not data_free and 'data' in active_loss_keys_base and data_batch_data.shape[0] > 0 else 0.0
+            'data': loss_data
         }
 
-        # --- 4. Weighted Sum ---
         terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
         total = total_loss(terms_with_defaults, weights_dict)
-        
         return total, terms
 
-    # Calculate Gradients
     (loss_val, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
-    
-    # Update Parameters
     updates, new_opt_state = optimiser.update(grads, opt_state, params, value=loss_val)
     new_params = optax.apply_updates(params, updates)
-    
     return new_params, new_opt_state, metrics, loss_val
 
 # JIT Compile
@@ -149,14 +116,64 @@ train_step_jitted = jax.jit(train_step, static_argnames=['model', 'optimiser', '
 
 def main(config_path: str):
     """
-    Main training loop for Benchmark Test 4 Scenario.
+    Main training loop for Benchmark Test 5 Scenario.
     """
     
-    #--- 1. LOAD CONFIGURATION ---
+    #--- 1. LOAD CONFIGURATION (MUTABLE) ---
     cfg_dict = load_config(config_path)
-    cfg = FrozenDict(cfg_dict)
+    
+    print("Info: Running Benchmark Test 5 Scenario model training...")
 
-    print("Info: Running Benchmark Test 4 Scenario model training...")
+    # --- 2. SETUP DATA & COMPUTE DOMAIN EXTENT ---
+    scenario_name = cfg_dict.get('scenario')
+    if not scenario_name:
+         print(f"Error: 'scenario' key must be set in config '{config_path}'.")
+         sys.exit(1)
+         
+    base_data_path = os.path.join("data", scenario_name)
+
+    # A. Init Irregular Domain Sampler & Calculate lx, ly
+    # Check for 'domain.npz' (user preference) or 'domain_artifacts.npz' (legacy)
+    artifacts_path = os.path.join(base_data_path, "domain.npz")
+    if not os.path.exists(artifacts_path):
+        artifacts_path = os.path.join(base_data_path, "domain_artifacts.npz")
+        
+    if not os.path.exists(artifacts_path):
+        print(f"Error: Domain artifacts file not found (checked 'domain.npz' and 'domain_artifacts.npz').")
+        sys.exit(1)
+    
+    print(f"Loading domain geometry from: {artifacts_path}")
+    domain_sampler = IrregularDomainSampler(artifacts_path)
+
+    # --- CALCULATE DOMAIN EXTENT ---
+    # tri_coords shape: (N_tri, 3, 2)
+    all_coords = domain_sampler.tri_coords.reshape(-1, 2)
+    min_vals = jnp.min(all_coords, axis=0)
+    max_vals = jnp.max(all_coords, axis=0)
+    
+    x_min, y_min = float(min_vals[0]), float(min_vals[1])
+    x_max, y_max = float(max_vals[0]), float(max_vals[1])
+    
+    calc_lx = x_max - x_min
+    calc_ly = y_max - y_min
+    
+    print(f"Computed Domain Extent:")
+    print(f"  X Range: [{x_min:.4f}, {x_max:.4f}]")
+    print(f"  Y Range: [{y_min:.4f}, {y_max:.4f}]")
+    print(f"  Calculated Dimensions: lx = {calc_lx:.4f}, ly = {calc_ly:.4f}")
+    
+    # Update Config with calculated values
+    if 'domain' not in cfg_dict: cfg_dict['domain'] = {}
+    cfg_dict['domain']['lx'] = calc_lx
+    cfg_dict['domain']['ly'] = calc_ly
+    cfg_dict['domain']['x_min'] = x_min
+    cfg_dict['domain']['x_max'] = x_max
+    cfg_dict['domain']['y_min'] = y_min
+    cfg_dict['domain']['y_max'] = y_max
+
+    # --- 3. FINALIZE CONFIG & INIT MODEL ---
+    # Now that config has correct dimensions, freeze it and init model
+    cfg = FrozenDict(cfg_dict)
 
     try:
         models_module = importlib.import_module("src.models")
@@ -168,7 +185,7 @@ def main(config_path: str):
     model_key, train_key, val_key = random.split(key, 3)
     model, params = init_model(model_class, model_key, cfg)
 
-    # --- 2. Setup Directories ---
+    # --- 4. Setup Directories ---
     config_base = os.path.splitext(os.path.basename(cfg['CONFIG_PATH']))[0]
     trial_name = generate_trial_name(config_base)
     results_dir = os.path.join("results", trial_name)
@@ -176,28 +193,34 @@ def main(config_path: str):
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    # --- 4. Prepare Loss Weights ---
+    # --- 5. Prepare Loss Weights ---
     static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
     active_loss_term_keys = [k for k, v in static_weights_dict.items() if v > 0]
     current_weights_dict = FrozenDict({k: static_weights_dict[k] for k in active_loss_term_keys})
 
-    # --- 5. Load Data Assets ---
-    scenario_name = cfg.get('scenario')
-    if not scenario_name:
-         print(f"Error: 'scenario' key must be set in config '{config_path}'.")
-         sys.exit(1)
-         
-    base_data_path = os.path.join("data", scenario_name)
-    
+    # --- 6. Load Remaining Assets ---
 
-    # B. Load Boundary Condition Function
-    bc_csv_path = os.path.join(base_data_path, "Test4BC.csv")
-    if not os.path.exists(bc_csv_path):
-        print(f"Error: Boundary condition CSV file not found at {bc_csv_path}.")
+    # B. Load Bathymetry (REQUIRED)
+    dem_path = os.path.join(base_data_path, "Test5DEM.asc")
+    if not os.path.exists(dem_path):
+        print(f"Error: DEM file not found at {dem_path}")
         sys.exit(1)
+    print(f"Loading Bathymetry from {dem_path}...")
+    load_bathymetry(dem_path)
+    
+    # C. Load Boundary Condition Function
+    bc_csv_path = os.path.join(base_data_path, "Test5BC.csv")
+    if not os.path.exists(bc_csv_path):
+        # Fallback to Test4BC if shared
+        bc_csv_path_alt = os.path.join(base_data_path, "Test4BC.csv")
+        if os.path.exists(bc_csv_path_alt):
+             bc_csv_path = bc_csv_path_alt
+        else:
+            print(f"Error: Boundary condition CSV file not found at {bc_csv_path}.")
+            sys.exit(1)
     bc_fn_static = load_boundary_condition(bc_csv_path)
 
-    # --- 5b. Load Validation and Training Data ---
+    # D. Load Validation and Training Data
     val_points, h_true_val = None, None
     data_points_full = None
     
@@ -238,7 +261,7 @@ def main(config_path: str):
     
     data_free = not has_data_loss 
 
-    # C. Load Validation Data (Optional)
+    # E. Load Validation Data (Optional)
     validation_data_file = os.path.join(base_data_path, "validation_gauges_ground_truth.npy")
     validation_data_loaded = False
     full_val_data = None
@@ -263,7 +286,7 @@ def main(config_path: str):
     else:
         print(f"Warning: Validation data not found at {validation_data_file}.")
 
-    # --- 6. Initialize Aim & Log Source Code ---
+    # --- 7. Initialize Aim & Log Source Code ---
     aim_repo = None
     aim_run = None
     run_hash = None
@@ -284,7 +307,7 @@ def main(config_path: str):
         # Log basics
         hparams_to_log = copy.deepcopy(cfg_dict)
         aim_run["hparams"] = hparams_to_log
-        aim_run['flags'] = {"scenario_type": "benchmark_test_2"}
+        aim_run['flags'] = {"scenario_type": "benchmark_test_5"}
 
         # --- Log Config and Script as Artifacts ---
         try:
@@ -299,7 +322,7 @@ def main(config_path: str):
     except Exception as e:
         print(f"Warning: Aim tracking failed to initialize: {e}")
 
-    # --- 7. Summary ---
+    # --- 8. Summary ---
     print(f"\n--- Training Started: {trial_name} ---")
     print(f"Model: {cfg['model']['name']}, Epochs: {cfg['training']['epochs']}")
     print(f"Data Loss Active: {has_data_loss} (Final Data-Free: {data_free})")
@@ -309,18 +332,17 @@ def main(config_path: str):
     start_time = time.time()
     global_step = 0
 
-    # --- 8. Data Generation Setup ---
+    # --- 9. Data Generation Setup ---
     sampling_cfg = cfg["sampling"]
     batch_size = cfg["training"]["batch_size"]
     domain_cfg = cfg["domain"]
     
     n_pde = get_sample_count(sampling_cfg, "n_points_pde", 1000)
     n_ic = get_sample_count(sampling_cfg, "n_points_ic", 100)
-    n_bc_domain_wall = get_sample_count(sampling_cfg, "n_points_bc_domain", 100)
     n_bc_inflow = get_sample_count(sampling_cfg, "n_points_bc_inflow", 100)
-    n_bc_per_wall = max(5, n_bc_domain_wall // 4)
+      = get_sample_count(sampling_cfg, "n_points_bc_domain", 100)
 
-    bc_counts = [n_pde//batch_size, n_ic//batch_size, n_bc_per_wall//batch_size, n_bc_inflow//batch_size]
+    bc_counts = [n_pde//batch_size, n_ic//batch_size, n_bc_wall//batch_size, n_bc_inflow//batch_size]
     if not data_free and data_points_full is not None:
         bc_counts.append(data_points_full.shape[0] // batch_size)
 
@@ -347,68 +369,44 @@ def main(config_path: str):
     )
     opt_state = optimiser.init(params)
 
-    # JIT Data Generator
     def generate_epoch_data(key):
-        key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
+        key, pde_key, ic_key, bc_keys = random.split(key, 4)
         
-        # PDE: Domain is 2000x2000, t_final from config (usually 48h)
-        if n_pde // batch_size > 0:
-            pde_pts = sample_lhs(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
-            pde_data = get_batches_tensor(pde_key, pde_pts, batch_size, num_batches)
-        else:
-            pde_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+        # 1. Interior (PDE)
+        pde_pts = domain_sampler.sample_interior(
+            pde_key, n_pde, t_bounds=(0., domain_cfg["t_final"])
+        )
+        pde_data = get_batches_tensor(pde_key, pde_pts, batch_size, num_batches)
 
-        # IC: Dry Bed everywhere
-        if n_ic // batch_size > 0:
-            ic_pts = sample_lhs(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
-            ic_data = get_batches_tensor(ic_key, ic_pts, batch_size, num_batches)
-        else:
-            ic_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+        # 2. IC
+        ic_pts = domain_sampler.sample_interior(
+            ic_key, n_ic, t_bounds=(0., 0.)
+        )
+        ic_data = get_batches_tensor(ic_key, ic_pts, batch_size, num_batches)
             
-        # BCs
-        # Test 2 Logic: 
-        # Left Boundary (x=0) is split:
-        #   - Inflow: y in [1900, 2000] (North-West 100m)
-        #   - Wall: y in [0, 1900]
-        # Right, Top, Bottom are simple walls.
+        # 3. Boundaries
+        l_in_key, l_wall_key = random.split(bc_keys, 2)
         
-        l_in_key, l_wall_key, r_key, b_key, t_key = random.split(bc_keys, 5)
-        
-        def get_bc_batch(k, n, x_range, y_range):
-            if n // batch_size > 0:
-                pts = sample_lhs(k, n, x_range, y_range, (0., domain_cfg["t_final"]))
-                return get_batches_tensor(k, pts, batch_size, num_batches)
-            return jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+        # Sample inflow
+        bc_inflow_pts = domain_sampler.sample_boundary(
+            l_in_key, n_bc_inflow, (0., domain_cfg["t_final"]), boundary_type='inflow'
+        )
+        bc_inflow = get_batches_tensor(l_in_key, bc_inflow_pts, batch_size, num_batches)
 
-        # Split Left Boundary
-        y_inflow_start = 990.0 # e.g., 990m
-        y_inflow_end = 1010.0  # e.g., 1010m
-        bc_inflow = get_bc_batch(l_in_key, n_bc_inflow, (0., 0.), (y_inflow_start, y_inflow_end))
-        bc_left_wall_bottom = get_bc_batch(l_wall_key, n_bc_per_wall, (0., 0.), (0., y_inflow_start))
-        bc_left_wall_above = get_bc_batch(l_wall_key, n_bc_per_wall, (0., 0.), (y_inflow_end, domain_cfg["ly"]))
-        bc_left_wall = jnp.concatenate([bc_left_wall_bottom, bc_left_wall_above], axis=1)
-
-        # Other Boundaries
-        bc_right = get_bc_batch(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]))
-        bc_bot = get_bc_batch(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.))
-        bc_top = get_bc_batch(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]))
-
-        # Data
-        data_data = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
-        if not data_free and data_points_full is not None:
-             data_data = get_batches_tensor(data_key, data_points_full, batch_size, num_batches)
+        # Sample wall
+        bc_wall_pts = domain_sampler.sample_boundary(
+            l_wall_key, n_bc_wall, (0., domain_cfg["t_final"]), boundary_type='wall'
+        )
+        bc_wall = get_batches_tensor(l_wall_key, bc_wall_pts, batch_size, num_batches)
 
         return {
             'pde': pde_data,
             'ic': ic_data,
             'bc': {
                 'inflow': bc_inflow, 
-                'left_wall': bc_left_wall, 
-                'right': bc_right, 
-                'bottom': bc_bot, 
-                'top': bc_top
+                'wall': bc_wall
             },
-            'data': data_data
+            'data': jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
         }
     
     generate_epoch_data_jitted = jax.jit(generate_epoch_data)
@@ -416,25 +414,20 @@ def main(config_path: str):
     # Scan Body
     def scan_body(carry, batch_data):
         curr_params, curr_opt_state = carry
-        
         current_all_batches = {
             'pde': batch_data['pde'],
             'ic': batch_data['ic'],
             'bc_inflow': batch_data['bc']['inflow'],
-            'bc_left_wall': batch_data['bc']['left_wall'],
-            'bc_right': batch_data['bc']['right'],
-            'bc_bottom': batch_data['bc']['bottom'],
-            'bc_top': batch_data['bc']['top'],
+            'bc_wall': batch_data['bc']['wall'], # Generic wall
             'data': batch_data['data']
         }
-
         new_params, new_opt_state, terms, total = train_step_jitted(
             model, optimiser, curr_params, curr_opt_state,
             current_all_batches, cfg, data_free, bc_fn_static, current_weights_dict
         )
         return (new_params, new_opt_state), (terms, total)
 
-    # --- 9. Training Loop ---
+    # --- 10. Training Loop ---
     best_nse_stats = {
         'nse': -jnp.inf, 'rmse': jnp.inf, 'epoch': 0, 'global_step': 0,
         'time_elapsed_seconds': 0.0, 'total_weighted_loss': 0.0, 'unweighted_losses': {}
@@ -446,7 +439,7 @@ def main(config_path: str):
     }
     
     best_params_nse = None
-    best_params_loss = None # Added tracking for best loss model
+    best_params_loss = None 
 
     try:
         for epoch in range(cfg["training"]["epochs"]):
@@ -460,9 +453,7 @@ def main(config_path: str):
             
             global_step += num_batches
             
-
             # --- Aggregate Losses ---
-            # Sum over batches dimension
             epoch_losses_unweighted_sum = {k: jnp.sum(v) for k, v in batch_losses_unweighted_stacked.items()}
             epoch_total_weighted_loss_sum = jnp.sum(batch_total_weighted_loss_stacked)
 
@@ -470,19 +461,14 @@ def main(config_path: str):
             avg_total_weighted_loss = float(epoch_total_weighted_loss_sum) / num_batches
 
             # --- LR Extraction ---
-            # Extract LR status from opt_state (chain: clip, adam, reduce_on_plateau)
             current_lr = cfg["training"]["learning_rate"]
             current_scale = 1.0
             base_lr_val = cfg["training"]["learning_rate"]
             try:
-                # Access the state of the last transformation (reduce_on_plateau)
-                # opt_state is a tuple corresponding to the chain elements
-                # Ensure we cast the JAX array to a standard float
                 if hasattr(opt_state[-1], 'scale'):
                     current_scale = float(opt_state[-1].scale)
                     current_lr = base_lr_val * current_scale
             except Exception as e:
-                # Removing silent failure to aid debugging
                 if epoch == 0: 
                     print(f"Warning: Failed to extract LR scale: {e}")            
 
@@ -514,7 +500,7 @@ def main(config_path: str):
                     'nse': nse_val, 'rmse': rmse_val,
                     'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
                 })
-                best_params_loss = copy.deepcopy(params) # Update best params for loss
+                best_params_loss = copy.deepcopy(params) 
 
             # Reporting
             freq = cfg.get("reporting", {}).get("epoch_freq", 100)
@@ -525,12 +511,11 @@ def main(config_path: str):
                     avg_losses_unweighted.get('pde', 0.0), 
                     avg_losses_unweighted.get('ic', 0.0), 
                     avg_losses_unweighted.get('bc', 0.0),
-                    0.0, # Placeholder for unused loss term to satisfy signature
+                    0.0, 
                     avg_losses_unweighted.get('data', 0.0),
                     avg_losses_unweighted.get('neg_h', 0.0),
                     nse_val, rmse_val, epoch_time
                 )
-                # MOVED: Printing LR status here
                 print(f"    LR Status: LR={current_lr:.2e}, Base={base_lr_val:.2e}, Scale={current_scale:.2e}")
 
             if aim_run:
@@ -538,7 +523,7 @@ def main(config_path: str):
                     'validation_metrics': {'nse': nse_val, 'rmse': rmse_val},
                     'epoch_avg_losses': avg_losses_unweighted,
                     'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
-                    'optimization': {'total_loss': avg_total_weighted_loss}, # Added total_loss explicitly
+                    'optimization': {'total_loss': avg_total_weighted_loss}, 
                     'system_metrics': {'epoch_time': epoch_time},
                     'training_metrics': {'learning_rate': float(current_lr)}
                 }
@@ -560,12 +545,11 @@ def main(config_path: str):
         import traceback
         traceback.print_exc()
 
-    # --- 10. Post-Training (Save & Plot) ---
+    # --- 11. Post-Training (Save & Plot) ---
     finally:
         total_time = time.time() - start_time
         print_final_summary(total_time, best_nse_stats, best_loss_stats)
 
-        # Decide which params to save (User preference: Best Loss Model)
         final_params = best_params_loss if best_params_loss is not None else best_params_nse
 
         if aim_run:
@@ -593,7 +577,6 @@ def main(config_path: str):
             if final_params is not None:
                 saved_model_path = save_model(final_params, model_dir, trial_name)
 
-                # --- NEW: Log Model as Artifact to Aim ---
                 if aim_run and saved_model_path:
                     try:
                         aim_run.log_artifact(saved_model_path, name='model_weights.pkl')
@@ -601,41 +584,29 @@ def main(config_path: str):
                     except Exception as e_mod:
                         print(f"Warning: Failed to log model artifact: {e_mod}")
 
-                # --- Plotting Specific to Test 2 ---
-                
-                print("Generating Test 2 plots...")
+                print("Generating Test 5 plots...")
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
                 
-                # Try to load output points from CSV
-                output_csv_path = os.path.join(base_data_path, "Test2output.csv")
+                output_csv_path = os.path.join(base_data_path, "Test5output.csv")
                 output_points = []
                 if os.path.exists(output_csv_path):
                     try:
                         df_out = pd.read_csv(output_csv_path)
-                        # Assuming columns like X, Y, or similar. Adjust based on actual CSV format.
-                        # If no header, assume first two cols are X, Y
                         if 'X' in df_out.columns and 'Y' in df_out.columns:
                             for idx, row in df_out.iterrows():
                                 output_points.append((row['X'], row['Y'], f"Point_{idx+1}"))
                         else:
-                            # Fallback: Read as raw numpy
                             arr_out = df_out.values
                             for i in range(arr_out.shape[0]):
                                 output_points.append((arr_out[i, 0], arr_out[i, 1], f"Point_{i+1}"))
                         print(f"Loaded {len(output_points)} output points from CSV.")
                     except Exception as e:
-                        print(f"Warning: Could not read Test2output.csv: {e}")
+                        print(f"Warning: Could not read Test5output.csv: {e}")
                 
-                # If no points found (or file missing), define the center points of depressions roughly?
-                # The depressions are in a 4x4 matrix in 2000x2000. 
-                # Centers approx: 250, 750, 1250, 1750 in both directions.
                 if not output_points:
-                    print("Using default representative points (Depression centers).")
-                    output_points = [
-                        (250.0, 250.0, "Depression_1_1"),
-                        (1250.0, 1250.0, "Depression_3_3"),
-                        (1750.0, 1750.0, "Depression_4_4")
-                    ]
+                    print("Using default representative points (Center).")
+                    cx, cy = (x_max+x_min)/2, (y_max+y_min)/2
+                    output_points = [(cx, cy, "Center_Point")]
 
                 def plot_gauge(x, y, name, filename):
                     pts = jnp.stack([jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot], axis=-1)
@@ -644,20 +615,16 @@ def main(config_path: str):
                     
                     plt.figure(figsize=(10, 6))
 
-                    # Plot Baseline if available
                     if full_val_data is not None:
-                        # Convert to numpy for flexible boolean indexing
                         val_np = np.array(full_val_data)
-                        # Filter for current gauge coordinates
                         mask = np.isclose(val_np[:, 1], x) & np.isclose(val_np[:, 2], y)
                         gauge_data = val_np[mask]
                         
                         if gauge_data.shape[0] > 0:
-                            # Sort by time
                             gauge_data = gauge_data[gauge_data[:, 0].argsort()]
                             plt.plot(gauge_data[:, 0], gauge_data[:, 3], 'k--', linewidth=1.5, alpha=0.7, label=f'Baseline {name}')
 
-                    plt.plot(t_plot, h_pred, label=f'Predicted h @ ({x},{y})')
+                    plt.plot(t_plot, h_pred, label=f'Predicted h @ ({x:.1f},{y:.1f})')
                     plt.xlabel('Time (s)')
                     plt.ylabel('Water Level h (m)')
                     plt.title(f'{name} - Water Level vs Time')
@@ -710,7 +677,7 @@ def main(config_path: str):
     return best_nse_stats['nse']
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Test 2).")
+    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Test 5 - Irregular).")
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
 

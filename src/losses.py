@@ -125,37 +125,24 @@ def loss_boundary_dirichlet_hv(model: nn.Module, params: Dict[str, Any],
     return jnp.mean((hv_pred - hv_target)**2)
 
 
-def loss_boundary_wall_slip_general(model: nn.Module, params: Dict[str, Any],
-                                    wall_batch: jnp.ndarray,
-                                    normal_vectors: jnp.ndarray) -> jnp.ndarray:
+def loss_slip_wall_generalized(model, params, batch):
     """
-    General 'Slip' condition for walls of ANY orientation.
-    Enforces dot(velocity, normal) = 0.
-    
-    Args:
-        wall_batch: Shape (N, 3) -> [x, y, t]
-        normal_vectors: Shape (N, 2) -> [nx, ny]
+    Enforces no-flux condition: u . n = 0
+    batch: [x, y, t, nx, ny]
     """
-    U_pred = model.apply({'params': params['params']}, wall_batch, train=False)
+    coords = batch[..., :3]     # Input to model
+    normals = batch[..., 3:5]   # Normals [nx, ny]
     
-    h_pred = U_pred[..., 0]
-    hu_pred = U_pred[..., 1]
-    hv_pred = U_pred[..., 2]
+    U = model.apply(params, coords, train=True)
     
-    # Calculate Velocity (u, v) with safety epsilon
-    # We use a small epsilon to avoid division by zero in dry areas
-    h_safe = jnp.maximum(h_pred, 1e-6)
-    u_pred = hu_pred / h_safe
-    v_pred = hv_pred / h_safe
+    # U = [h, hu, hv]
+    hu = U[..., 1]
+    hv = U[..., 2]
     
-    # Stack velocity vector: Shape (N, 2)
-    vel_vectors = jnp.stack([u_pred, v_pred], axis=-1)
-    
-    # Compute dot product: v . n
-    # sum along the last axis (components)
-    normal_flux = jnp.sum(vel_vectors * normal_vectors, axis=-1)
-    
-    return jnp.mean(normal_flux**2)
+    # Flux = hu * nx + hv * ny
+    # (equivalent to u*nx + v*ny = 0)
+    flux = hu * normals[..., 0] + hv * normals[..., 1]
+    return jnp.mean(flux**2)
 
 
 def loss_boundary_wall_vertical(model: nn.Module, params: Dict[str, Any],
