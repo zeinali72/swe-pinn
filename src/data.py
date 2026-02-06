@@ -300,10 +300,70 @@ def sample_lhs(key: jax.random.PRNGKey, n_points: int,
 import os  # Ensure os is imported
 import numpy as np
 
+# --- 1. JIT-Compiled Core Functions (The Engine) ---
+
+@partial(jax.jit, static_argnames=['n_points', 't_bounds'])
+def _sample_interior_core(key, n_points, t_bounds, tri_coords, tri_cdf):
+    """
+    Static core function for interior sampling.
+    JIT-compiled for maximum performance.
+    """
+    k_tri, k_bary, k_t = random.split(key, 3)
+    
+    # 1. Triangle Selection (Weighted)
+    # Use diff to get probabilities from CDF
+    probs = jnp.diff(tri_cdf, prepend=0.0)
+    tri_indices = random.choice(k_tri, tri_coords.shape[0], shape=(n_points,), p=probs)
+    chosen = tri_coords[tri_indices]
+    
+    # 2. Barycentric Coordinates (Uniform)
+    r = random.uniform(k_bary, (n_points, 2), dtype=DTYPE)
+    u, v = r[:, 0:1], r[:, 1:2]
+    is_outside = (u + v) > 1.0
+    u = jnp.where(is_outside, 1.0 - u, u)
+    v = jnp.where(is_outside, 1.0 - v, v)
+    
+    # P = A + u(B-A) + v(C-A)
+    xy = chosen[:, 0] + u * (chosen[:, 1] - chosen[:, 0]) + v * (chosen[:, 2] - chosen[:, 0])
+    
+    # 3. Time Sampling
+    if t_bounds is not None:
+        t = random.uniform(k_t, (n_points, 1), minval=t_bounds[0], maxval=t_bounds[1], dtype=DTYPE)
+    else:
+        t = jnp.zeros((n_points, 1), dtype=DTYPE)
+        
+    return jnp.hstack([xy, t])
+
+@partial(jax.jit, static_argnames=['n_points', 't_bounds'])
+def _sample_boundary_core(key, n_points, t_bounds, starts, vecs, cdf):
+    """
+    Static core function for boundary sampling.
+    """
+    k_seg, k_pos, k_t = random.split(key, 3)
+    
+    # 1. Segment Selection (Weighted)
+    probs = jnp.diff(cdf, prepend=0.0)
+    seg_indices = random.choice(k_seg, starts.shape[0], shape=(n_points,), p=probs)
+    
+    # 2. Random Position along segment
+    pos = random.uniform(k_pos, (n_points, 1), dtype=DTYPE)
+    xy = starts[seg_indices] + pos * vecs[seg_indices]
+    
+    # 3. Time Sampling
+    if t_bounds is not None:
+        t = random.uniform(k_t, (n_points, 1), minval=t_bounds[0], maxval=t_bounds[1], dtype=DTYPE)
+    else:
+        t = jnp.zeros((n_points, 1), dtype=DTYPE)
+        
+    return jnp.hstack([xy, t])
+
+
+# --- 2. The Sampler Class (The Interface) ---
+
 class IrregularDomainSampler:
     """
     Modular sampler for irregular domains.
-    Automatically detects boundary types (e.g., 'wall', 'inflow') from artifacts.
+    Uses pre-compiled JAX kernels for high performance.
     """
     def __init__(self, artifacts_path: str):
         if not os.path.exists(artifacts_path):
@@ -315,75 +375,50 @@ class IrregularDomainSampler:
         except Exception as e:
             raise RuntimeError(f"Failed to load .npz file: {e}")
         
-        # 1. Interior Data
+        # Load Interior Data
         try:
             self.tri_coords = jnp.array(data['tri_coords'], dtype=DTYPE)
             self.tri_cdf = jnp.array(data['tri_cdf'], dtype=DTYPE)
         except KeyError as e:
             raise KeyError(f"Missing mandatory interior mesh data: {e}")
 
-        # 2. Boundary Data (Dynamic Loading)
+        # Load Boundary Data
         self.boundaries = {}
-        
-        # Scan for keys like 'bc_wall_starts', 'bc_inflow_starts'
         all_keys = list(data.files)
         
         for key in all_keys:
             if key.startswith("bc_") and key.endswith("_starts"):
-                label = key[3:-7] # e.g. 'bc_wall_starts' -> 'wall'
-                
-                # We need the trio: starts, vectors, cdf
-                key_s = f"bc_{label}_starts"
-                key_v = f"bc_{label}_vectors"
-                key_c = f"bc_{label}_cdf"
+                label = key[3:-7]
+                key_s, key_v, key_c = f"bc_{label}_starts", f"bc_{label}_vectors", f"bc_{label}_cdf"
                 
                 if key_v in all_keys and key_c in all_keys:
                     starts = jnp.array(data[key_s], dtype=DTYPE)
                     vecs   = jnp.array(data[key_v], dtype=DTYPE)
                     cdf    = jnp.array(data[key_c], dtype=DTYPE)
-                    
                     self.boundaries[label] = (starts, vecs, cdf)
                     print(f"  - Registered boundary '{label}': {starts.shape[0]} segments")
 
     def sample_interior(self, key, n_points: int, t_bounds: tuple = None) -> jnp.ndarray:
-        k_tri, k_bary, k_t = random.split(key, 3)
-        
-        # Triangle Selection
-        probs = jnp.diff(self.tri_cdf, prepend=0.0)
-        tri_indices = random.choice(k_tri, self.tri_coords.shape[0], shape=(n_points,), p=probs)
-        chosen = self.tri_coords[tri_indices]
-        
-        # Barycentric Coords
-        r = random.uniform(k_bary, (n_points, 2), dtype=DTYPE)
-        u, v = r[:, 0:1], r[:, 1:2]
-        is_outside = (u + v) > 1.0
-        u = jnp.where(is_outside, 1.0 - u, u)
-        v = jnp.where(is_outside, 1.0 - v, v)
-        
-        xy = chosen[:, 0] + u * (chosen[:, 1] - chosen[:, 0]) + v * (chosen[:, 2] - chosen[:, 0])
-        
-        # Time
-        if t_bounds:
-            t = random.uniform(k_t, (n_points, 1), minval=t_bounds[0], maxval=t_bounds[1], dtype=DTYPE)
-        else:
-            t = jnp.zeros((n_points, 1), dtype=DTYPE)
-        return jnp.hstack([xy, t])
+        """
+        Samples N points from the interior.
+        Automatically uses the JIT-compiled core.
+        """
+        return _sample_interior_core(
+            key, n_points, t_bounds, 
+            self.tri_coords, self.tri_cdf
+        )
 
     def sample_boundary(self, key, n_points: int, t_bounds: tuple, boundary_type: str = 'wall') -> jnp.ndarray:
+        """
+        Samples N points from a specific boundary.
+        Automatically uses the JIT-compiled core.
+        """
         if boundary_type not in self.boundaries:
             return jnp.zeros((0, 3), dtype=DTYPE)
             
         starts, vecs, cdf = self.boundaries[boundary_type]
-        k_seg, k_pos, k_t = random.split(key, 3)
         
-        # Segment Selection
-        probs = jnp.diff(cdf, prepend=0.0)
-        seg_indices = random.choice(k_seg, starts.shape[0], shape=(n_points,), p=probs)
-        
-        # Position
-        pos = random.uniform(k_pos, (n_points, 1), dtype=DTYPE)
-        xy = starts[seg_indices] + pos * vecs[seg_indices]
-        
-        # Time
-        t = random.uniform(k_t, (n_points, 1), minval=t_bounds[0], maxval=t_bounds[1], dtype=DTYPE)
-        return jnp.hstack([xy, t])
+        return _sample_boundary_core(
+            key, n_points, t_bounds,
+            starts, vecs, cdf
+        )
