@@ -29,21 +29,20 @@ model:
   name: DGMNetwork
   output_dim: 3
   bias_init: 0.0
-  width: 512
+  width: 256
   depth: 5
-  ff_dims: 256
-  fourier_scale: 6.138224643110013
+  
 # --- CRITICAL FIX: Increased Sample Counts ---
 sampling:
-  n_points_pde: 500000    # Increased to cover 48h simulation
-  n_points_ic: 40000      # Sufficient for 2000x2000m area
-  n_points_bc_domain: 80000 # Sufficient for time-varying BCs
-  n_points_bc_inflow: 10000
+  n_points_pde: 80000    # Increased to cover 48h simulation
+  n_points_ic: 4000      # Sufficient for 2000x2000m area
+  n_points_bc_domain: 30000 # Sufficient for time-varying BCs
+  n_points_bc_inflow: 1000
 loss_weights:
   pde_weight: 1.0
-  ic_weight: 0.02411
-  bc_weight: 0.2411
-  neg_h_weight: 0.00002411
+  ic_weight: 4.21261832e-05
+  bc_weight: 2.60722306e-03
+  neg_h_weight: 1.50177776e-05
   data_weight: 1.0
 gradnorm:
   enable: false

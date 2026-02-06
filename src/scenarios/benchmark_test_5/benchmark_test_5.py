@@ -118,7 +118,6 @@ def main(config_path: str):
     """
     Main training loop for Benchmark Test 5 Scenario.
     """
-    
     #--- 1. LOAD CONFIGURATION (MUTABLE) ---
     cfg_dict = load_config(config_path)
     
@@ -170,6 +169,16 @@ def main(config_path: str):
     cfg_dict['domain']['x_max'] = x_max
     cfg_dict['domain']['y_min'] = y_min
     cfg_dict['domain']['y_max'] = y_max
+
+    h_scale = 6.0  
+    hu_scale = 2.0 
+    hv_scale = 2.0
+
+    if 'model' not in cfg_dict: cfg_dict['model'] = {}
+    # This list corresponds to the output channels [h, hu, hv]
+    cfg_dict['model']['output_scales'] = (h_scale, hu_scale, hv_scale)
+    
+    print(f"Active Output Scaling: {cfg_dict['model']['output_scales']}")
 
     # --- 3. FINALIZE CONFIG & INIT MODEL ---
     # Now that config has correct dimensions, freeze it and init model

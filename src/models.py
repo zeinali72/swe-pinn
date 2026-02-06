@@ -31,6 +31,17 @@ class FourierFeatures(nn.Module):
         x_proj = x @ B
         features = jnp.concatenate([jnp.sin(x_proj), jnp.cos(x_proj)], axis=-1)
         return features
+    
+    # --- HELPER: Output Scaling ---
+def apply_output_scaling(x: jnp.ndarray, config: FrozenDict) -> jnp.ndarray:
+    """Multiplies the raw network output by physical scale factors."""
+    # Check if 'output_scales' exists in the model config
+    scales = config["model"].get("output_scales", None)
+    if scales is not None:
+        # scales should be a list/tuple like [50.0, 10.0, 10.0] for [h, hu, hv]
+        scale_tensor = jnp.array(scales, dtype=DTYPE)
+        return x * scale_tensor
+    return x
 
 class FourierPINN(nn.Module):
     """PINN with Fourier Feature Mapping."""
@@ -76,7 +87,8 @@ class FourierPINN(nn.Module):
         for layer in self.dense_layers:
             x_features = nn.tanh(layer(x_features))
 
-        return self.output_layer(x_features)
+        output = self.output_layer(x_features)
+        return apply_output_scaling(output, self.config)
 
 class MLP(nn.Module):
     """Standard Multi-Layer Perceptron."""
@@ -173,8 +185,8 @@ class DGMNetwork(nn.Module):
 
         output = nn.Dense(output_dim, name='output_layer', kernel_init=nn.initializers.glorot_uniform())(s_current)
 
-        return output
-
+        return apply_output_scaling(output, self.config)
+    
 def init_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
     """Initialize the PINN model and parameters."""
     model = model_class(config=config)
