@@ -340,7 +340,7 @@ def main(config_path: str):
     n_pde = get_sample_count(sampling_cfg, "n_points_pde", 1000)
     n_ic = get_sample_count(sampling_cfg, "n_points_ic", 100)
     n_bc_inflow = get_sample_count(sampling_cfg, "n_points_bc_inflow", 100)
-      = get_sample_count(sampling_cfg, "n_points_bc_domain", 100)
+    n_bc_wall = get_sample_count(sampling_cfg, "n_points_bc_domain", 100)
 
     bc_counts = [n_pde//batch_size, n_ic//batch_size, n_bc_wall//batch_size, n_bc_inflow//batch_size]
     if not data_free and data_points_full is not None:
@@ -370,43 +370,33 @@ def main(config_path: str):
     opt_state = optimiser.init(params)
 
     def generate_epoch_data(key):
-        key, pde_key, ic_key, bc_keys = random.split(key, 4)
+        k1, k2, k3, k4, k5 = random.split(key, 5)
         
-        # 1. Interior (PDE)
-        pde_pts = domain_sampler.sample_interior(
-            pde_key, n_pde, t_bounds=(0., domain_cfg["t_final"])
-        )
-        pde_data = get_batches_tensor(pde_key, pde_pts, batch_size, num_batches)
-
-        # 2. IC
-        ic_pts = domain_sampler.sample_interior(
-            ic_key, n_ic, t_bounds=(0., 0.)
-        )
-        ic_data = get_batches_tensor(ic_key, ic_pts, batch_size, num_batches)
-            
-        # 3. Boundaries
-        l_in_key, l_wall_key = random.split(bc_keys, 2)
+        # Interior
+        pde_pts = domain_sampler.sample_interior(k1, n_pde, (0., domain_cfg["t_final"]))
+        pde_data = get_batches_tensor(k1, pde_pts, batch_size, num_batches)
         
-        # Sample inflow
-        bc_inflow_pts = domain_sampler.sample_boundary(
-            l_in_key, n_bc_inflow, (0., domain_cfg["t_final"]), boundary_type='inflow'
-        )
-        bc_inflow = get_batches_tensor(l_in_key, bc_inflow_pts, batch_size, num_batches)
+        # IC
+        ic_pts = domain_sampler.sample_interior(k2, n_ic, (0., 0.))
+        ic_data = get_batches_tensor(k2, ic_pts, batch_size, num_batches)
+        
+        # BCs
+        bc_inflow_pts = domain_sampler.sample_boundary(k3, n_bc_inflow, (0., domain_cfg["t_final"]), 'inflow')
+        bc_inflow = get_batches_tensor(k3, bc_inflow_pts, batch_size, num_batches)
 
-        # Sample wall
-        bc_wall_pts = domain_sampler.sample_boundary(
-            l_wall_key, n_bc_wall, (0., domain_cfg["t_final"]), boundary_type='wall'
-        )
-        bc_wall = get_batches_tensor(l_wall_key, bc_wall_pts, batch_size, num_batches)
+        bc_wall_pts = domain_sampler.sample_boundary(k4, n_bc_wall, (0., domain_cfg["t_final"]), 'wall')
+        bc_wall = get_batches_tensor(k4, bc_wall_pts, batch_size, num_batches)
+        
+        # Data - Now actually uses the data
+        if not data_free and data_points_full is not None:
+             data_d = get_batches_tensor(k5, data_points_full, batch_size, num_batches)
+        else:
+             data_d = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
 
         return {
-            'pde': pde_data,
-            'ic': ic_data,
-            'bc': {
-                'inflow': bc_inflow, 
-                'wall': bc_wall
-            },
-            'data': jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
+            'pde': pde_data, 'ic': ic_data, 
+            'bc_inflow': bc_inflow, 'bc_wall': bc_wall, 
+            'data': data_d
         }
     
     generate_epoch_data_jitted = jax.jit(generate_epoch_data)
@@ -417,8 +407,8 @@ def main(config_path: str):
         current_all_batches = {
             'pde': batch_data['pde'],
             'ic': batch_data['ic'],
-            'bc_inflow': batch_data['bc']['inflow'],
-            'bc_wall': batch_data['bc']['wall'], # Generic wall
+            'bc_inflow': batch_data['bc_inflow'],
+            'bc_wall': batch_data['bc_wall'], # Generic wall
             'data': batch_data['data']
         }
         new_params, new_opt_state, terms, total = train_step_jitted(
