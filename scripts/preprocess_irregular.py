@@ -9,7 +9,12 @@ from shapely.validation import make_valid
 def load_and_fix_geometry(shp_path):
     """Loads a shapefile, fixes invalid geometries, and dissolves into a single geometry."""
     gdf = gpd.read_file(shp_path)
-    geom = gdf.dissolve().geometry.iloc[0]
+    # Use union_all if available (newer geopandas), else unary_union
+    try:
+        geom = gdf.union_all()
+    except AttributeError:
+        geom = gdf.unary_union
+        
     if not geom.is_valid:
         geom = make_valid(geom)
     return geom
@@ -21,6 +26,7 @@ def triangulate_polygon(geom):
     check_geom = geom.buffer(0) 
     for tri in triangles:
         # Check centroid with a small buffer for robustness
+        # This handles holes correctly (centroid of triangle in hole returns False)
         if check_geom.contains(tri.centroid):
             valid_triangles.append(tri)
     return valid_triangles
@@ -48,7 +54,6 @@ def geom_to_segments(geom):
     elif geom.geom_type == 'MultiLineString':
         parts = geom.geoms
     elif geom.geom_type in ['Polygon', 'MultiPolygon']:
-        # Should not happen for boundary lines, but just in case
         parts = [geom.boundary]
         
     for line in parts:
@@ -82,14 +87,40 @@ def build_boundary_arrays(segments):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("domain_shapefile", type=str, help="Path to domain polygon.")
-    parser.add_argument("--out", type=str, default=".", help="Output directory.")
+    parser.add_argument("--out", type=str, default=None, help="Output directory. Defaults to input directory.")
     parser.add_argument("--bc", action='append', help="Additional BC file: 'label=path'")
+    parser.add_argument("--buildings", type=str, help="Path to buildings shapefile (voids/obstacles).")
     args = parser.parse_args()
     
+    # Determine output directory (default to same as input if not specified)
+    if args.out is None:
+        args.out = os.path.dirname(args.domain_shapefile)
+        if not args.out: args.out = "."
+
     # 1. Process Domain Mesh (Interior)
     print(f"Processing Domain: {args.domain_shapefile}")
     domain_geom = load_and_fix_geometry(args.domain_shapefile)
     
+    # NEW: Handle Buildings (Voids)
+    bldg_bc_geom = None
+    if args.buildings:
+        print(f"  - Loading buildings from {args.buildings}...")
+        bldg_gdf = gpd.read_file(args.buildings)
+        try:
+            bldg_geom = bldg_gdf.union_all()
+        except AttributeError:
+            bldg_geom = bldg_gdf.unary_union
+            
+        if not bldg_geom.is_valid:
+            bldg_geom = make_valid(bldg_geom)
+            
+        print("    -> Subtracting buildings from domain (creating voids)...")
+        domain_geom = domain_geom.difference(bldg_geom)
+        
+        # Save building boundary for BC processing
+        bldg_bc_geom = bldg_geom.boundary
+    
+    # Triangulate (handles holes/voids via containment check)
     triangles = triangulate_polygon(domain_geom)
     tri_coords, tri_areas = get_triangle_data(triangles)
     tri_cdf = np.cumsum(tri_areas / np.sum(tri_areas))
@@ -103,32 +134,45 @@ def main():
     # 2. Process Boundaries (Subtraction Logic)
     
     # Start with the full domain boundary as "Wall"
+    # Note: domain_geom.boundary now includes the building perimeters (holes)
     wall_geom = domain_geom.boundary 
     
     # List to store processed specialized BCs
     special_bcs = []
     
+    # Process explicit BCs passed via --bc
     if args.bc:
         for item in args.bc:
             try:
                 label, path = item.split('=', 1)
                 print(f"  - Loading specialized BC '{label}' from {path}...")
                 
-                # Load BC geometry (LineString or MultiLineString)
                 bc_gdf = gpd.read_file(path)
-                bc_geom = bc_gdf.union_all()
+                try:
+                    bc_geom = bc_gdf.union_all()
+                except AttributeError:
+                    bc_geom = bc_gdf.unary_union
                 
-                # Store for later saving
                 special_bcs.append((label, bc_geom))
                 
-                # CRITICAL: Subtract this BC from the Wall
-                # We buffer the BC line slightly to ensure it intersects and "erases" the wall line
                 print(f"    -> Subtracting '{label}' from Wall boundary...")
-                eraser = bc_geom.buffer(0.01) # 1cm buffer (assuming meters)
+                eraser = bc_geom.buffer(0.01)
                 wall_geom = wall_geom.difference(eraser)
                 
             except Exception as e:
                 print(f"Error processing BC {item}: {e}")
+
+    # Process Building BC automatically if buildings were provided
+    if bldg_bc_geom is not None:
+        label = "building"
+        print(f"  - Processing automatic BC '{label}' from buildings...")
+        special_bcs.append((label, bldg_bc_geom))
+        
+        # Subtract building perimeter from the generic 'Wall' BC
+        # so it is labeled as 'building' instead
+        print(f"    -> Subtracting '{label}' from Wall boundary...")
+        eraser = bldg_bc_geom.buffer(0.01) 
+        wall_geom = wall_geom.difference(eraser)
 
     # 3. Discretize and Save 'Wall' (The Remainder)
     print(f"  - Finalizing 'wall' boundary segments...")
