@@ -523,7 +523,7 @@ def main(config_path: str):
                     nse_hv_val = float(nse(val_hv_true, hv_pred))
                     
                     # Sum them up
-                    combined_nse_val = (0.5*nse_h_val + 0.25*nse_hu_val + 0.25*nse_hv_val)
+                    combined_nse_val = (nse_h_val + nse_hu_val + nse_hv_val)/3.0
                     
                     # RMSE on h (common metric)
                     rmse_val = float(rmse(val_h_true, h_pred))
