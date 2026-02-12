@@ -16,7 +16,7 @@ training:
   epochs: 2000
   seed: 42
   learning_rate: 0.0006984150930531603
-  batch_size: 256
+  batch_size: 1024
   reduce_on_plateau:
     factor: 0.5
     patience: 5
@@ -39,11 +39,17 @@ sampling:
   n_points_bc_domain: 50000 # Sufficient for time-varying BCs
   n_points_bc_inflow: 2000
   n_points_bc_building: 10000
+  importance_sampling:
+    enabled: true
+    pool_size: 2000000           # Size of the candidate pool (CPU memory intensive)
+    resample_freq: 1             # Update pool every N epochs
+    eval_batch_size: 10000       # Batch size for evaluating residuals (VRAM intensive)
+    p_error_weight: 0.8
 loss_weights:
   pde_weight: 10.0
-  ic_weight: 4.21261832e-05
-  bc_weight: 0.241
-  neg_h_weight: 1.50177776e-05
+  ic_weight: 4.21261832e-04
+  bc_weight: 0.5
+  neg_h_weight: 1.50177776e-04
   data_weight: 10.0
 gradnorm:
   enable: false
