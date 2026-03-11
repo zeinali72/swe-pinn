@@ -11,6 +11,7 @@ A high-performance implementation of Physics-Informed Neural Networks (PINNs) fo
 
 - [Overview](#overview)
 - [Key Features](#key-features)
+- [Research Phases](#research-phases)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Project Structure](#project-structure)
@@ -18,8 +19,6 @@ A high-performance implementation of Physics-Informed Neural Networks (PINNs) fo
 - [Usage](#usage)
 - [Physics Background](#physics-background)
 - [Results and Validation](#results-and-validation)
-- [API Documentation](#api-documentation)
-- [Examples](#examples)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
@@ -38,14 +37,31 @@ This implementation provides:
 
 ## Key Features
 
-- **🔬 Physics-Informed Training**: Incorporates SWE physics directly into the loss function
-- **🌊 Complete SWE Implementation**: Handles 2D shallow water flow with source terms
-- **🎯 Fourier Feature Mapping**: Enhanced capability for learning high-frequency solutions
-- **⚡ High Performance**: JAX/Flax backend with GPU acceleration
-- **📊 Experiment Tracking**: Integrated Aim logging and visualization
-- **🔧 Hyperparameter Optimization**: Automated tuning with Optuna
-- **📈 Comprehensive Metrics**: NSE, RMSE, and physics-based validation
-- **🧩 Modular Architecture**: Clean separation of physics, models, and training components
+- **Physics-Informed Training**: Incorporates SWE physics directly into the loss function
+- **Complete SWE Implementation**: Handles 2D shallow water flow with source terms
+- **Fourier Feature Mapping**: Enhanced capability for learning high-frequency solutions
+- **High Performance**: JAX/Flax backend with GPU acceleration
+- **Experiment Tracking**: Integrated Aim logging and visualization
+- **Hyperparameter Optimization**: Automated tuning with Optuna
+- **Comprehensive Metrics**: NSE, RMSE, and physics-based validation
+- **Modular Architecture**: Clean separation of physics, models, and training components
+
+## Research Phases
+
+The project is organized into three research phases spanning eight experiments:
+
+### Phase 1 — Baseline Verification and Architecture Selection
+- **Experiment 1**: Verifies the framework against an analytical dam-break solution on a flat domain.
+- **Experiment 2**: Introduces a building obstacle; motivates Fourier-MLP and DGM adoption. Two-stage HPO (100 Sobol + 50 TPE Bayesian trials) is run across all three architectures on both scenarios.
+
+### Phase 2 — Topographic Complexity on Synthetic Domains
+- **Experiment 3**: Introduces terrain slope in the x-direction via bi-linear interpolation; establishes a data sampling ratio methodology.
+- **Experiment 4**: Extends slope to both x and y directions.
+- **Experiment 5**: Further synthetic complexity to validate robustness.
+
+### Phase 3 — Domain Generalisation and Real-World Application
+- **Experiment 7**: Irregular (non-rectangular) boundaries using triangulated mesh-based sampling, automated boundary detection, and wall normals for slip boundary conditions.
+- **Experiment 8**: Real urban subcatchment in Eastbourne, UK (Blue Heart Project). Buildings are excluded from the mesh and treated as wall boundaries.
 
 ## Installation
 
@@ -100,13 +116,13 @@ If you prefer manual setup:
 
 1. **Configure your experiment:**
    ```bash
-   cp configs/analytical_deeponet.yaml configs/my_experiment.yaml
+   cp configs/experiment_1_fourier.yaml configs/my_experiment.yaml
    # Edit my_experiment.yaml with your parameters
    ```
 
 2. **Run training:**
    ```bash
-   python src/train.py --config configs/my_experiment.yaml
+   python -m src.scenarios.experiment_1.experiment_1 configs/my_experiment.yaml
    ```
 
 3. **Monitor results:**
@@ -117,39 +133,94 @@ If you prefer manual setup:
 
 4. **Visualize results:**
    ```bash
-   python scripts/render_video.py --model_path models/your_model
+   python scripts/render_video.py --model_dir models/your_model --config configs/my_experiment.yaml --output results/video.mp4
    ```
 
 ## Project Structure
 
 ```
 swe-pinn/
-├── .devcontainer/          # VS Code development container configuration
-├── configs/               # Experiment configuration files
-├── data/                  # Training data and datasets
-├── models/                # Saved model checkpoints and artifacts
-├── notebook/              # Jupyter notebooks for analysis and visualization
-├── optimisation/          # Hyperparameter optimization results
-├── results/               # Training outputs, plots, and validation results
-├── scripts/               # Utility scripts (rendering, preprocessing, etc.)
-├── src/                   # Core source code
-│   ├── __init__.py
-│   ├── config.py          # Configuration loading and validation
-│   ├── data.py            # Data sampling and batch generation
-│   ├── losses.py          # Physics-informed loss functions
-│   ├── models.py          # Neural network architectures
-│   ├── physics.py         # SWE physics implementation
-│   ├── train.py           # Main training orchestration
-│   ├── utils.py           # Metrics, plotting, and utilities
-│   ├── gradnorm.py        # Gradient normalization utilities
-│   ├── ntk.py             # Neural Tangent Kernel computations
-│   ├── reporting.py       # Result reporting and logging
-│   ├── scenarios/         # Predefined test scenarios
-│   └── softadapt.py       # Adaptive loss weighting
-├── test/                  # Unit tests and integration tests
-├── aim_repo/              # Experiment tracking database
-├── pyproject.toml         # Project metadata and dependencies
-└── README.md             # This file
+├── src/                            # Core source code
+│   ├── config.py                   # YAML configuration loading
+│   ├── data.py                     # Data sampling, batching, and validation loading
+│   ├── losses.py                   # PDE, IC, BC loss functions for SWE
+│   ├── models.py                   # Neural network architectures (FourierPINN, MLP, DGMNetwork)
+│   ├── physics.py                  # SWE physics computations and Jacobians
+│   ├── gradnorm.py                 # GradNorm adaptive loss weighting
+│   ├── softadapt.py                # SoftAdapt adaptive loss weighting
+│   ├── ntk.py                      # Neural Tangent Kernel trace computation
+│   ├── train.py                    # Unified training script (main entry point)
+│   ├── utils.py                    # Metrics (NSE, RMSE), plotting, model saving
+│   ├── reporting.py                # Training stats logging and Aim integration
+│   └── scenarios/                  # Per-experiment training scripts
+│       ├── experiment_1/           # Phase 1: analytical dam-break, flat domain
+│       │   ├── experiment_1.py
+│       │   ├── analytical_ntk.py
+│       │   └── experiment_1_lbfgs_finetune.py
+│       ├── experiment_2/           # Phase 1: building obstacle
+│       │   └── experiment_2.py
+│       ├── experiment_3/           # Phase 2: x-direction terrain slope
+│       │   └── experiment_3.py
+│       ├── experiment_4/           # Phase 2: x+y terrain slope
+│       │   └── experiment_4.py
+│       ├── experiment_5/           # Phase 2: synthetic complexity
+│       │   └── experiment_5.py
+│       ├── experiment_6/           # Phase 2: synthetic complexity stage 2
+│       │   └── experiment_6.py
+│       ├── experiment_7/           # Phase 3: irregular boundaries
+│       │   └── experiment_7.py
+│       └── experiment_8/           # Phase 3: real urban domain (Eastbourne)
+│           ├── experiment_8.py
+│           └── experiment_8_imp_samp.py
+├── configs/                        # Experiment configuration YAML files
+│   ├── experiment_1_fourier.yaml       # Exp 1 Fourier config
+│   ├── experiment_1_ntk.yaml           # Exp 1 NTK config
+│   ├── experiment_1_dgm_static.yaml    # Exp 1 DGM static config
+│   ├── experiment_1_dgm_gradnorm.yaml  # Exp 1 DGM GradNorm config
+│   ├── experiment_3.yaml               # Exp 3 config
+│   ├── experiment_4.yaml               # Exp 4 config
+│   ├── experiment_5.yaml               # Exp 5 config
+│   ├── experiment_6.yaml               # Exp 6 config
+│   ├── experiment_7.yaml               # Exp 7 config
+│   ├── experiment_8.yaml               # Exp 8 config
+│   └── train/                          # Final HPO-optimized production configs
+│       ├── experiment_1_mlp_final.yaml
+│       ├── experiment_1_fourier_final.yaml
+│       ├── experiment_1_dgm_final.yaml
+│       ├── experiment_2_fourier_final.yaml
+│       └── experiment_2_dgm_final.yaml
+├── test/                           # Unit tests
+│   ├── test_train.py
+│   ├── test_train_gradnorm.py
+│   └── test_assets/
+│       └── test_config.yaml
+├── scripts/                        # Data processing and utility scripts
+│   ├── create_samples.py           # Generate training samples from simulation output
+│   ├── filter_sample.py            # Filter/preprocess samples
+│   ├── convert_bin_to_npy.py       # Binary-to-numpy conversion
+│   ├── preprocess_irregular.py     # Mesh preprocessing for irregular domains (Exp 7/8)
+│   ├── extract_gauges.py           # Extract gauge time-series
+│   ├── process_gauges_split.py     # Split and align gauge data
+│   ├── render_video.py             # Render solution animations (CLI-driven)
+│   ├── run_preprocess.sh           # Shell driver for preprocessing pipeline
+│   └── cpp/                        # C++ utilities for data generation
+│       └── preprocess.cpp
+├── optimisation/                   # Hyperparameter optimisation (Optuna)
+│   ├── run_optimization.py         # Main HPO entry point
+│   ├── run_sensitivity_analysis.py
+│   ├── extract_best_params.py
+│   ├── objective_function.py       # Optuna objective
+│   ├── optimization_train_loop.py
+│   ├── configs/
+│   │   ├── exploration/            # Sobol exploration configs (per arch x scenario)
+│   │   └── exploitation/           # TPE exploitation configs (per arch x scenario)
+│   └── sensitivity_analysis_output/  # Importance reports + best params
+├── data/                           # Reference simulation data (InfoWorks ICM output)
+├── notebook/                       # Jupyter notebooks for analysis
+├── .devcontainer/                  # Docker dev container setup (NVIDIA JAX + CUDA)
+├── .github/workflows/              # CI/CD: Docker image build/publish to GHCR
+├── pyproject.toml                  # Package metadata and dependencies
+└── README.md
 ```
 
 ## Configuration
@@ -159,21 +230,18 @@ Experiments are configured using YAML files in the `configs/` directory. Key con
 ### Domain Configuration
 ```yaml
 domain:
-  x_min: 0.0
-  x_max: 100.0
-  y_min: 0.0
-  y_max: 20.0
-  t_min: 0.0
-  t_max: 10.0
+  lx: 100.0
+  ly: 20.0
+  t_final: 10.0
 ```
 
 ### Model Architecture
 ```yaml
 model:
-  architecture: "deeponet"  # or "fourier_pinn"
-  hidden_dims: [128, 128, 128]
-  fourier_features: 256
-  activation: "swish"
+  name: "FourierPINN"  # or "MLP", "DGMNetwork"
+  width: 128
+  depth: 6
+  output_dim: 3
 ```
 
 ### Training Parameters
@@ -182,19 +250,18 @@ training:
   learning_rate: 1e-3
   batch_size: 4096
   epochs: 50000
-  loss_weights:
-    pde: 1.0
-    ic: 100.0
-    bc: 100.0
+loss_weights:
+  pde_weight: 1.0
+  ic_weight: 100.0
+  bc_weight: 100.0
 ```
 
 ### Physics Parameters
 ```yaml
 physics:
-  gravity: 9.81
-  manning: 0.012
-  inflow_depth: 1.0
-  inflow_velocity: 1.0
+  g: 9.81
+  n_manning: 0.012
+  inflow: 1.0
 ```
 
 ## Usage
@@ -202,21 +269,27 @@ physics:
 ### Basic Training
 
 ```bash
-# Train with default configuration
-python src/train.py
+# Run experiment-specific training scripts
+python -m src.scenarios.experiment_1.experiment_1 configs/experiment_1_fourier.yaml
+python -m src.scenarios.experiment_3.experiment_3 configs/experiment_3.yaml
+python -m src.scenarios.experiment_7.experiment_7 configs/experiment_7.yaml
+python -m src.scenarios.experiment_8.experiment_8 configs/experiment_8.yaml
 
-# Train with custom configuration
-python src/train.py --config configs/custom_config.yaml
-
-# Resume training from checkpoint
-python src/train.py --checkpoint models/checkpoint.pkl
+# Unified training script (for experiments that support it)
+python src/train.py configs/experiment_1_fourier.yaml
 ```
 
 ### Hyperparameter Optimization
 
 ```bash
-# Run hyperparameter search
-python optimisation/hyperopt.py --config configs/base_config.yaml
+# Run HPO with Optuna
+python optimisation/run_optimization.py --config optimisation/configs/exploitation/hpo_exploitation_fourier_nobuilding.yaml --n_trials 100
+
+# Sensitivity analysis (Sobol exploration)
+python optimisation/run_sensitivity_analysis.py
+
+# Extract best parameters
+python optimisation/extract_best_params.py
 ```
 
 ### Experiment Tracking
@@ -224,19 +297,14 @@ python optimisation/hyperopt.py --config configs/base_config.yaml
 ```bash
 # Start Aim dashboard
 aim up
-
-# View specific experiment
-aim runs --query "run.name == 'experiment_1'"
+# Open http://localhost:43800 in your browser
 ```
 
 ### Visualization
 
 ```bash
 # Render solution video
-python scripts/render_video.py --model_path models/trained_model
-
-# Generate validation plots
-python scripts/plot_results.py --results_dir results/experiment_1
+python scripts/render_video.py --model_dir models/trained_model --config configs/experiment_1_fourier.yaml --output results/video.mp4
 ```
 
 ## Physics Background
@@ -245,28 +313,27 @@ The 2D Shallow Water Equations describe conservation of mass and momentum for wa
 
 ### Continuity Equation (Mass Conservation)
 ```
-∂h/∂t + ∂(hu)/∂x + ∂(hv)/∂y = S_mass
+dh/dt + d(hu)/dx + d(hv)/dy = 0
 ```
 
 ### Momentum Equations
 ```
-∂(hu)/∂t + ∂(hu² + gh²/2)/∂x + ∂(huv)/∂y = -gh∂z_b/∂x + S_mom_x
-∂(hv)/∂t + ∂(huv)/∂x + ∂(hv² + gh²/2)/∂y = -gh∂z_b/∂y + S_mom_y
+d(hu)/dt + d(hu^2 + gh^2/2)/dx + d(huv)/dy = -gh * dz_b/dx - g*n^2*u*sqrt(u^2+v^2)/h^(1/3)
+d(hv)/dt + d(huv)/dx + d(hv^2 + gh^2/2)/dy = -gh * dz_b/dy - g*n^2*v*sqrt(u^2+v^2)/h^(1/3)
 ```
 
 Where:
 - `h`: water depth [m]
 - `u, v`: depth-averaged velocity components [m/s]
-- `g`: gravitational acceleration [m/s²]
+- `g`: gravitational acceleration [m/s^2]
 - `z_b`: bed elevation [m]
-- `S_mass`: mass source/sink terms
-- `S_mom_x, S_mom_y`: momentum source terms (friction, wind, etc.)
+- `n`: Manning's roughness coefficient [s/m^(1/3)]
 
 ### Boundary Conditions
 
 - **Inflow**: Prescribed depth and velocity at upstream boundary
 - **Outflow**: Zero-gradient conditions at downstream boundary
-- **Walls**: No-flux conditions at lateral boundaries
+- **Walls**: No-flux (slip) conditions at lateral boundaries and building walls
 - **Initial**: Flat water surface with zero velocity at t=0
 
 ## Results and Validation
@@ -283,98 +350,6 @@ The implementation provides comprehensive validation metrics:
 - **Contour Plots**: Spatial distribution at specific times
 - **Validation Profiles**: Comparison with analytical/reference solutions
 
-### Example Results
-```
-Training completed in 2.3 hours on NVIDIA RTX 3090
-Final metrics:
-- NSE: 0.987
-- RMSE: 0.023 m
-- Physics residual: 1.2e-4
-```
-
-## API Documentation
-
-### Core Classes
-
-#### `SWEPhysics`
-Handles the physics implementation and PDE residual computation.
-
-```python
-from src.physics import SWEPhysics
-
-physics = SWEPhysics(config)
-residuals = physics.compute_residuals(model_output, coords)
-```
-
-#### `PINNModel`
-Neural network architecture with Fourier feature mapping.
-
-```python
-from src.models import PINNModel
-
-model = PINNModel(config)
-params = model.init(rng, coords)
-output = model.apply(params, coords)
-```
-
-#### `Trainer`
-Orchestrates the training process with physics-informed losses.
-
-```python
-from src.train import Trainer
-
-trainer = Trainer(config, model, physics)
-trained_params = trainer.train()
-```
-
-### Key Functions
-
-- `sample_training_data()`: Generates collocation points for training
-- `compute_physics_loss()`: Calculates PDE constraint violations
-- `validate_solution()`: Computes validation metrics
-- `plot_results()`: Generates visualization plots
-
-## Examples
-
-### Basic Training Script
-
-```python
-import jax.numpy as jnp
-from src.config import load_config
-from src.train import Trainer
-
-# Load configuration
-config = load_config('configs/analytical_deeponet.yaml')
-
-# Initialize trainer
-trainer = Trainer(config)
-
-# Train model
-trained_params, metrics = trainer.train()
-
-# Validate results
-validation_metrics = trainer.validate(trained_params)
-print(f"NSE: {validation_metrics['nse']:.3f}")
-```
-
-### Custom Physics Scenario
-
-```python
-from src.physics import SWEPhysics
-from src.scenarios import DamBreakScenario
-
-# Define custom scenario
-scenario = DamBreakScenario(breach_time=2.0, breach_width=5.0)
-
-# Create physics with custom parameters
-physics = SWEPhysics(config, scenario=scenario)
-
-# Use in training
-trainer = Trainer(config, physics=physics)
-```
-
-See `notebook/` directory for complete examples and tutorials.
-
 ## Troubleshooting
 
 ### Common Issues
@@ -382,12 +357,11 @@ See `notebook/` directory for complete examples and tutorials.
 **CUDA Out of Memory**
 - Reduce batch size in configuration
 - Decrease model hidden dimensions
-- Use gradient accumulation
 
 **Poor Convergence**
 - Increase Fourier features
 - Adjust loss weights (increase PDE weight)
-- Try different optimizer (AdamW vs SGD)
+- Try different architecture (FourierPINN vs DGM)
 
 **NaN Losses**
 - Check boundary condition implementation
@@ -396,14 +370,12 @@ See `notebook/` directory for complete examples and tutorials.
 
 **Slow Training**
 - Ensure CUDA is available: `python -c "import jax; print(jax.devices())"`
-- Use mixed precision training
-- Profile with `jax.profiler`
+- Use `float32` precision where possible
 
 ### Getting Help
 
 - Check existing issues on GitHub
 - Review Aim logs for training diagnostics
-- Validate configuration with `python src/config.py --validate`
 
 ## Contributing
 
@@ -417,7 +389,7 @@ We welcome contributions! Please follow these steps:
 3. **Make your changes and add tests**
 4. **Run the test suite:**
    ```bash
-   python -m pytest test/
+   python -m unittest discover test
    ```
 5. **Commit your changes:**
    ```bash
@@ -428,14 +400,6 @@ We welcome contributions! Please follow these steps:
    git push origin feature/amazing-feature
    ```
 7. **Open a Pull Request**
-
-### Development Guidelines
-
-- Follow PEP 8 style guidelines
-- Add type hints for new functions
-- Write comprehensive docstrings
-- Update documentation for API changes
-- Add unit tests for new functionality
 
 ## License
 
@@ -461,7 +425,3 @@ If you use this code in your research, please cite:
 - **Aim**: For experiment tracking and visualization
 - **Optuna**: For hyperparameter optimization
 - **Scientific Community**: For advancing PINN methodologies
-
----
-
-**Built with ❤️ for advancing computational hydraulics**
