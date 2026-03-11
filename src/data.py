@@ -39,6 +39,8 @@ def load_validation_data(path: str, dtype=None):
         targets: Target values [h, hu, hv]
     """
     data = np.load(path)
+    assert data.ndim == 2, f"{path}: Expected 2D array, got {data.ndim}D"
+    assert data.shape[1] >= 6, f"{path}: Expected >=6 columns [t,x,y,h,u,v], got {data.shape[1]}"
     if dtype is not None:
         data = data.astype(dtype)
     inputs = data[:, [1, 2, 0]]   # [x, y, t]
