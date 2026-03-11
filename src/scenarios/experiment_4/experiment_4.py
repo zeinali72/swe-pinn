@@ -29,7 +29,8 @@ from src.data import (
     bathymetry_fn,
     load_boundary_condition,
     load_bathymetry,
-    sample_lhs 
+    sample_lhs,
+    load_validation_data,
 )
 from src.models import init_model
 from src.losses import (
@@ -253,10 +254,8 @@ def main(config_path: str):
     if os.path.exists(validation_data_file):
         try:
             print(f"Loading VALIDATION data from: {validation_data_file}")
-            loaded_val_data = jnp.load(validation_data_file).astype(DTYPE)
-            full_val_data = loaded_val_data 
-            val_points = loaded_val_data[:, [1, 2, 0]]
-            h_true_val = loaded_val_data[:, 3]
+            full_val_data, val_points, val_targets = load_validation_data(validation_data_file, dtype=DTYPE)
+            h_true_val = val_targets[:, 0]
             num_val_points = val_points.shape[0]
             if num_val_points > 0:
                 validation_data_loaded = True
