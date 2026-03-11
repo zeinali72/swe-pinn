@@ -260,6 +260,7 @@ def compute_data_loss(model: nn.Module, params: Dict[str, Any], data_batch: jnp.
             jnp.mean((hv_pred - hv_true)**2))
 
 def total_loss(terms: Dict[str, jnp.ndarray], weights: Dict[str, float]) -> jnp.ndarray:
+    """Combine weighted loss terms into a single scalar loss."""
     loss = 0.0
     for key in terms.keys():
         if key in weights:
