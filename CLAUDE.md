@@ -28,10 +28,10 @@ swe-pinn/
 │   │   └── building/           # Scenarios with building obstacles
 │   │       └── building.py     # Training with spatial masking
 ├── configs/                    # Experiment configuration YAML files
-│   ├── fourier_pinn_config.yaml
-│   ├── dgm_datafree_static.yaml
-│   ├── dgm_datafree_gradnorm.yaml
-│   └── analytical_ntk_config.yaml
+│   ├── experiment_<N>.yaml             # Per-experiment configs
+│   ├── experiment_<N>_<arch>.yaml      # Per-architecture variant configs
+│   └── train/                          # Final HPO-optimized configs for production runs
+│       └── experiment_<N>_<arch>_final.yaml
 ├── test/                       # Unit tests
 │   ├── test_train.py           # Main training script validation
 │   ├── test_train_gradnorm.py  # GradNorm mode tests (6 test cases)
