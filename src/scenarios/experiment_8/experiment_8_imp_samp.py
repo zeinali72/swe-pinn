@@ -22,7 +22,10 @@ import jax
 import jax.numpy as jnp
 from jax import random, lax
 import optax
-from aim import Repo, Run, Image
+try:
+    from aim import Image
+except ImportError:
+    Image = None
 from flax.core import FrozenDict
 import flax.linen as nn
 import numpy as np 
@@ -58,9 +61,9 @@ from src.utils import (
    nse, rmse, generate_trial_name, save_model, ask_for_confirmation
 )
 
-from src.reporting import (
-    print_epoch_stats, log_metrics, print_final_summary, sanitize_for_aim
-)
+from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
+from src.metrics.accuracy import compute_validation_metrics
+from src.checkpointing import CheckpointManager
 
 from src.physics import SWEPhysics 
 
@@ -381,24 +384,20 @@ def main(config_path: str):
             print(f"Error loading validation data: {e}")
             val_pts_batch = None
 
-    # --- 7. Initialize Aim ---
-    aim_repo = None
-    aim_run = None
-    try:
-        aim_repo_path = "aim_repo"
-        os.makedirs(aim_repo_path, exist_ok=True)
-        aim_repo = Repo(path=aim_repo_path, init=True)
-        aim_run = Run(repo=aim_repo, experiment=trial_name)
-        
-        artifact_storage_path = os.path.join(aim_repo_path, "aim_artifacts")
-        os.makedirs(artifact_storage_path, exist_ok=True)
-        abs_artifact_path = os.path.abspath(artifact_storage_path)
-        aim_run.set_artifacts_uri(f"file://{abs_artifact_path}")
-        
-        aim_run["hparams"] = cfg_dict
-        aim_run['flags'] = {"scenario_type": "experiment_8_importance_sampling"}
-    except Exception as e:
-        print(f"Warning: Aim tracking failed to initialize: {e}")
+    # --- 7. Initialize Aim & Console Logger ---
+    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
+    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
+    aim_tracker.log_flags({"scenario_type": "experiment_8_importance_sampling"})
+    if aim_enabled:
+        try:
+            aim_tracker.log_artifact(config_path, 'run_config.yaml')
+            aim_tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
+        except Exception:
+            pass
+
+    cfg_dict['scenario'] = cfg_dict.get('scenario', 'experiment_8')
+    console = ConsoleLogger(cfg_dict)
+    console.print_header()
 
     # --- 8. Data Generation Setup ---
     sampling_cfg = cfg["sampling"]
@@ -544,6 +543,11 @@ def main(config_path: str):
     best_params_loss = None 
 
     start_time = time.time()
+    ckpt_mgr = CheckpointManager(model_dir, model=model)
+    val_metrics = {}
+    neg_depth = {}
+    avg_losses_unweighted = {}
+    avg_total_weighted_loss = 0.0
     global_step = 0
 
     try:
@@ -633,7 +637,7 @@ def main(config_path: str):
             combined_nse_val = -float('inf')
             nse_h_val, nse_hu_val, nse_hv_val = -float('inf'), -float('inf'), -float('inf')
             rmse_val = float('inf')
-            
+
             current_lr = cfg["training"]["learning_rate"]
             try:
                 if hasattr(opt_state[-1], 'scale'):
@@ -655,6 +659,11 @@ def main(config_path: str):
                 except Exception as e:
                     print(f"Validation Error: {e}")
 
+            val_metrics = {
+                'nse_h': float(nse_h_val), 'nse_hu': float(nse_hu_val), 'nse_hv': float(nse_hv_val),
+                'rmse_h': float(rmse_val), 'combined_nse': float(combined_nse_val)
+            }
+
             # --- Update Best Model ---
             if combined_nse_val > best_nse_stats['combined_nse']:
                 best_nse_stats.update({
@@ -668,32 +677,52 @@ def main(config_path: str):
                 best_params_nse = copy.deepcopy(params)
                 if combined_nse_val > -jnp.inf:
                     print(f"    ---> New Best Combined NSE: {combined_nse_val:.4f}")
-            
+
             if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
                 best_loss_stats['total_weighted_loss'] = avg_total_weighted_loss
                 best_loss_stats['epoch'] = epoch
                 best_params_loss = copy.deepcopy(params)
 
-            # --- Reporting ---
+            # Negative depth diagnostics and checkpoint tracking
             freq = cfg.get("reporting", {}).get("epoch_freq", 100)
             epoch_time = time.time() - epoch_start_time
+
+            neg_depth = {'count': 0, 'fraction': 0.0, 'min': 0.0, 'mean': 0.0}
             if (epoch + 1) % freq == 0:
-                print_epoch_stats(
-                    epoch, global_step, start_time, avg_total_weighted_loss,
-                    avg_losses_unweighted,
-                    combined_nse_val, rmse_val, epoch_time
+                try:
+                    neg_depth = compute_negative_depth_diagnostics(model, params, scan_inputs['pde'][0])
+                except Exception:
+                    pass
+
+            saved_events = ckpt_mgr.update(
+                epoch, params, opt_state, val_metrics,
+                avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth
+            )
+            for event in saved_events:
+                event_type, value, ep, prev_value, prev_epoch = event
+                if event_type == 'best_nse':
+                    console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
+                    aim_tracker.log_best_nse(value, ep)
+                elif event_type == 'best_loss':
+                    console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
+                    aim_tracker.log_best_loss(value, ep)
+
+            # --- Reporting ---
+            if (epoch + 1) % freq == 0:
+                console.print_epoch(
+                    epoch, cfg["training"]["epochs"],
+                    avg_losses_unweighted, avg_total_weighted_loss,
+                    current_lr, 0.0,
+                    val_metrics, neg_depth.get('fraction', 0.0), epoch_time
                 )
 
-            if aim_run:
-                epoch_metrics_to_log = {
-                    'elapsed_time': time.time() - start_time,
-                    'validation_metrics': {'nse': combined_nse_val, 'combined_nse': combined_nse_val, 'rmse': rmse_val},
-                    'epoch_avg_losses': avg_losses_unweighted,
-                    'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
-                    'system_metrics': {'epoch_time': epoch_time},
-                    'training_metrics': {'learning_rate': float(current_lr)}
-                }
-                log_metrics(aim_run, step=global_step, epoch=epoch, metrics=epoch_metrics_to_log)
+            aim_tracker.log_epoch(
+                epoch=epoch, step=global_step,
+                losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
+                val_metrics=val_metrics, lr=current_lr, grad_norm=0.0,
+                epoch_time=epoch_time, elapsed_time=time.time() - start_time,
+                neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
+            )
 
             # --- Early Stopping ---
             min_epochs = cfg.get("device", {}).get("early_stop_min_epochs", float('inf'))
@@ -712,28 +741,48 @@ def main(config_path: str):
     # --- 11. Post-Training ---
     finally:
         total_time = time.time() - start_time
-        print("\n" + "="*50)
-        print("                 FINAL SUMMARY")
-        print("="*50)
-        print(f"Total Time: {total_time:.2f}s")
-        print(f"Best NSE: {best_nse_stats['combined_nse']:.6f} at epoch {best_nse_stats['epoch']+1}")
-        
+
+        ckpt_mgr.save_final(epoch if 'epoch' in locals() else 0, params, opt_state, val_metrics, avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth)
+
+        best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
+        best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
+
+        console.print_completion_summary(
+            total_time=total_time,
+            final_epoch=epoch if 'epoch' in locals() else 0,
+            best_nse_stats=best_nse_ckpt,
+            best_loss_stats=best_loss_ckpt,
+            final_losses=avg_losses_unweighted,
+            final_val_metrics=val_metrics,
+            neg_depth_final=neg_depth,
+            neg_depth_best_nse={},
+            neg_depth_best_loss={},
+            final_lr=current_lr if 'current_lr' in locals() else cfg["training"]["learning_rate"],
+        )
+
         final_params = best_params_loss if best_params_loss is not None else best_params_nse
 
-        if aim_run:
-            aim_run['summary'] = sanitize_for_aim({
-                'best_validation_model': best_nse_stats,
-                'final_system': {'total_training_time_seconds': total_time, 'total_epochs_run': (epoch + 1)}
-            })
+        aim_tracker.log_summary({
+            'best_validation_model': best_nse_stats,
+            'best_loss_model': best_loss_stats,
+            'final_system': {
+                'total_training_time_seconds': total_time,
+                'total_epochs_run': (epoch + 1) if 'epoch' in locals() else 0,
+                'total_steps_run': global_step
+            }
+        })
 
         if ask_for_confirmation():
             if final_params is not None:
-                save_model(final_params, model_dir, trial_name)
-                
+                saved_model_path = save_model(final_params, model_dir, trial_name)
+
+                if aim_tracker.enabled and saved_model_path:
+                    aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
+
                 print("Generating plots...")
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
                 output_points = []
-                
+
                 output_csv_path = os.path.join(base_data_path, "Test6output.csv")
                 if os.path.exists(output_csv_path):
                      try:
@@ -743,7 +792,7 @@ def main(config_path: str):
                             for idx, row in df_out.iterrows():
                                 output_points.append((row['X'], row['Y'], f"Point_{idx+1}"))
                      except: pass
-                
+
                 if not output_points:
                     cx, cy = (x_max+x_min)/2, (y_max+y_min)/2
                     output_points = [(cx, cy, "Center_Point")]
@@ -752,7 +801,7 @@ def main(config_path: str):
                     pts = jnp.stack([jnp.full_like(t_plot, px), jnp.full_like(t_plot, py), t_plot], axis=-1)
                     U = model.apply(final_params, pts, train=False)
                     h_pred = U[..., 0]
-                    
+
                     plt.figure(figsize=(10, 6))
                     if loaded_val_data is not None:
                         dists = jnp.sqrt((loaded_val_data[:, 1] - px)**2 + (loaded_val_data[:, 2] - py)**2)
@@ -769,11 +818,11 @@ def main(config_path: str):
                     path = os.path.join(results_dir, f"{pname}_timeseries.png")
                     plt.savefig(path)
                     plt.close()
-                    if aim_run: aim_run.track(Image(path), name=f"{pname}_timeseries.png")
-                
+                    aim_tracker.log_image(path, f"{pname}_timeseries.png", epoch if 'epoch' in locals() else 0)
+
                 print(f"Plots saved to {results_dir}")
 
-        if aim_run: aim_run.close()
+        aim_tracker.close()
 
     return best_nse_stats['combined_nse']
 
