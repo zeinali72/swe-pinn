@@ -1,3 +1,9 @@
+"""Experiment 5 — Synthetic complexity stage 1 (Phase 2).
+
+Validates robustness on increasingly complex synthetic domains.
+Requires: configs/experiment_5.yaml, data/experiment_5/
+Builds on: Experiment 4.
+"""
 import os
 import sys
 import time

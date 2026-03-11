@@ -1,6 +1,8 @@
-"""
-Training script for the "building" scenario for the
-Shallow Water Equation (SWE) PINN model.
+"""Experiment 2 — Dam-break with building obstacle (Phase 1).
+
+Introduces a building obstacle; motivates Fourier-MLP and DGM adoption.
+Requires: configs/experiment_2_*.yaml, data/experiment_2/
+Builds on: Experiment 1.
 
 This script handles training for scenarios with building
 structures. It supports static loss weighting and provides
