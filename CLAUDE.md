@@ -12,7 +12,7 @@ SWE-PINN implements **Physics-Informed Neural Networks (PINNs)** for solving **2
 swe-pinn/
 ├── src/                        # Core source code
 │   ├── train.py                # Unified training script (main entry point)
-│   ├── models.py               # Neural network architectures (FourierPINN, MLP, DGMNetwork, DeepONet)
+│   ├── models.py               # Neural network architectures (FourierPINN, MLP, DGMNetwork)
 │   ├── losses.py               # PDE, IC, BC loss functions for SWE
 │   ├── physics.py              # SWE physics computations and Jacobians
 │   ├── gradnorm.py             # GradNorm adaptive loss weighting
@@ -24,19 +24,14 @@ swe-pinn/
 │   ├── scenarios/              # Scenario-specific training scripts
 │   │   ├── analytical/         # Pure analytical scenarios (no buildings)
 │   │   │   ├── analytical.py   # Standard analytical training
-│   │   │   ├── analytical_ntk.py   # NTK-based weight adaptation
-│   │   │   └── train_deeponet.py   # DeepONet operator learning
+│   │   │   └── analytical_ntk.py   # NTK-based weight adaptation
 │   │   └── building/           # Scenarios with building obstacles
 │   │       └── building.py     # Training with spatial masking
-│   └── operator_learning/      # DeepONet operator learning modules
-│       ├── physics_op.py       # SWE physics for parameter-varying solutions
-│       └── losses_op.py        # DeepONet-specific loss functions
 ├── configs/                    # Experiment configuration YAML files
 │   ├── fourier_pinn_config.yaml
 │   ├── dgm_datafree_static.yaml
 │   ├── dgm_datafree_gradnorm.yaml
-│   ├── analytical_ntk_config.yaml
-│   └── config_operatornet_analytical.yaml
+│   └── analytical_ntk_config.yaml
 ├── test/                       # Unit tests
 │   ├── test_train.py           # Main training script validation
 │   ├── test_train_gradnorm.py  # GradNorm mode tests (6 test cases)
@@ -133,7 +128,7 @@ All hyperparameters are specified in YAML config files. The config structure inc
 | Section | Key Parameters |
 |---------|---------------|
 | `training` | `learning_rate`, `epochs`, `batch_size`, `seed` |
-| `model` | `name` (FourierPINN/MLP/DGMNetwork/DeepONet), `width`, `depth`, `output_dim` |
+| `model` | `name` (FourierPINN/MLP/DGMNetwork), `width`, `depth`, `output_dim` |
 | `domain` | `lx`, `ly`, `t_final` (spatial/temporal bounds) |
 | `grid` | `nx`, `ny`, `nt` (sampling grid points) |
 | `physics` | `u_const`, `n_manning`, `g`, `inflow` |
@@ -148,7 +143,6 @@ The model class is dynamically imported based on the `model.name` field in the c
 1. **FourierPINN** - Fourier feature encoding + dense layers with tanh activation
 2. **MLP** - Standard multi-layer perceptron
 3. **DGMNetwork** - Deep Galerkin Method with LSTM-like gates
-4. **DeepONet** - Operator learning (branch + trunk networks)
 
 ### Loss Weighting Strategies
 
