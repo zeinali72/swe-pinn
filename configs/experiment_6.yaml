@@ -1,22 +1,24 @@
-scenario: experiment_6
+scenario: benchmark_test_4
 domain:
-  t_final: 21600.0         # 6 hours
+  lx: 1000.0
+  ly: 2000.0
+  t_final: 18000.0         # 5 hours
 physics:
-  g: 1.0
+  g: 9.81
   inflow: null
-  n_manning: 0.03
+  n_manning: 0.05
   u_const: 0.0
 device:
   dtype: float32
   early_stop_min_epochs: 1000
   early_stop_patience: 3000
 numerics:
-  eps: 1.0e-03
+  eps: 1.0e-06
 training:
   epochs: 2000
   seed: 42
   learning_rate: 0.0006984150930531603
-  batch_size: 1024
+  batch_size: 256
   reduce_on_plateau:
     factor: 0.5
     patience: 5
@@ -29,34 +31,28 @@ model:
   name: DGMNetwork
   output_dim: 3
   bias_init: 0.0
-  width: 256
+  width: 512
   depth: 5
-  
+  ff_dims: 256
+  fourier_scale: 6.138224643110013
 # --- CRITICAL FIX: Increased Sample Counts ---
 sampling:
-  n_points_pde: 500000    # Increased to cover 48h simulation
-  n_points_ic: 40000      # Sufficient for 2000x2000m area
-  n_points_bc_domain: 500000 # Sufficient for time-varying BCs
-  n_points_bc_inflow: 20000
-  n_points_bc_building: 100000
-  importance_sampling:
-    enabled: true
-    pool_size: 2000000           # Size of the candidate pool (CPU memory intensive)
-    resample_freq: 1             # Update pool every N epochs
-    eval_batch_size: 10000       # Batch size for evaluating residuals (VRAM intensive)
-    p_error_weight: 0.8
+  n_points_pde: 80000    # Increased to cover 48h simulation
+  n_points_ic: 4000      # Sufficient for 2000x2000m area
+  n_points_bc_domain: 30000 # Sufficient for time-varying BCs
+  n_points_bc_inflow: 1000
 loss_weights:
-  pde_weight: 10.0
-  ic_weight: 4.21261832e-04
-  bc_weight: 0.5
-  neg_h_weight: 1.50177776e-04
-  data_weight: 10.0
+  pde_weight: 1.0
+  ic_weight: 0.02411
+  bc_weight: 10.0
+  neg_h_weight: 0.000002411
+  data_weight: 0.8
 gradnorm:
   enable: false
 data_free: false
 
 reporting:
-  epoch_freq: 2
+  epoch_freq: 20
 # --- REQUIRED: Needed for folder naming ---
-CONFIG_PATH: configs/train/experiment_6_dgm_final.yaml
+CONFIG_PATH: configs/train/test4_dgm_final.yaml
 
