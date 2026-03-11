@@ -15,7 +15,10 @@ import jax
 import jax.numpy as jnp
 from jax import random, lax
 import optax
-from aim import Repo, Run, Image
+try:
+    from aim import Image
+except ImportError:
+    Image = None
 from flax.core import FrozenDict
 import numpy as np 
 import matplotlib.pyplot as plt 
@@ -47,9 +50,9 @@ from src.utils import (
    nse, rmse, generate_trial_name, save_model, ask_for_confirmation
 )
 
-from src.reporting import (
-    print_epoch_stats, log_metrics, print_final_summary, sanitize_for_aim
-)
+from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
+from src.metrics.accuracy import compute_validation_metrics
+from src.checkpointing import CheckpointManager
 
 def train_step(
         model: Any, 
@@ -262,50 +265,28 @@ def main(config_path: str):
     else:
         print(f"Warning: Validation data not found at {validation_data_file}.")
 
-    # --- 6. Initialize Aim & Log Source Code ---
-    aim_repo = None
-    aim_run = None
-    run_hash = None
-    try:
-        aim_repo_path = "aim_repo"
-        if not os.path.exists(aim_repo_path):
-             os.makedirs(aim_repo_path, exist_ok=True)
-        aim_repo = Repo(path=aim_repo_path, init=True)
-        aim_run = Run(repo=aim_repo, experiment=trial_name)
-        run_hash = aim_run.hash
-
-        artifact_storage_path = os.path.join(aim_repo_path, "aim_artifacts")
-        os.makedirs(artifact_storage_path, exist_ok=True)
-        abs_artifact_path = os.path.abspath(artifact_storage_path)
-        aim_run.set_artifacts_uri(f"file://{abs_artifact_path}")
-        print(f"Set Aim artifact storage to: {abs_artifact_path}")
-        
-        # Log basics
-        hparams_to_log = copy.deepcopy(cfg_dict)
-        aim_run["hparams"] = hparams_to_log
-        aim_run['flags'] = {"scenario_type": "experiment_6"}
-
-        # --- Log Config and Script as Artifacts ---
+    # --- 6. Initialize Aim & Console Logger ---
+    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
+    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
+    aim_tracker.log_flags({"scenario_type": "experiment_6"})
+    if aim_enabled:
         try:
-            aim_run.log_artifact(config_path, name='run_config.yaml')
-            current_script_path = os.path.abspath(__file__)
-            aim_run.log_artifact(current_script_path, name='source_script.py')
-            print("Logged config and source script to Aim.")
-        except Exception as e_art: 
-            print(f"Warning: Failed to log initial artifacts: {e_art}")
-            
-        print(f"Aim tracking initialized: {trial_name} ({run_hash})")
-    except Exception as e:
-        print(f"Warning: Aim tracking failed to initialize: {e}")
+            aim_tracker.log_artifact(config_path, 'run_config.yaml')
+            aim_tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
+        except Exception:
+            pass
 
     # --- 7. Summary ---
-    print(f"\n--- Training Started: {trial_name} ---")
-    print(f"Model: {cfg['model']['name']}, Epochs: {cfg['training']['epochs']}")
-    print(f"Data Loss Active: {has_data_loss} (Final Data-Free: {data_free})")
-    print(f"Active Loss Terms: {active_loss_term_keys}")
-    print(f"Initial Weights: {current_weights_dict}")
+    cfg_dict['scenario'] = cfg_dict.get('scenario', 'experiment_6')
+    console = ConsoleLogger(cfg_dict)
+    console.print_header()
 
     start_time = time.time()
+    ckpt_mgr = CheckpointManager(model_dir, model=model)
+    val_metrics = {}
+    neg_depth = {}
+    avg_losses_unweighted = {}
+    avg_total_weighted_loss = 0.0
     global_step = 0
 
     # --- 8. Data Generation Setup ---
@@ -494,6 +475,8 @@ def main(config_path: str):
                     rmse_val = rmse(h_true_val_all, U_val[..., 0])
                 except: pass
 
+            val_metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+
             # --- Update Best Model Statistics ---
             if nse_val > best_nse_stats['nse']:
                 best_nse_stats.update({
@@ -503,9 +486,7 @@ def main(config_path: str):
                     'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
                 })
                 best_params_nse = copy.deepcopy(params)
-                if nse_val > -jnp.inf:
-                    print(f"    ---> New best NSE: {best_nse_stats['nse']:.6f} at epoch {epoch+1}")
-            
+
             if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
                 best_loss_stats.update({
                     'total_weighted_loss': avg_total_weighted_loss, 'epoch': epoch, 'global_step': global_step,
@@ -513,30 +494,48 @@ def main(config_path: str):
                     'nse': nse_val, 'rmse': rmse_val,
                     'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
                 })
-                best_params_loss = copy.deepcopy(params) # Update best params for loss
+                best_params_loss = copy.deepcopy(params)
 
-            # Reporting
+            # Negative depth diagnostics and checkpoint tracking
             freq = cfg.get("reporting", {}).get("epoch_freq", 100)
             epoch_time = time.time() - epoch_start_time
-            if (epoch + 1) % freq == 0:
-                print_epoch_stats(
-                    epoch, global_step, start_time, avg_total_weighted_loss,
-                    avg_losses_unweighted,
-                    nse_val, rmse_val, epoch_time
-                )
-                # MOVED: Printing LR status here
-                print(f"    LR Status: LR={current_lr:.2e}, Base={base_lr_val:.2e}, Scale={current_scale:.2e}")
 
-            if aim_run:
-                epoch_metrics_to_log = {
-                    'elapsed_time': time.time() - start_time,
-                    'validation_metrics': {'nse': nse_val, 'rmse': rmse_val},
-                    'epoch_avg_losses': avg_losses_unweighted,
-                    'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
-                    'system_metrics': {'epoch_time': epoch_time},
-                    'training_metrics': {'learning_rate': float(current_lr)}
-                }
-                log_metrics(aim_run, step=global_step, epoch=epoch, metrics=epoch_metrics_to_log)
+            neg_depth = {'count': 0, 'fraction': 0.0, 'min': 0.0, 'mean': 0.0}
+            if (epoch + 1) % freq == 0:
+                try:
+                    neg_depth = compute_negative_depth_diagnostics(model, params, scan_inputs['pde'][0])
+                except Exception:
+                    pass
+
+            saved_events = ckpt_mgr.update(
+                epoch, params, opt_state, val_metrics,
+                avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth
+            )
+            for event in saved_events:
+                event_type, value, ep, prev_value, prev_epoch = event
+                if event_type == 'best_nse':
+                    console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
+                    aim_tracker.log_best_nse(value, ep)
+                elif event_type == 'best_loss':
+                    console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
+                    aim_tracker.log_best_loss(value, ep)
+
+            # Reporting
+            if (epoch + 1) % freq == 0:
+                console.print_epoch(
+                    epoch, cfg["training"]["epochs"],
+                    avg_losses_unweighted, avg_total_weighted_loss,
+                    current_lr, 0.0,
+                    val_metrics, neg_depth.get('fraction', 0.0), epoch_time
+                )
+
+            aim_tracker.log_epoch(
+                epoch=epoch, step=global_step,
+                losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
+                val_metrics=val_metrics, lr=current_lr, grad_norm=0.0,
+                epoch_time=epoch_time, elapsed_time=time.time() - start_time,
+                neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
+            )
 
             # --- Early Stopping Check ---
             min_epochs = cfg.get("device", {}).get("early_stop_min_epochs", float('inf'))
@@ -557,72 +556,68 @@ def main(config_path: str):
     # --- 10. Post-Training (Save & Plot) ---
     finally:
         total_time = time.time() - start_time
-        print_final_summary(total_time, best_nse_stats, best_loss_stats)
+
+        ckpt_mgr.save_final(epoch if 'epoch' in locals() else 0, params, opt_state, val_metrics, avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth)
+
+        best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
+        best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
+
+        console.print_completion_summary(
+            total_time=total_time,
+            final_epoch=epoch if 'epoch' in locals() else 0,
+            best_nse_stats=best_nse_ckpt,
+            best_loss_stats=best_loss_ckpt,
+            final_losses=avg_losses_unweighted,
+            final_val_metrics=val_metrics,
+            neg_depth_final=neg_depth,
+            neg_depth_best_nse={},
+            neg_depth_best_loss={},
+            final_lr=current_lr if 'current_lr' in locals() else cfg["training"]["learning_rate"],
+        )
 
         # Decide which params to save (User preference: Best Loss Model)
         final_params = best_params_loss if best_params_loss is not None else best_params_nse
 
-        if aim_run:
-            try:
-                summary_best_nse = best_nse_stats.copy()
-                summary_best_nse['epoch'] = best_nse_stats.get('epoch', 0) + 1
-                summary_best_loss = best_loss_stats.copy()
-                summary_best_loss['epoch'] = best_loss_stats.get('epoch', 0) + 1
-                
-                summary_metrics = {
-                    'best_validation_model': summary_best_nse,
-                    'best_loss_model': summary_best_loss,
-                    'final_system': {
-                        'total_training_time_seconds': total_time,
-                        'total_epochs_run': (epoch + 1) if 'epoch' in locals() else 0,
-                        'total_steps_run': global_step
-                    }
-                }
-                aim_run['summary'] = sanitize_for_aim(summary_metrics)
-                print("Summary metrics logged to Aim.")
-            except Exception as e:
-                 print(f"Warning: Error logging summary metrics to Aim: {e}")   
+        aim_tracker.log_summary({
+            'best_validation_model': best_nse_stats,
+            'best_loss_model': best_loss_stats,
+            'final_system': {
+                'total_training_time_seconds': total_time,
+                'total_epochs_run': (epoch + 1) if 'epoch' in locals() else 0,
+                'total_steps_run': global_step
+            }
+        })
 
         if ask_for_confirmation():
             if final_params is not None:
                 saved_model_path = save_model(final_params, model_dir, trial_name)
 
-                # --- NEW: Log Model as Artifact to Aim ---
-                if aim_run and saved_model_path:
-                    try:
-                        aim_run.log_artifact(saved_model_path, name='model_weights.pkl')
-                        print(f"Logged model artifact to Aim.")
-                    except Exception as e_mod:
-                        print(f"Warning: Failed to log model artifact: {e_mod}")
+                # --- Log Model as Artifact to Aim ---
+                if aim_tracker.enabled and saved_model_path:
+                    aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
 
                 # --- Plotting Specific to Experiment 6 ---
 
                 print("Generating Experiment 6 plots...")
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
-                
+
                 # Try to load output points from CSV
                 output_csv_path = os.path.join(base_data_path, "Test4output.csv")
                 output_points = []
                 if os.path.exists(output_csv_path):
                     try:
                         df_out = pd.read_csv(output_csv_path)
-                        # Assuming columns like X, Y, or similar. Adjust based on actual CSV format.
-                        # If no header, assume first two cols are X, Y
                         if 'X' in df_out.columns and 'Y' in df_out.columns:
                             for idx, row in df_out.iterrows():
                                 output_points.append((row['X'], row['Y'], f"Point_{idx+1}"))
                         else:
-                            # Fallback: Read as raw numpy
                             arr_out = df_out.values
                             for i in range(arr_out.shape[0]):
                                 output_points.append((arr_out[i, 0], arr_out[i, 1], f"Point_{i+1}"))
                         print(f"Loaded {len(output_points)} output points from CSV.")
                     except Exception as e:
                         print(f"Warning: Could not read Test2output.csv: {e}")
-                
-                # If no points found (or file missing), define the center points of depressions roughly?
-                # The depressions are in a 4x4 matrix in 2000x2000. 
-                # Centers approx: 250, 750, 1250, 1750 in both directions.
+
                 if not output_points:
                     print("Using default representative points (Depression centers).")
                     output_points = [
@@ -635,19 +630,15 @@ def main(config_path: str):
                     pts = jnp.stack([jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot], axis=-1)
                     U = model.apply(final_params, pts, train=False)
                     h_pred = U[..., 0]
-                    
+
                     plt.figure(figsize=(10, 6))
 
-                    # Plot Baseline if available
                     if full_val_data is not None:
-                        # Convert to numpy for flexible boolean indexing
                         val_np = np.array(full_val_data)
-                        # Filter for current gauge coordinates
                         mask = np.isclose(val_np[:, 1], x) & np.isclose(val_np[:, 2], y)
                         gauge_data = val_np[mask]
-                        
+
                         if gauge_data.shape[0] > 0:
-                            # Sort by time
                             gauge_data = gauge_data[gauge_data[:, 0].argsort()]
                             plt.plot(gauge_data[:, 0], gauge_data[:, 3], 'k--', linewidth=1.5, alpha=0.7, label=f'Baseline {name}')
 
@@ -660,12 +651,11 @@ def main(config_path: str):
                     path = os.path.join(results_dir, filename)
                     plt.savefig(path)
                     plt.close()
-                    if aim_run:
-                        aim_run.track(Image(path), name=filename)
+                    aim_tracker.log_image(path, filename, epoch if 'epoch' in locals() else 0)
 
                 for px, py, pname in output_points:
                      plot_gauge(px, py, pname, f"{pname}_timeseries.png")
-                     
+
                 print(f"Plots saved to {results_dir}")
             else:
                 print("No model parameters found to save.")
@@ -673,10 +663,8 @@ def main(config_path: str):
         else:
             print("Save aborted by user. Deleting artifacts...")
             try:
-                if aim_run and run_hash and aim_repo:
-                    aim_repo.delete_run(run_hash)
-                    print("Aim run deleted.")
-                
+                aim_tracker.delete_run()
+
                 if os.path.exists(results_dir):
                     shutil.rmtree(results_dir)
                     print(f"Deleted results directory: {results_dir}")
@@ -684,22 +672,11 @@ def main(config_path: str):
                     shutil.rmtree(model_dir)
                     print(f"Deleted model directory: {model_dir}")
 
-                if run_hash:
-                    run_artifact_dir = os.path.join("aim_repo", "aim_artifacts", run_hash)
-                    if os.path.exists(run_artifact_dir):
-                        shutil.rmtree(run_artifact_dir)
-                        print(f"Deleted run artifact directory: {run_artifact_dir}")
-
                 print("Cleanup complete.")
             except Exception as e:
                 print(f"Error during cleanup: {e}")
 
-        if aim_run:
-            try:
-                aim_run.close()
-                print("Aim run closed.")
-            except Exception as e:
-                 print(f"Warning: Error closing Aim run: {e}")
+        aim_tracker.close()
 
     return best_nse_stats['nse']
 

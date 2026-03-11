@@ -18,18 +18,9 @@ import threading
 
 from src.physics import h_exact
 
-def nse(pred: jnp.ndarray, true: jnp.ndarray) -> float:
-    """Compute Nash-Sutcliffe Efficiency (NSE) metric."""
-    num = jnp.sum((true - pred)**2)
-    den = jnp.sum((true - jnp.mean(true))**2)
-    # Handle potential division by zero or near-zero variance
-    if den < 1e-9:
-        return -jnp.inf
-    return 1 - num / den
-
-def rmse(pred: jnp.ndarray, true: jnp.ndarray) -> float:
-    """Compute Root Mean Square Error (RMSE)."""
-    return jnp.sqrt(jnp.mean((pred - true)**2))
+# Re-export metrics from the shared metrics module for backward compatibility.
+# New code should import directly from src.metrics.accuracy.
+from src.metrics.accuracy import nse, rmse, mae, relative_l2
 
 def generate_trial_name(config_filename):
     """Generate a unique trial name using the current date and config filename."""
