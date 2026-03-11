@@ -1,3 +1,10 @@
+"""Experiment 8 — Real urban domain, Eastbourne UK (Phase 3).
+
+Applies the framework to a real urban subcatchment (Blue Heart Project).
+Buildings excluded from mesh by construction, treated as wall boundaries.
+Requires: configs/experiment_8.yaml, data/experiment_8/
+Builds on: Experiment 7.
+"""
 import os
 import sys
 import time

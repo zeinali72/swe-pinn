@@ -1,3 +1,10 @@
+"""Experiment 7 — Irregular boundaries with mesh-based sampling (Phase 3).
+
+Tackles non-rectangular domains using triangulated mesh sampling,
+automated boundary detection, and computed wall normals for slip BCs.
+Requires: configs/experiment_7.yaml, data/experiment_7/
+Builds on: Experiment 5.
+"""
 import os
 import sys
 import time
