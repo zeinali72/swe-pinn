@@ -5,36 +5,55 @@
 
   "build": {
     "context": ".",
-    "dockerfile": "Dockerfile",
-    "args": { "NO_CACHE": "1" }
+    "dockerfile": "Dockerfile"
   },
 
-  "envFile": [ "devcontainer.env" ],
+  "envFile": ["devcontainer.env"],
+
+  "features": {
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+  },
 
   "containerEnv": {
-    "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:${containerEnv:LD_LIBRARY_PATH}"
+    "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:${containerEnv:LD_LIBRARY_PATH}",
+    "CLAUDE_CONFIG_DIR": "/root/.claude",
+    "NODE_OPTIONS": "--max-old-space-size=4096"
   },
 
-  "runArgs": [ "--gpus=all", "--restart", "unless-stopped" ],
+  "runArgs": [
+    "--gpus=all",
+    "--restart", "unless-stopped",
+    "--shm-size=2gb"
+  ],
 
   "mounts": [
     {
-      "source": "/home/farzan/.gitconfig",
-      "target": "/root/.gitconfig",
+      "source": "${localEnv:HOME}/.claude",
+      "target": "/root/.claude",
       "type": "bind"
     }
   ],
 
-  "containerUser": "root",
+  "postCreateCommand": "mkdir -p /root/.claude && echo '{\"hasCompletedOnboarding\":true,\"installMethod\":\"native\"}' > /root/.claude/.claude.json && ln -sf /root/.claude/.claude.json /root/.claude.json || true",
+
+  "postAttachCommand": "cp /root/.claude/.credentials.json /root/.claude/.credentials.json.bak 2>/dev/null || true",
+
+  "workspaceFolder": "/workspace",
+
+  "remoteUser": "root",
 
   "customizations": {
     "vscode": {
       "extensions": [
+        "anthropic.claude-code",
         "ms-python.python",
         "ms-python.vscode-pylance",
         "ms-toolsai.jupyter",
         "ms-toolsai.jupyter-renderers"
-      ]
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
     }
   }
 }
