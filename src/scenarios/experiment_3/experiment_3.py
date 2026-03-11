@@ -53,7 +53,7 @@ from src.utils import (
 )
 
 from src.reporting import (
-    print_epoch_stats, log_metrics, print_final_summary
+    print_epoch_stats, log_metrics, print_final_summary, sanitize_for_aim
 )
 
 
@@ -154,14 +154,14 @@ train_step_jitted = jax.jit(train_step, static_argnames=['model', 'optimiser', '
 
 def main(config_path: str):
     """
-    Main training loop for Benchmark Test 1 scenario.
+    Main training loop for Experiment 3 scenario.
     """
     
     #--- 1. LOAD CONFIGURATION ---
     cfg_dict = load_config(config_path)
     cfg = FrozenDict(cfg_dict)
 
-    print("Info: Running Benchmark Test 1 Scenario model training...")
+    print("Info: Running Experiment 3 Scenario model training...")
 
     try:
         models_module = importlib.import_module("src.models")
@@ -526,12 +526,7 @@ def main(config_path: str):
             if (epoch + 1) % freq == 0:
                 print_epoch_stats(
                     epoch, global_step, start_time, avg_total_weighted_loss,
-                    avg_losses_unweighted.get('pde', 0.0), 
-                    avg_losses_unweighted.get('ic', 0.0), 
-                    avg_losses_unweighted.get('bc', 0.0),
-                    0.0, # Placeholder for unused loss term to satisfy signature
-                    avg_losses_unweighted.get('data', 0.0),
-                    avg_losses_unweighted.get('neg_h', 0.0),
+                    avg_losses_unweighted,
                     nse_val, rmse_val, epoch_time
                 )
                 # MOVED: Printing LR status here
@@ -540,6 +535,7 @@ def main(config_path: str):
             # --- Log to Aim ---
             if aim_run:
                 epoch_metrics_to_log = {
+                    'elapsed_time': time.time() - start_time,
                     'validation_metrics': {'nse': nse_val, 'rmse': rmse_val},
                     'epoch_avg_losses': avg_losses_unweighted,
                     'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
@@ -588,7 +584,7 @@ def main(config_path: str):
                         'total_steps_run': global_step
                     }
                 }
-                aim_run['summary'] = summary_metrics
+                aim_run['summary'] = sanitize_for_aim(summary_metrics)
                 print("Summary metrics logged to Aim.")
             except Exception as e:
                  print(f"Warning: Error logging summary metrics to Aim: {e}")        
@@ -606,8 +602,8 @@ def main(config_path: str):
                     except Exception as e_mod:
                         print(f"Warning: Failed to log model artifact: {e_mod}")
                 
-                # --- Plotting Specific to Test 1 ---
-                print("Generating Test 1 plots...")
+                # --- Plotting Specific to Experiment 3 ---
+                print("Generating Experiment 3 plots...")
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
                 
                 def plot_gauge(x, y, name, color, filename):
@@ -653,7 +649,7 @@ def main(config_path: str):
     return best_nse_stats['nse']
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Test 1).")
+    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Experiment 3).")
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
 

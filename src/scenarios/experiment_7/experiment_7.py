@@ -52,7 +52,7 @@ from src.utils import (
 )
 
 from src.reporting import (
-    print_epoch_stats, log_metrics, print_final_summary
+    print_epoch_stats, log_metrics, print_final_summary, sanitize_for_aim
 )
 
 def train_step(
@@ -124,12 +124,12 @@ train_step_jitted = jax.jit(train_step, static_argnames=['model', 'optimiser', '
 
 def main(config_path: str):
     """
-    Main training loop for Benchmark Test 5 Scenario.
+    Main training loop for Experiment 7.
     """
     #--- 1. LOAD CONFIGURATION (MUTABLE) ---
     cfg_dict = load_config(config_path)
     
-    print("Info: Running Benchmark Test 5 Scenario model training...")
+    print("Info: Running Experiment 7 model training...")
 
     # --- 2. SETUP DATA & COMPUTE DOMAIN EXTENT ---
     scenario_name = cfg_dict.get('scenario')
@@ -513,22 +513,17 @@ def main(config_path: str):
             if (epoch + 1) % freq == 0:
                 print_epoch_stats(
                     epoch, global_step, start_time, avg_total_weighted_loss,
-                    avg_losses_unweighted.get('pde', 0.0), 
-                    avg_losses_unweighted.get('ic', 0.0), 
-                    avg_losses_unweighted.get('bc', 0.0),
-                    0.0, 
-                    avg_losses_unweighted.get('data', 0.0),
-                    avg_losses_unweighted.get('neg_h', 0.0),
+                    avg_losses_unweighted,
                     nse_val, rmse_val, epoch_time
                 )
                 print(f"    LR Status: LR={current_lr:.2e}, Base={base_lr_val:.2e}, Scale={current_scale:.2e}")
 
             if aim_run:
                 epoch_metrics_to_log = {
+                    'elapsed_time': time.time() - start_time,
                     'validation_metrics': {'nse': nse_val, 'rmse': rmse_val},
                     'epoch_avg_losses': avg_losses_unweighted,
                     'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
-                    'optimization': {'total_loss': avg_total_weighted_loss}, 
                     'system_metrics': {'epoch_time': epoch_time},
                     'training_metrics': {'learning_rate': float(current_lr)}
                 }
@@ -573,7 +568,7 @@ def main(config_path: str):
                         'total_steps_run': global_step
                     }
                 }
-                aim_run['summary'] = summary_metrics
+                aim_run['summary'] = sanitize_for_aim(summary_metrics)
                 print("Summary metrics logged to Aim.")
             except Exception as e:
                  print(f"Warning: Error logging summary metrics to Aim: {e}")   
@@ -589,7 +584,7 @@ def main(config_path: str):
                     except Exception as e_mod:
                         print(f"Warning: Failed to log model artifact: {e_mod}")
 
-                print("Generating Test 5 plots...")
+                print("Generating Experiment 7 plots...")
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
                 
                 output_csv_path = os.path.join(base_data_path, "Test5output.csv")
@@ -682,7 +677,7 @@ def main(config_path: str):
     return best_nse_stats['nse']
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Test 5 - Irregular).")
+    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Experiment 7 - Irregular).")
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
 
