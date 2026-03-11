@@ -1,5 +1,5 @@
 # HPO base for FourierPINN, data-free, static weights, WITH building.
-# This is based on your provided 'hpo_fourier_static_datafree_BUILDING.yaml'
+# This is based on your provided 'hpo_fourier_static_datafree_building.yaml'
 # but ensures neg_h_weight is present.
 
 hpo_settings:
