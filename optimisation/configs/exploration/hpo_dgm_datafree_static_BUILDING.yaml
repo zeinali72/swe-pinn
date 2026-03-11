@@ -8,7 +8,7 @@ hpo_settings:
 training:
   seed: 42
 
-scenario: "one_building_DEM_zero"
+scenario: experiment_2
 
 model:
   name: "DGMNetwork"

@@ -1,4 +1,4 @@
-scenario: one_building_DEM_zero
+scenario: experiment_2
 domain:
   lx: 1200.0
   ly: 100.0

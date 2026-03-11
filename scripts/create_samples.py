@@ -239,7 +239,7 @@ if __name__ == "__main__":
         description="Create time-filtered training and validation samples from a large .npy tensor."
     )
     parser.add_argument(
-        "--scenario", type=str, default="one_building_DEM_zero", help="Scenario directory under ./data/"
+        "--scenario", type=str, default="experiment_2", help="Scenario directory under ./data/"
     )
     parser.add_argument(
         "--val_samples", type=int, default=65536, help="Number of validation samples (default: 65536)"

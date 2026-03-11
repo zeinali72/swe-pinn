@@ -6,7 +6,7 @@ training:
   epochs: 20000
   learning_rate: 0.0032659720145241655
   batch_size: 1024
-scenario: one_building_DEM_zero
+scenario: experiment_2
 model:
   name: DGMNetwork
   output_dim: 3

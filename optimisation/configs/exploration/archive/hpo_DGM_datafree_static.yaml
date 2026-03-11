@@ -12,7 +12,7 @@ training: # <<<--- Add seed here
   # opt_epochs is added by run_optimization based on hpo_settings
 
 # --- Fixed Parameters ---
-scenario: "one_building_DEM_zero"
+scenario: experiment_2
 
 model:
   name: "DGMNetwork"
