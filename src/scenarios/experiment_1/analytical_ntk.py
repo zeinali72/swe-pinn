@@ -122,9 +122,9 @@ def main(config_path: str):
                 print(f"Epoch {ep+1}: New best NSE {cur_nse:.4f} | Weights: {w_str}")
 
             if (ep + 1) % 100 == 0:
-                print_epoch_stats(ep, int(g_step), start, float(jnp.mean(b_totals)), avg_uw.get('pde', 0.0), 
-                                  avg_uw.get('ic', 0.0), avg_uw.get('bc', 0.0), 0.0, 0.0, 
-                                  avg_uw.get('neg_h', 0.0), cur_nse, float(rmse(h_pred, h_true)), time.time()-ep_start)
+                print_epoch_stats(ep, int(g_step), start, float(jnp.mean(b_totals)),
+                                  avg_uw,
+                                  cur_nse, float(rmse(h_pred, h_true)), time.time()-ep_start)
     finally:
         print_final_summary(time.time() - start, stats, {})
         if 'best_params_nse' in locals() and ask_for_confirmation():

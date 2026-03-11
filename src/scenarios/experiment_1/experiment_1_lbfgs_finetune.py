@@ -445,12 +445,7 @@ def main(weights_dir: str, config_path: str, out_path: str, max_iter: int, print
 
             print_epoch_stats(
                 it, it, start_time, mean_total,
-                mean_terms.get("pde", 0.0),
-                mean_terms.get("ic", 0.0),
-                mean_terms.get("bc", 0.0),
-                0.0,  # building_bc_loss
-                mean_terms.get("data", 0.0),
-                mean_terms.get("neg_h", 0.0),
+                mean_terms,
                 nse_val, rmse_val, epoch_time
             )
             print(f"    grad_norm: {grad_norm:.3e}")

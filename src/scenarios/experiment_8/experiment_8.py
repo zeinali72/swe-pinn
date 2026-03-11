@@ -54,7 +54,7 @@ from src.utils import (
 )
 
 from src.reporting import (
-    print_epoch_stats, log_metrics, print_final_summary
+    print_epoch_stats, log_metrics, print_final_summary, sanitize_for_aim
 )
 
 def train_step(
@@ -89,7 +89,7 @@ def train_step(
             t_inflow = batch['bc_upstream'][..., 2]
             Q_target = bc_fn_static(t_inflow) # m^3/s
             
-            # Assuming 100m width for Experiment 6 upstream boundary
+            # Assuming 100m width for Experiment 8 upstream boundary
             flux_target_x = Q_target / 372.92  # m^2/s 
             
             loss_inflow_x = loss_boundary_dirichlet_hu(model, params, batch['bc_upstream'], flux_target_x)
@@ -137,15 +137,15 @@ train_step_jitted = jax.jit(train_step, static_argnames=['model', 'optimiser', '
 
 def main(config_path: str):
     """
-    Main training loop for Benchmark Test 6 Scenario (Experiment 6).
+    Main training loop for Experiment 8 Scenario.
     """
     #--- 1. LOAD CONFIGURATION (MUTABLE) ---
     cfg_dict = load_config(config_path)
     
-    print("Info: Running Benchmark Test 6 (Experiment 6) training...")
+    print("Info: Running Experiment 8 training...")
 
     # --- 2. SETUP DATA & COMPUTE DOMAIN EXTENT ---
-    scenario_name = cfg_dict.get('scenario', 'experiment_6')
+    scenario_name = cfg_dict.get('scenario', 'experiment_8')
     base_data_path = os.path.join("data", scenario_name)
 
     # A. Init Irregular Domain Sampler
@@ -334,7 +334,7 @@ def main(config_path: str):
         # Log basics
         hparams_to_log = copy.deepcopy(cfg_dict)
         aim_run["hparams"] = hparams_to_log
-        aim_run['flags'] = {"scenario_type": "experiment_6"}
+        aim_run['flags'] = {"scenario_type": "experiment_8"}
 
         try:
             aim_run.log_artifact(config_path, name='run_config.yaml')
@@ -568,12 +568,7 @@ def main(config_path: str):
             if (epoch + 1) % freq == 0:
                 print_epoch_stats(
                     epoch, global_step, start_time, avg_total_weighted_loss,
-                    avg_losses_unweighted.get('pde', 0.0), 
-                    avg_losses_unweighted.get('ic', 0.0), 
-                    avg_losses_unweighted.get('bc', 0.0),
-                    0.0, 
-                    avg_losses_unweighted.get('data', 0.0),
-                    avg_losses_unweighted.get('neg_h', 0.0),
+                    avg_losses_unweighted,
                     combined_nse_val, rmse_val, epoch_time
                 )
                 if validation_data_loaded:
@@ -583,8 +578,9 @@ def main(config_path: str):
 
             if aim_run:
                 epoch_metrics_to_log = {
+                    'elapsed_time': time.time() - start_time,
                     'validation_metrics': {
-                        'nse': combined_nse_val, # Alias for consistency with dashboard queries
+                        'nse': combined_nse_val,
                         'combined_nse': combined_nse_val,
                         'nse_h': nse_h_val,
                         'nse_hu': nse_hu_val,
@@ -593,7 +589,6 @@ def main(config_path: str):
                     },
                     'epoch_avg_losses': avg_losses_unweighted,
                     'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
-                    'optimization': {'total_loss': avg_total_weighted_loss}, 
                     'system_metrics': {'epoch_time': epoch_time},
                     'training_metrics': {'learning_rate': float(current_lr)}
                 }
@@ -664,7 +659,7 @@ def main(config_path: str):
                         'total_steps_run': global_step
                     }
                 }
-                aim_run['summary'] = summary_metrics
+                aim_run['summary'] = sanitize_for_aim(summary_metrics)
                 print("Summary metrics logged to Aim.")
             except Exception as e:
                  print(f"Warning: Error logging summary metrics to Aim: {e}")   
@@ -680,7 +675,7 @@ def main(config_path: str):
                     except Exception as e_mod:
                         print(f"Warning: Failed to log model artifact: {e_mod}")
 
-                print("Generating Test 6 plots...")
+                print("Generating Experiment 8 plots...")
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
                 
                 output_csv_path = os.path.join(base_data_path, "Test6output.csv")
@@ -786,7 +781,7 @@ def main(config_path: str):
     return best_nse_stats['combined_nse']
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Experiment 6 - Irregular).")
+    parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Experiment 8 - Irregular).")
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
 

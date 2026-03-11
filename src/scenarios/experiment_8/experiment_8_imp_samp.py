@@ -59,7 +59,7 @@ from src.utils import (
 )
 
 from src.reporting import (
-    print_epoch_stats, log_metrics, print_final_summary
+    print_epoch_stats, log_metrics, print_final_summary, sanitize_for_aim
 )
 
 from src.physics import SWEPhysics 
@@ -249,16 +249,16 @@ train_step_jitted = jax.jit(train_step, static_argnames=['model', 'optimiser', '
 
 def main(config_path: str):
     """
-    Main training loop for Benchmark Test 6 Scenario (Experiment 6).
+    Main training loop for Experiment 8 Scenario (Importance Sampling).
     Includes Importance Sampling for PDE points (Memory Optimized).
     """
     #--- 1. LOAD CONFIGURATION (MUTABLE) ---
     cfg_dict = load_config(config_path)
     
-    print("Info: Running Benchmark Test 6 (Experiment 6 - Importance Sampling V3 - Configurable)...")
+    print("Info: Running Experiment 8 (Importance Sampling) training...")
 
     # --- 2. SETUP DATA & COMPUTE DOMAIN EXTENT ---
-    scenario_name = cfg_dict.get('scenario', 'experiment_6')
+    scenario_name = cfg_dict.get('scenario', 'experiment_8')
     base_data_path = os.path.join("data", scenario_name)
 
     artifacts_path = os.path.join(base_data_path, "domain_artifacts.npz")
@@ -396,7 +396,7 @@ def main(config_path: str):
         aim_run.set_artifacts_uri(f"file://{abs_artifact_path}")
         
         aim_run["hparams"] = cfg_dict
-        aim_run['flags'] = {"scenario_type": "experiment_6_IS_Configurable"}
+        aim_run['flags'] = {"scenario_type": "experiment_8_importance_sampling"}
     except Exception as e:
         print(f"Warning: Aim tracking failed to initialize: {e}")
 
@@ -680,21 +680,16 @@ def main(config_path: str):
             if (epoch + 1) % freq == 0:
                 print_epoch_stats(
                     epoch, global_step, start_time, avg_total_weighted_loss,
-                    avg_losses_unweighted.get('pde', 0.0), 
-                    avg_losses_unweighted.get('ic', 0.0), 
-                    avg_losses_unweighted.get('bc', 0.0),
-                    0.0, 
-                    avg_losses_unweighted.get('data', 0.0),
-                    avg_losses_unweighted.get('neg_h', 0.0),
+                    avg_losses_unweighted,
                     combined_nse_val, rmse_val, epoch_time
                 )
 
             if aim_run:
                 epoch_metrics_to_log = {
+                    'elapsed_time': time.time() - start_time,
                     'validation_metrics': {'nse': combined_nse_val, 'combined_nse': combined_nse_val, 'rmse': rmse_val},
                     'epoch_avg_losses': avg_losses_unweighted,
                     'epoch_avg_total_weighted_loss': avg_total_weighted_loss,
-                    'optimization': {'total_loss': avg_total_weighted_loss}, 
                     'system_metrics': {'epoch_time': epoch_time},
                     'training_metrics': {'learning_rate': float(current_lr)}
                 }
@@ -726,10 +721,10 @@ def main(config_path: str):
         final_params = best_params_loss if best_params_loss is not None else best_params_nse
 
         if aim_run:
-            aim_run['summary'] = {
+            aim_run['summary'] = sanitize_for_aim({
                 'best_validation_model': best_nse_stats,
                 'final_system': {'total_training_time_seconds': total_time, 'total_epochs_run': (epoch + 1)}
-            }
+            })
 
         if ask_for_confirmation():
             if final_params is not None:
