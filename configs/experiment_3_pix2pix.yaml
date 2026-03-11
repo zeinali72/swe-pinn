@@ -1,5 +1,5 @@
 CONFIG_PATH: "configs/pix2pix_test1.yaml"
-scenario: "benchmark_test_1"
+scenario: experiment_3
 
 domain:
   lx: 700.0

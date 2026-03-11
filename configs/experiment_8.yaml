@@ -1,4 +1,4 @@
-scenario: experiment_6
+scenario: experiment_8
 domain:
   t_final: 21600.0         # 6 hours
 physics:
