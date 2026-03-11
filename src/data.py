@@ -235,13 +235,23 @@ def load_bathymetry(dem_path: str):
     _BATHYMETRY_FN = vmap(bathymetry_fn_point)
     print(f"Bathymetry loaded from {dem_path}")
 
+_BATHYMETRY_WARNING_EMITTED = False
+
 def bathymetry_fn(x, y):
     """
     Public accessor for the bathymetry function.
     Can be imported by losses.py.
     """
+    global _BATHYMETRY_WARNING_EMITTED
     if _BATHYMETRY_FN is None:
-        # Fallback: Flat bed (0 slope)
+        if not _BATHYMETRY_WARNING_EMITTED:
+            import warnings
+            warnings.warn(
+                "Bathymetry not loaded — using flat domain (z=0). "
+                "Call load_bathymetry() first if terrain is expected.",
+                stacklevel=2
+            )
+            _BATHYMETRY_WARNING_EMITTED = True
         return jnp.zeros_like(x), jnp.zeros_like(x), jnp.zeros_like(x)
     return _BATHYMETRY_FN(x, y)
 
