@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Base image ----------
-FROM nvcr.io/nvidia/jax:25.01-py3
+FROM nvcr.io/nvidia/jax:26.02-py3
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace

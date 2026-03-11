@@ -18,19 +18,13 @@
   "runArgs": [ "--gpus=all", "--restart", "unless-stopped" ],
 
   "mounts": [
-    // We keep the gitconfig if you specifically want the Desktop's name/email.
-    // (VS Code usually copies this automatically from your Laptop, but this forces the Desktop's version).
     {
       "source": "/home/farzan/.gitconfig",
       "target": "/root/.gitconfig",
       "type": "bind"
     }
-    // DELETED: The SSH bind mount was here. We removed it.
   ],
 
-  // DELETED: The 'postStartCommand' that copied SSH keys is removed.
-  // If you have other startup commands, put them here, otherwise delete the line.
-  
   "containerUser": "root",
 
   "customizations": {
