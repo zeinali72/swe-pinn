@@ -1,3 +1,9 @@
+"""Experiment 4 — Terrain slope in x+y directions (Phase 2).
+
+Extends terrain slope to both x and y directions.
+Requires: configs/experiment_4.yaml, data/experiment_4/
+Builds on: Experiment 3.
+"""
 import os
 import sys
 import time

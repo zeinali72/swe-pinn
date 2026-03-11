@@ -1,3 +1,10 @@
+"""Experiment 8 — Importance sampling variant (Phase 3).
+
+Same domain as Experiment 8 but uses error-driven adaptive importance
+sampling to concentrate collocation points in high-residual regions.
+Requires: configs/experiment_8.yaml, data/experiment_8/
+Builds on: Experiment 8.
+"""
 import os
 import sys
 import time

@@ -1,3 +1,10 @@
+"""Experiment 3 — Terrain slope in x-direction (Phase 2).
+
+Introduces terrain via bi-linear DEM interpolation; establishes data
+sampling ratio methodology when physics-only training is insufficient.
+Requires: configs/experiment_3.yaml, data/experiment_3/
+Builds on: Experiment 2.
+"""
 import os
 import sys
 import time

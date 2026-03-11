@@ -1,6 +1,8 @@
-"""
-Training script for the "analytical" (no-building) scenario for the
-Shallow Water Equation (SWE) PINN model.
+"""Experiment 1 — Analytical dam-break on flat domain (Phase 1).
+
+Verifies the PINN framework against an analytical dam-break solution.
+Requires: configs/experiment_1_*.yaml
+Builds on: None (baseline verification).
 
 This script handles both data-free and data-driven (analytical) training modes.
 It supports static loss weighting and provides
