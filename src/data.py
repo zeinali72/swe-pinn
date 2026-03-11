@@ -30,6 +30,21 @@ def sample_points(x_start: float, x_end: float, y_start: float, y_end: float,
     
     return jnp.hstack([x_coords, y_coords, t_coords])
 
+def load_validation_data(path: str, dtype=None):
+    """Load validation data, reordering columns from [t,x,y,...] to [x,y,t].
+
+    Returns:
+        raw_data: Full loaded array (for plotting)
+        inputs: Reordered coordinates [x, y, t]
+        targets: Target values [h, hu, hv]
+    """
+    data = np.load(path)
+    if dtype is not None:
+        data = data.astype(dtype)
+    inputs = data[:, [1, 2, 0]]   # [x, y, t]
+    targets = data[:, 3:6]         # [h, hu, hv]
+    return data, inputs, targets
+
 def get_batches(key: jax.random.PRNGKey, data: jnp.ndarray, batch_size: int) -> list:
     """Shuffle and split data into batches, dropping the remainder."""
     data = jax.random.permutation(key, data, axis=0)

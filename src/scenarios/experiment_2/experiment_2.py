@@ -35,7 +35,7 @@ if project_root not in sys.path:
     print(f"Added project root to path: {project_root}")
 
 from src.config import load_config, DTYPE
-from src.data import sample_domain, get_batches, get_batches_tensor, get_sample_count
+from src.data import sample_domain, get_batches, get_batches_tensor, get_sample_count, load_validation_data
 from src.models import init_model
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
@@ -248,10 +248,8 @@ def main(config_path: str):
     if os.path.exists(validation_data_file):
         try:
             print(f"Loading VALIDATION data from: {validation_data_file}")
-            loaded_val_data = jnp.load(validation_data_file).astype(DTYPE)
-
-            val_points_all = loaded_val_data[:, [1, 2, 0]]
-            h_true_val_all = loaded_val_data[:, 3]
+            _, val_points_all, val_targets_all = load_validation_data(validation_data_file, dtype=DTYPE)
+            h_true_val_all = val_targets_all[:, 0]
             print("Applying building mask to validation metrics points...")
             mask_val = mask_points_inside_building(val_points_all, cfg["building"])
             val_points = val_points_all[mask_val]

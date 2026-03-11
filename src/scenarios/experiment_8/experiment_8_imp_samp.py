@@ -34,7 +34,8 @@ from src.data import (
     load_boundary_condition,
     IrregularDomainSampler,
     load_bathymetry,
-    bathymetry_fn 
+    bathymetry_fn,
+    load_validation_data,
 )
 from src.models import init_model
 from src.losses import (
@@ -361,11 +362,10 @@ def main(config_path: str):
 
     if os.path.exists(validation_data_file):
         try:
-            loaded_val_data = jnp.load(validation_data_file).astype(DTYPE)
-            val_pts_batch = loaded_val_data[:, [1, 2, 0]]
-            val_h_true = loaded_val_data[:, 3]
-            u_temp = loaded_val_data[:, 4]
-            v_temp = loaded_val_data[:, 5]
+            _, val_pts_batch, val_targets = load_validation_data(validation_data_file, dtype=DTYPE)
+            val_h_true = val_targets[:, 0]
+            u_temp = val_targets[:, 1]
+            v_temp = val_targets[:, 2]
             val_hu_true = val_h_true * u_temp
             val_hv_true = val_h_true * v_temp
             if val_pts_batch.shape[0] > 0:
