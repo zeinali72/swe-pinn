@@ -28,17 +28,37 @@ except ImportError as e:
     print(f"ModuleNotFoundError: {e}. Please check the project root and script directory.")
     sys.exit(1)
 
-# User Settings
-TRIAL_DIR_NAME = "2026-02-10_17-41_experiment_6" 
-CONFIG_NAME = "experiment_6.yaml"
-# Update this path if your shapefile is named differently
-SHAPEFILE_PATH = os.path.join(PROJECT_ROOT, "data", "experiment_6", "2D Zones.shp")
+# --- CLI Arguments ---
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Render PINN solution video from trained model weights.",
+        epilog="Example: python render_video.py --trial-dir 2026-02-10_17-41_experiment_6 "
+               "--config experiment_6.yaml --shapefile data/experiment_6/2D\\ Zones.shp"
+    )
+    parser.add_argument("--trial-dir", required=True,
+                        help="Trial directory name under models/ (e.g. 2026-02-10_17-41_experiment_6)")
+    parser.add_argument("--config", required=True,
+                        help="Config YAML filename under configs/ (e.g. experiment_6.yaml)")
+    parser.add_argument("--shapefile", default=None,
+                        help="Path to shapefile for mesh geometry (e.g. data/experiment_6/2D Zones.shp)")
+    parser.add_argument("--t-start", type=float, default=0.0, help="Start time in seconds (default: 0)")
+    parser.add_argument("--t-end", type=float, default=21600.0, help="End time in seconds (default: 21600)")
+    parser.add_argument("--dt-frame", type=float, default=20.0, help="Time step per frame (default: 20)")
+    parser.add_argument("--frame-duration", type=int, default=30, help="Frame duration in ms (default: 30)")
+    return parser.parse_args()
+
+args = parse_args()
+TRIAL_DIR_NAME = args.trial_dir
+CONFIG_NAME = args.config
+SHAPEFILE_PATH = args.shapefile if args.shapefile else os.path.join(PROJECT_ROOT, "data", "experiment_6", "2D Zones.shp")
 
 # Animation Settings
-T_START = 0.0
-T_END = 21600.0   # 6 hours
-DT_FRAME = 20.0   # Matches your validation_tensor.npy timestep
-FRAME_DURATION = 30 # 0.03s per frame
+T_START = args.t_start
+T_END = args.t_end
+DT_FRAME = args.dt_frame
+FRAME_DURATION = args.frame_duration
 
 # --- 2. Load Resources ---
 config_path = os.path.join(PROJECT_ROOT, "configs", CONFIG_NAME)
