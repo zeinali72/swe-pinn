@@ -7,6 +7,7 @@ from typing import Any, Dict, Tuple, Sequence
 from src.config import DTYPE
 
 class Normalize(nn.Module):
+    """Normalizes spatial and temporal coordinates to [-1, 1] range."""
     lx: float
     ly: float
     t_final: float
@@ -22,6 +23,7 @@ class Normalize(nn.Module):
         return jnp.stack([x_scaled, y_scaled, t_scaled], axis=-1)
 
 class FourierFeatures(nn.Module):
+    """Projects inputs into higher-dimensional frequency space to overcome spectral bias."""
     output_dims: int
     scale: float
 
@@ -300,6 +302,7 @@ class FourierDeepONet(nn.Module):
         return output
 
 def init_deeponet_model(model_class: nn.Module, key: jax.random.PRNGKey, config: Dict[str, Any]) -> Tuple[nn.Module, Dict[str, Any]]:
+    """Initialize a DeepONet model with branch and trunk networks."""
     model = model_class(config=config)
     param_names = tuple(config["physics"]["param_bounds"].keys())
     n_params = len(param_names)
