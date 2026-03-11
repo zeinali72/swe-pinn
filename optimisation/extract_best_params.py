@@ -5,7 +5,7 @@ from pathlib import Path
 
 def extract_best_trials():
     db_dir = Path("/workspaces/swe-pinn/optimisation/database/exploration")
-    output_base_dir = Path("/workspaces/swe-pinn/optimisation/sensivity_analysis_output/best_parameters")
+    output_base_dir = Path("/workspaces/swe-pinn/optimisation/sensitivity_analysis_output/best_parameters")
     
     if not db_dir.exists():
         print(f"Source directory {db_dir} does not exist.")
