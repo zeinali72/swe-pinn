@@ -133,7 +133,7 @@ def loss_slip_wall_generalized(model, params, batch):
     coords = batch[..., :3]     # Input to model
     normals = batch[..., 3:5]   # Normals [nx, ny]
     
-    U = model.apply(params, coords, train=True)
+    U = model.apply({'params': params['params']}, coords, train=False)
     
     # U = [h, hu, hv]
     hu = U[..., 1]
