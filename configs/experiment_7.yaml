@@ -1,4 +1,4 @@
-scenario: benchmark_test_5
+scenario: experiment_7
 domain:
   t_final: 108000.0         # 30 hours
 physics:

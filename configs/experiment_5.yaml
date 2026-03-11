@@ -1,4 +1,4 @@
-scenario: benchmark_test_3
+scenario: experiment_5
 domain:
   lx: 300.0
   ly: 100.0

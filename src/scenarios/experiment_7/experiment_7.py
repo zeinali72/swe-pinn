@@ -316,7 +316,7 @@ def main(config_path: str):
         # Log basics
         hparams_to_log = copy.deepcopy(cfg_dict)
         aim_run["hparams"] = hparams_to_log
-        aim_run['flags'] = {"scenario_type": "benchmark_test_5"}
+        aim_run['flags'] = {"scenario_type": "experiment_7"}
 
         # --- Log Config and Script as Artifacts ---
         try:
