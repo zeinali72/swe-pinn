@@ -1,0 +1,14 @@
+
+# Model outputs and results
+models/
+results/
+
+# Experiment tracking database
+aim_repo/
+
+# Jupyter notebook outputs
+notebook/
+
+# Hyperparameter optimization results
+optimisation/results/
+optimisation/studies/
