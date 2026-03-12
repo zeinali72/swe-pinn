@@ -99,10 +99,6 @@ def main(config_path: str):
 
     print("Info: Running in analytical (no-building) mode.")
 
-    # --- 3. Setup Optimizer ---
-    optimiser = create_optimizer(cfg)
-    opt_state = optimiser.init(params)
-
     # --- 4. Prepare Loss Weights ---
     static_weights_dict, _ = extract_loss_weights(cfg)
     
@@ -248,6 +244,10 @@ def main(config_path: str):
     if num_batches == 0:
         print(f"Error: Batch size {batch_size} is too large for configured sample counts or data. No training will occur.")
         return -1.0
+
+    # --- 3. Setup Optimizer (after num_batches is known for accumulation_factor) ---
+    optimiser = create_optimizer(cfg, num_batches=num_batches)
+    opt_state = optimiser.init(params)
 
     # --- Define JIT Data Generator ---
     def generate_epoch_data(key):
