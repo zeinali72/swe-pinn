@@ -46,4 +46,5 @@ device:
   dtype: float32
 numerics:
   eps: 1.0e-06
+  min_depth: 0.005
 

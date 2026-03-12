@@ -30,6 +30,7 @@ device:
   early_stop_patience: 3000
 numerics:
   eps: 1.0e-06
+  min_depth: 0.005
 training:
   epochs: 50000
   seed: 42
