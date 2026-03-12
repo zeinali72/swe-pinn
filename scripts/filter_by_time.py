@@ -1,3 +1,11 @@
+"""Filter a validation .npy file by maximum time value.
+
+Reads a .npy file where the first column is time (t), keeps only rows where
+t <= max_time, and saves the filtered result to a new file.
+
+Usage:
+    python filter_by_time.py validation_sample.npy --max_time 3600
+"""
 import numpy as np
 import os
 import argparse
