@@ -3,7 +3,6 @@ import sys
 import time
 import copy
 import argparse
-import importlib
 import itertools
 from typing import Any, Dict, Tuple
 import shutil
@@ -34,6 +33,7 @@ from src.data import (
     load_bathymetry,
     sample_lhs,
     load_validation_data,
+    resolve_scenario_asset_path,
 )
 from src.models import init_model
 from src.losses import (
@@ -53,6 +53,16 @@ from src.utils import (
 from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
 from src.metrics.accuracy import compute_validation_metrics
 from src.checkpointing import CheckpointManager
+from src.training import (
+    create_optimizer,
+    extract_loss_weights,
+    load_training_data,
+    load_validation_from_file,
+    post_training_save,
+    resolve_data_mode,
+    run_training_loop,
+    setup_experiment,
+)
 
 def train_step(
         model: Any, 
@@ -157,33 +167,20 @@ def main(config_path: str):
     """
     
     #--- 1. LOAD CONFIGURATION ---
-    cfg_dict = load_config(config_path)
-    cfg = FrozenDict(cfg_dict)
+    setup = setup_experiment(config_path, "experiment_6")
+    cfg_dict = setup["cfg_dict"]
+    cfg = setup["cfg"]
+    model = setup["model"]
+    params = setup["params"]
+    train_key = setup["train_key"]
+    trial_name = setup["trial_name"]
+    results_dir = setup["results_dir"]
+    model_dir = setup["model_dir"]
 
     print("Info: Running Experiment 6 model training...")
 
-    try:
-        models_module = importlib.import_module("src.models")
-        model_class = getattr(models_module, cfg["model"]["name"])
-    except (ImportError, AttributeError) as e:
-        raise ValueError(f"Could not find model class '{cfg['model']['name']}' in src/models.py") from e
-    
-    key = random.PRNGKey(cfg["training"]["seed"])
-    model_key, train_key, val_key = random.split(key, 3)
-    model, params = init_model(model_class, model_key, cfg)
-
-    # --- 2. Setup Directories ---
-    config_base = os.path.splitext(os.path.basename(cfg['CONFIG_PATH']))[0]
-    trial_name = generate_trial_name(config_base)
-    results_dir = os.path.join("results", trial_name)
-    model_dir = os.path.join("models", trial_name)
-    os.makedirs(results_dir, exist_ok=True)
-    os.makedirs(model_dir, exist_ok=True)
-
     # --- 4. Prepare Loss Weights ---
-    static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
-    active_loss_term_keys = [k for k, v in static_weights_dict.items() if v > 0]
-    current_weights_dict = FrozenDict({k: static_weights_dict[k] for k in active_loss_term_keys})
+    static_weights_dict, current_weights_dict = extract_loss_weights(cfg)
 
     # --- 5. Load Data Assets ---
     scenario_name = cfg.get('scenario')
@@ -195,75 +192,28 @@ def main(config_path: str):
     
 
     # B. Load Boundary Condition Function
-    bc_csv_path = os.path.join(base_data_path, "Test4BC.csv")
-    if not os.path.exists(bc_csv_path):
-        print(f"Error: Boundary condition CSV file not found at {bc_csv_path}.")
+    try:
+        bc_csv_path = resolve_scenario_asset_path(base_data_path, scenario_name, "boundary_condition")
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
         sys.exit(1)
     bc_fn_static = load_boundary_condition(bc_csv_path)
 
     # --- 5b. Load Validation and Training Data ---
-    val_points, h_true_val = None, None
     data_points_full = None
-    
-    data_free_flag = cfg.get("data_free")
-    
-    if data_free_flag is False:
-        print("Info: 'data_free: false' found in config. Activating data-driven mode.")
-        has_data_loss = True
-        data_free = False
-    else:
-        if data_free_flag is None:
-            print("Warning: 'data_free' flag not specified in config. Defaulting to 'data_free: true'.")
-        else:
-            print("Info: 'data_free: true' found in config. Data loss term will be disabled.")
-        has_data_loss = False
-        data_free = True
-
-    training_data_file = os.path.join(base_data_path, "training_dataset_sample.npy")
-    if has_data_loss: 
-        if os.path.exists(training_data_file):
-            try:
-                print(f"Loading TRAINING data from: {training_data_file}")
-                data_points_full = jnp.load(training_data_file).astype(DTYPE) 
-                if data_points_full.shape[0] == 0:
-                     print("Warning: Training data file is empty. Disabling data loss.")
-                     data_points_full = None
-                     has_data_loss = False
-                else:
-                     data_weight = static_weights_dict.get('data', 0.0)
-                     print(f"Using {data_points_full.shape[0]} points for data loss term (weight={data_weight:.2e}).")
-            except Exception as e:
-                print(f"Error loading training data file {training_data_file}: {e}")
-                data_points_full = None
-                has_data_loss = False
-        else:
-            print(f"Warning: Training data file not found at {training_data_file}.")
-            has_data_loss = False
-    
-    data_free = not has_data_loss 
+    data_free, has_data_loss = resolve_data_mode(cfg)
+    data_points_full, has_data_loss, data_free = load_training_data(
+        base_data_path,
+        has_data_loss,
+        static_weights_dict,
+    )
 
     # C. Load Validation Data (Optional)
-    validation_data_file = os.path.join(base_data_path, "validation_gauges_ground_truth.npy")
-    validation_data_loaded = False
-    full_val_data = None
-    
-    if os.path.exists(validation_data_file):
-        try:
-            print(f"Loading VALIDATION data from: {validation_data_file}")
-            full_val_data, val_points, val_targets = load_validation_data(validation_data_file, dtype=DTYPE)
-            h_true_val = val_targets[:, 0]
-            num_val_points = val_points.shape[0]
-            if num_val_points > 0:
-                validation_data_loaded = True
-                val_points_all = val_points 
-                h_true_val_all = h_true_val
-            else:
-                 print("Warning: No validation points remaining after masking.")
-        except Exception as e:
-            print(f"Error loading validation data: {e}")
-            val_points, h_true_val = None, None
-    else:
-        print(f"Warning: Validation data not found at {validation_data_file}.")
+    validation = load_validation_from_file(base_data_path, "validation_gauges_ground_truth.npy")
+    validation_data_loaded = validation["loaded"]
+    full_val_data = validation["full_val_data"]
+    val_points_all = validation["val_points"]
+    h_true_val_all = validation["h_true_val"]
 
     # --- 6. Initialize Aim & Console Logger ---
     aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
@@ -279,17 +229,7 @@ def main(config_path: str):
     # --- 7. Summary ---
     cfg_dict['scenario'] = cfg_dict.get('scenario', 'experiment_6')
     console = ConsoleLogger(cfg_dict)
-    console.print_header()
-
-    start_time = time.time()
-    ckpt_mgr = CheckpointManager(model_dir, model=model)
-    val_metrics = {}
-    neg_depth = {}
-    avg_losses_unweighted = {}
-    avg_total_weighted_loss = 0.0
-    global_step = 0
-
-    # --- 8. Data Generation Setup ---
+    # --- 7. Data Generation Setup ---
     sampling_cfg = cfg["sampling"]
     batch_size = cfg["training"]["batch_size"]
     domain_cfg = cfg["domain"]
@@ -311,20 +251,7 @@ def main(config_path: str):
     print(f"Batches per epoch: {num_batches}")
 
     # --- Optimizer ---
-    reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
-    optimiser = optax.chain(
-        optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)),
-        optax.adam(learning_rate=cfg["training"]["learning_rate"]),
-        optax.contrib.reduce_on_plateau(
-            factor=float(reduce_on_plateau_cfg.get("factor", 0.5)),
-            patience=int(reduce_on_plateau_cfg.get("patience", 5)),
-            rtol=float(reduce_on_plateau_cfg.get("rtol", 1e-4)),
-            atol=float(reduce_on_plateau_cfg.get("atol", 0.0)),
-            cooldown=int(reduce_on_plateau_cfg.get("cooldown", 1)),
-            accumulation_size=num_batches*int(reduce_on_plateau_cfg.get("accumulation_factor", 1)),
-            min_scale=float(reduce_on_plateau_cfg.get("min_scale", 1e-6)),
-        ),
-    )
+    optimiser = create_optimizer(cfg, num_batches=num_batches)
     opt_state = optimiser.init(params)
 
     # JIT Data Generator
@@ -414,271 +341,99 @@ def main(config_path: str):
         )
         return (new_params, new_opt_state), (terms, total)
 
-    # --- 9. Training Loop ---
-    best_nse_stats = {
-        'nse': -jnp.inf, 'rmse': jnp.inf, 'epoch': 0, 'global_step': 0,
-        'time_elapsed_seconds': 0.0, 'total_weighted_loss': 0.0, 'unweighted_losses': {}
-    }
-    
-    best_loss_stats = {
-        'total_weighted_loss': jnp.inf, 'epoch': 0, 'global_step': 0,
-        'time_elapsed_seconds': 0.0, 'nse': -jnp.inf, 'rmse': jnp.inf, 'unweighted_losses': {}
-    }
-    
-    best_params_nse = None
-    best_params_loss = None # Added tracking for best loss model
+    loop_result = run_training_loop(
+        cfg=cfg,
+        cfg_dict=cfg_dict,
+        model=model,
+        params=params,
+        opt_state=opt_state,
+        train_key=train_key,
+        optimiser=optimiser,
+        generate_epoch_data_jit=generate_epoch_data_jitted,
+        scan_body=scan_body,
+        num_batches=num_batches,
+        experiment_name="experiment_6",
+        trial_name=trial_name,
+        results_dir=results_dir,
+        model_dir=model_dir,
+        config_path=config_path,
+        validation_data_loaded=validation_data_loaded,
+        val_points_all=val_points_all,
+        h_true_val_all=h_true_val_all,
+        source_script_path=__file__,
+    )
 
-    try:
-        for epoch in range(cfg["training"]["epochs"]):
-            epoch_start_time = time.time()
-            train_key, epoch_key = random.split(train_key)
-            scan_inputs = generate_epoch_data_jitted(epoch_key)
-            
-            (params, opt_state), (batch_losses_unweighted_stacked, batch_total_weighted_loss_stacked) = lax.scan(
-                scan_body, (params, opt_state), scan_inputs
-            )
-            
-            global_step += num_batches
-            
-
-            # --- Aggregate Losses ---
-            # Sum over batches dimension
-            epoch_losses_unweighted_sum = {k: jnp.sum(v) for k, v in batch_losses_unweighted_stacked.items()}
-            epoch_total_weighted_loss_sum = jnp.sum(batch_total_weighted_loss_stacked)
-
-            avg_losses_unweighted = {k: float(v) / num_batches for k, v in epoch_losses_unweighted_sum.items()}
-            avg_total_weighted_loss = float(epoch_total_weighted_loss_sum) / num_batches
-
-            # --- LR Extraction ---
-            # Extract LR status from opt_state (chain: clip, adam, reduce_on_plateau)
-            current_lr = cfg["training"]["learning_rate"]
-            current_scale = 1.0
-            base_lr_val = cfg["training"]["learning_rate"]
-            try:
-                # Access the state of the last transformation (reduce_on_plateau)
-                # opt_state is a tuple corresponding to the chain elements
-                # Ensure we cast the JAX array to a standard float
-                if hasattr(opt_state[-1], 'scale'):
-                    current_scale = float(opt_state[-1].scale)
-                    current_lr = base_lr_val * current_scale
-            except Exception as e:
-                # Removing silent failure to aid debugging
-                if epoch == 0: 
-                    print(f"Warning: Failed to extract LR scale: {e}")            
-
-            # Validation
-            nse_val, rmse_val = -jnp.inf, jnp.inf
-            if validation_data_loaded:
-                try:
-                    U_val = model.apply(params, val_points_all, train=False)
-                    nse_val = nse(h_true_val_all, U_val[..., 0])
-                    rmse_val = rmse(h_true_val_all, U_val[..., 0])
-                except: pass
-
-            val_metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
-
-            # --- Update Best Model Statistics ---
-            if nse_val > best_nse_stats['nse']:
-                best_nse_stats.update({
-                    'nse': nse_val, 'rmse': rmse_val, 'epoch': epoch, 'global_step': global_step,
-                    'time_elapsed_seconds': time.time() - start_time,
-                    'total_weighted_loss': avg_total_weighted_loss,
-                    'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
-                })
-                best_params_nse = copy.deepcopy(params)
-
-            if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
-                best_loss_stats.update({
-                    'total_weighted_loss': avg_total_weighted_loss, 'epoch': epoch, 'global_step': global_step,
-                    'time_elapsed_seconds': time.time() - start_time,
-                    'nse': nse_val, 'rmse': rmse_val,
-                    'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
-                })
-                best_params_loss = copy.deepcopy(params)
-
-            # Negative depth diagnostics and checkpoint tracking
-            freq = cfg.get("reporting", {}).get("epoch_freq", 100)
-            epoch_time = time.time() - epoch_start_time
-
-            neg_depth = {'count': 0, 'fraction': 0.0, 'min': 0.0, 'mean': 0.0}
-            if (epoch + 1) % freq == 0:
-                try:
-                    neg_depth = compute_negative_depth_diagnostics(model, params, scan_inputs['pde'][0])
-                except Exception:
-                    pass
-
-            saved_events = ckpt_mgr.update(
-                epoch, params, opt_state, val_metrics,
-                avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth
-            )
-            for event in saved_events:
-                event_type, value, ep, prev_value, prev_epoch = event
-                if event_type == 'best_nse':
-                    console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_nse(value, ep)
-                elif event_type == 'best_loss':
-                    console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_loss(value, ep)
-
-            # Reporting
-            if (epoch + 1) % freq == 0:
-                console.print_epoch(
-                    epoch, cfg["training"]["epochs"],
-                    avg_losses_unweighted, avg_total_weighted_loss,
-                    current_lr, 0.0,
-                    val_metrics, neg_depth.get('fraction', 0.0), epoch_time
-                )
-
-            aim_tracker.log_epoch(
-                epoch=epoch, step=global_step,
-                losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
-                val_metrics=val_metrics, lr=current_lr, grad_norm=0.0,
-                epoch_time=epoch_time, elapsed_time=time.time() - start_time,
-                neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
-            )
-
-            # --- Early Stopping Check ---
-            min_epochs = cfg.get("device", {}).get("early_stop_min_epochs", float('inf'))
-            patience = cfg.get("device", {}).get("early_stop_patience", float('inf'))
-
-            if epoch >= min_epochs and (epoch - best_nse_stats['epoch']) >= patience:
-                print(f"--- Early stopping triggered at epoch {epoch+1} ---")
-                print(f"Best NSE {best_nse_stats['nse']:.6f} achieved at epoch {best_nse_stats['epoch']+1}.")
-                break
-
-    except KeyboardInterrupt:
-        print("\n--- Training interrupted ---")
-    except Exception as e:
-        print(f"\nError: {e}")
-        import traceback
-        traceback.print_exc()
-
-    # --- 10. Post-Training (Save & Plot) ---
-    finally:
-        total_time = time.time() - start_time
-
-        ckpt_mgr.save_final(epoch if 'epoch' in locals() else 0, params, opt_state, val_metrics, avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth)
-
-        best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
-        best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
-
-        console.print_completion_summary(
-            total_time=total_time,
-            final_epoch=epoch if 'epoch' in locals() else 0,
-            best_nse_stats=best_nse_ckpt,
-            best_loss_stats=best_loss_ckpt,
-            final_losses=avg_losses_unweighted,
-            final_val_metrics=val_metrics,
-            neg_depth_final=neg_depth,
-            neg_depth_best_nse={},
-            neg_depth_best_loss={},
-            final_lr=current_lr if 'current_lr' in locals() else cfg["training"]["learning_rate"],
+    def plot_fn(final_params):
+        print("Generating Experiment 6 plots...")
+        t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
+        aim_tracker = loop_result["aim_tracker"]
+        final_epoch = loop_result["epoch"]
+        output_csv_path = resolve_scenario_asset_path(
+            base_data_path, scenario_name, "output_reference", required=False
         )
-
-        # Decide which params to save (User preference: Best Loss Model)
-        final_params = best_params_loss if best_params_loss is not None else best_params_nse
-
-        aim_tracker.log_summary({
-            'best_validation_model': best_nse_stats,
-            'best_loss_model': best_loss_stats,
-            'final_system': {
-                'total_training_time_seconds': total_time,
-                'total_epochs_run': (epoch + 1) if 'epoch' in locals() else 0,
-                'total_steps_run': global_step
-            }
-        })
-
-        if ask_for_confirmation():
-            if final_params is not None:
-                saved_model_path = save_model(final_params, model_dir, trial_name)
-
-                # --- Log Model as Artifact to Aim ---
-                if aim_tracker.enabled and saved_model_path:
-                    aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
-
-                # --- Plotting Specific to Experiment 6 ---
-
-                print("Generating Experiment 6 plots...")
-                t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
-
-                # Try to load output points from CSV
-                output_csv_path = os.path.join(base_data_path, "Test4output.csv")
-                output_points = []
-                if os.path.exists(output_csv_path):
-                    try:
-                        df_out = pd.read_csv(output_csv_path)
-                        if 'X' in df_out.columns and 'Y' in df_out.columns:
-                            for idx, row in df_out.iterrows():
-                                output_points.append((row['X'], row['Y'], f"Point_{idx+1}"))
-                        else:
-                            arr_out = df_out.values
-                            for i in range(arr_out.shape[0]):
-                                output_points.append((arr_out[i, 0], arr_out[i, 1], f"Point_{i+1}"))
-                        print(f"Loaded {len(output_points)} output points from CSV.")
-                    except Exception as e:
-                        print(f"Warning: Could not read Test2output.csv: {e}")
-
-                if not output_points:
-                    print("Using default representative points (Depression centers).")
-                    output_points = [
-                        (250.0, 250.0, "Depression_1_1"),
-                        (1250.0, 1250.0, "Depression_3_3"),
-                        (1750.0, 1750.0, "Depression_4_4")
-                    ]
-
-                def plot_gauge(x, y, name, filename):
-                    pts = jnp.stack([jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot], axis=-1)
-                    U = model.apply(final_params, pts, train=False)
-                    h_pred = U[..., 0]
-
-                    plt.figure(figsize=(10, 6))
-
-                    if full_val_data is not None:
-                        val_np = np.array(full_val_data)
-                        mask = np.isclose(val_np[:, 1], x) & np.isclose(val_np[:, 2], y)
-                        gauge_data = val_np[mask]
-
-                        if gauge_data.shape[0] > 0:
-                            gauge_data = gauge_data[gauge_data[:, 0].argsort()]
-                            plt.plot(gauge_data[:, 0], gauge_data[:, 3], 'k--', linewidth=1.5, alpha=0.7, label=f'Baseline {name}')
-
-                    plt.plot(t_plot, h_pred, label=f'Predicted h @ ({x},{y})')
-                    plt.xlabel('Time (s)')
-                    plt.ylabel('Water Level h (m)')
-                    plt.title(f'{name} - Water Level vs Time')
-                    plt.legend()
-                    plt.grid(True)
-                    path = os.path.join(results_dir, filename)
-                    plt.savefig(path)
-                    plt.close()
-                    aim_tracker.log_image(path, filename, epoch if 'epoch' in locals() else 0)
-
-                for px, py, pname in output_points:
-                     plot_gauge(px, py, pname, f"{pname}_timeseries.png")
-
-                print(f"Plots saved to {results_dir}")
-            else:
-                print("No model parameters found to save.")
-
-        else:
-            print("Save aborted by user. Deleting artifacts...")
+        output_points = []
+        if os.path.exists(output_csv_path):
             try:
-                aim_tracker.delete_run()
-
-                if os.path.exists(results_dir):
-                    shutil.rmtree(results_dir)
-                    print(f"Deleted results directory: {results_dir}")
-                if os.path.exists(model_dir):
-                    shutil.rmtree(model_dir)
-                    print(f"Deleted model directory: {model_dir}")
-
-                print("Cleanup complete.")
+                df_out = pd.read_csv(output_csv_path)
+                if 'X' in df_out.columns and 'Y' in df_out.columns:
+                    for idx, row in df_out.iterrows():
+                        output_points.append((row['X'], row['Y'], f"Point_{idx+1}"))
+                else:
+                    arr_out = df_out.values
+                    for i in range(arr_out.shape[0]):
+                        output_points.append((arr_out[i, 0], arr_out[i, 1], f"Point_{i+1}"))
+                print(f"Loaded {len(output_points)} output points from CSV.")
             except Exception as e:
-                print(f"Error during cleanup: {e}")
+                print(f"Warning: Could not read output reference CSV: {e}")
 
-        aim_tracker.close()
+        if not output_points:
+            print("Using default representative points (Depression centers).")
+            output_points = [
+                (250.0, 250.0, "Depression_1_1"),
+                (1250.0, 1250.0, "Depression_3_3"),
+                (1750.0, 1750.0, "Depression_4_4"),
+            ]
 
-    return best_nse_stats['nse']
+        def plot_gauge(x, y, name, filename):
+            pts = jnp.stack([jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot], axis=-1)
+            U = model.apply(final_params, pts, train=False)
+            h_pred = U[..., 0]
+            plt.figure(figsize=(10, 6))
+            if full_val_data is not None:
+                val_np = np.array(full_val_data)
+                mask = np.isclose(val_np[:, 1], x) & np.isclose(val_np[:, 2], y)
+                gauge_data = val_np[mask]
+                if gauge_data.shape[0] > 0:
+                    gauge_data = gauge_data[gauge_data[:, 0].argsort()]
+                    plt.plot(gauge_data[:, 0], gauge_data[:, 3], 'k--', linewidth=1.5, alpha=0.7, label=f'Baseline {name}')
+
+            plt.plot(t_plot, h_pred, label=f'Predicted h @ ({x},{y})')
+            plt.xlabel('Time (s)')
+            plt.ylabel('Water Level h (m)')
+            plt.title(f'{name} - Water Level vs Time')
+            plt.legend()
+            plt.grid(True)
+            path = os.path.join(results_dir, filename)
+            plt.savefig(path)
+            plt.close()
+            aim_tracker.log_image(path, filename, final_epoch)
+
+        for px, py, pname in output_points:
+            plot_gauge(px, py, pname, f"{pname}_timeseries.png")
+
+        print(f"Plots saved to {results_dir}")
+
+    post_training_save(
+        loop_result=loop_result,
+        model=model,
+        model_dir=model_dir,
+        results_dir=results_dir,
+        trial_name=trial_name,
+        prefer_loss_model=True,
+        plot_fn=plot_fn,
+    )
+
+    return loop_result["best_nse_stats"]["nse"]
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Experiment 6).")

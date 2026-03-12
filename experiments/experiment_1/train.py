@@ -14,7 +14,6 @@ import sys
 import time
 import copy
 import argparse
-import importlib
 import itertools
 from typing import Any, Dict, Tuple
 import shutil
@@ -48,6 +47,14 @@ from src.monitoring.diagnostics import compute_grad_norm
 from src.metrics.accuracy import compute_validation_metrics
 from src.checkpointing import CheckpointManager
 from src.predict import Predictor
+from src.training import (
+    create_optimizer,
+    extract_loss_weights,
+    post_training_save,
+    resolve_data_mode,
+    run_training_loop,
+    setup_experiment,
+)
 
 # To enable 64-bit precision, uncomment the following line:
 # jax.config.update('jax_enable_x64', True)
@@ -121,53 +128,25 @@ def main(config_path: str):
     Main training function for the analytical scenario.
     """
     # --- 1. Load Config and Initialize Model ---
-    cfg_dict = load_config(config_path)
-    cfg = FrozenDict(cfg_dict)
+    setup = setup_experiment(config_path, "experiment_1")
+    cfg_dict = setup["cfg_dict"]
+    cfg = setup["cfg"]
+    model = setup["model"]
+    params = setup["params"]
+    train_key = setup["train_key"]
+    val_key = setup["val_key"]
+    trial_name = setup["trial_name"]
+    results_dir = setup["results_dir"]
+    model_dir = setup["model_dir"]
 
     print("Info: Running in analytical (no-building) mode.")
 
-    try:
-        models_module = importlib.import_module("src.models")
-        model_class = getattr(models_module, cfg["model"]["name"])
-    except (ImportError, AttributeError) as e:
-        raise ValueError(f"Could not find model class '{cfg['model']['name']}' in src/models.py") from e
-
-    key = random.PRNGKey(cfg["training"]["seed"])
-    # Split key for model, and training loop/validation usage
-    model_key, train_key, val_key = random.split(key, 3)
-    model, params = init_model(model_class, model_key, cfg)
-
-    # --- 2. Setup Directories for Results and Models ---
-    config_base = os.path.splitext(os.path.basename(cfg['CONFIG_PATH']))[0]
-    trial_name = generate_trial_name(config_base)
-    experiment_name = "experiment_1"
-    results_dir = os.path.join("results", experiment_name, trial_name)
-    model_dir = os.path.join("models", experiment_name, trial_name)
-    os.makedirs(results_dir, exist_ok=True)
-    os.makedirs(model_dir, exist_ok=True)
-
     # --- 3. Setup Optimizer ---
-    # Get configuration for reduce_on_plateau
-    reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
-
-    optimiser = optax.chain(
-        optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)),
-        optax.adam(learning_rate=cfg["training"]["learning_rate"]),
-        # CHANGE: metric-driven LR scaling (reduces LR when loss plateaus)
-        optax.contrib.reduce_on_plateau(
-            factor=float(reduce_on_plateau_cfg.get("factor", 0.5)),
-            patience=int(reduce_on_plateau_cfg.get("patience", 5)),
-            rtol=float(reduce_on_plateau_cfg.get("rtol", 1e-4)),
-            atol=float(reduce_on_plateau_cfg.get("atol", 0.0)),
-            cooldown=int(reduce_on_plateau_cfg.get("cooldown", 1)),
-            accumulation_size=int(reduce_on_plateau_cfg.get("accumulation_size", 235)),
-            min_scale=float(reduce_on_plateau_cfg.get("min_scale", 1e-6)),
-        ),
-    )
+    optimiser = create_optimizer(cfg)
     opt_state = optimiser.init(params)
 
     # --- 4. Prepare Loss Weights ---
-    static_weights_dict = {k.replace('_weight',''):v for k,v in cfg["loss_weights"].items()}
+    static_weights_dict, _ = extract_loss_weights(cfg)
     
     # --- 5. Create Validation and Training Data (Analytical) ---
     
@@ -204,20 +183,7 @@ def main(config_path: str):
         
     # Determine Data-Free Mode
     data_points_full = None
-    data_free_flag = cfg.get("data_free") # Get the flag (might be None)
-    
-    if data_free_flag is False:
-        print("Info: 'data_free: false' found in config. Activating data-driven mode.")
-        has_data_loss = True
-        data_free = False
-    else:
-        if data_free_flag is None:
-            print("Warning: 'data_free' flag not specified in config. Defaulting to 'data_free: true'.")
-        else:
-            # This catches 'data_free: true'
-            print("Info: 'data_free: true' found in config. Data loss term will be disabled.")
-        has_data_loss = False
-        data_free = True
+    data_free, has_data_loss = resolve_data_mode(cfg)
 
     # Create Analytical Training Data (if data_free is False)
     if not data_free:
@@ -269,22 +235,7 @@ def main(config_path: str):
             has_data_loss = False
             data_free = True # Revert to data-free
     
-    # --- 6. Initialize Aim Run ---
-    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
-    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
-    aim_tracker.log_flags({
-        "scenario_type": "analytical",
-        "data_free_config_flag": data_free_flag,
-        "data_loss_active_final": has_data_loss,
-        "gradnorm_enabled": False
-    })
-    if aim_enabled:
-        try:
-            aim_tracker.log_artifact(config_path, 'run_config.yaml')
-        except Exception:
-            pass
-
-    # --- 7. Determine Active Loss Terms ---
+    # --- 6. Determine Active Loss Terms ---
     active_loss_term_keys = []
     for k, v in static_weights_dict.items():
         if v > 0:
@@ -296,33 +247,7 @@ def main(config_path: str):
     
     current_weights_dict = {k: static_weights_dict[k] for k in active_loss_term_keys}
 
-    # --- 9. Pre-Training Summary ---
-    cfg_dict['scenario'] = 'experiment_1'  # Add scenario to config if not present
-    console = ConsoleLogger(cfg_dict)
-    console.print_header()
-
-    # --- Metrics Tracking Dictionaries ---
-    best_nse_stats = {
-        'nse': -jnp.inf, 'rmse': jnp.inf, 'epoch': 0, 'global_step': 0,
-        'time_elapsed_seconds': 0.0, 'total_weighted_loss': 0.0, 'unweighted_losses': {}
-    }
-    best_params_nse: Dict = None
-    
-    best_loss_stats = {
-        'total_weighted_loss': jnp.inf, 'epoch': 0, 'global_step': 0,
-        'time_elapsed_seconds': 0.0, 'nse': -jnp.inf, 'rmse': jnp.inf, 'unweighted_losses': {}
-    }
-    
-    log_freq_steps = cfg.get("training", {}).get("log_freq_steps", 100)
-    global_step = 0
-    val_metrics = {}
-    neg_depth = {}
-    avg_losses_unweighted = {}
-    avg_total_weighted_loss = 0.0
-    start_time = time.time()
-    ckpt_mgr = CheckpointManager(model_dir, model=model, eval_coords=val_points, reference=None)
-
-    # --- Pre-calculate Batch Counts and Total Batches (for jax.lax.scan) ---
+    # --- 7. Pre-calculate Batch Counts and Total Batches (for jax.lax.scan) ---
     sampling_cfg = cfg["sampling"]
     batch_size = cfg["training"]["batch_size"]
     domain_cfg = cfg["domain"]
@@ -422,250 +347,70 @@ def main(config_path: str):
         )
         return (new_params, new_opt_state), (terms, total)
 
-    # --- 10. Main Training Loop ---
-    try:
-        for epoch in range(cfg["training"]["epochs"]):
-            epoch_start_time = time.time()
-
-            # --- Optimized Data Generation ---
-            train_key, epoch_key = random.split(train_key)
-            scan_inputs = generate_epoch_data_jit(epoch_key)
-
-            # --- Run Training Steps with lax.scan ---
-            (params, opt_state), (batch_losses_unweighted_stacked, batch_total_weighted_loss_stacked) = lax.scan(
-                scan_body, (params, opt_state), scan_inputs
-            )
-            
-            global_step += num_batches
-
-            # --- Aggregate Losses ---
-            # Sum over batches dimension
-            epoch_losses_unweighted_sum = {k: jnp.sum(v) for k, v in batch_losses_unweighted_stacked.items()}
-            epoch_total_weighted_loss_sum = jnp.sum(batch_total_weighted_loss_stacked)
-
-            avg_losses_unweighted = {k: float(v) / num_batches for k, v in epoch_losses_unweighted_sum.items()}
-            avg_total_weighted_loss = float(epoch_total_weighted_loss_sum) / num_batches
-            
-            # --- LR Extraction (Calculate every epoch for Aim, but print conditionally) ---
-            # Extract LR status from opt_state (chain: clip, adam, reduce_on_plateau)
-            current_lr = cfg["training"]["learning_rate"]
-            current_scale = 1.0
-            base_lr_val = cfg["training"]["learning_rate"]
+    def validation_fn(model, params):
+        nse_val, rmse_val = -jnp.inf, jnp.inf
+        if validation_data_loaded:
             try:
-                # Access the state of the last transformation (reduce_on_plateau)
-                # opt_state is a tuple corresponding to the chain elements
-                current_scale = opt_state[-1].scale 
-                current_lr = base_lr_val * current_scale
-            except Exception:
-                pass # fallback to default
+                U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
+                h_pred_val = U_pred_val[..., 0]
+                nse_val = float(nse(h_pred_val, h_true_val))
+                rmse_val = float(rmse(h_pred_val, h_true_val))
+            except Exception as exc:
+                print(f"Warning: Validation calculation failed: {exc}")
+        return {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
 
-            # --- Validation ---
-            nse_val, rmse_val = -jnp.inf, jnp.inf
-            if validation_data_loaded:
-                try:
-                    U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
-                    h_pred_val = U_pred_val[..., 0]
-                    nse_val = float(nse(h_pred_val, h_true_val))
-                    rmse_val = float(rmse(h_pred_val, h_true_val))
-                except Exception as e:
-                    print(f"Warning: Epoch {epoch+1} - NSE/RMSE calculation failed: {e}")
-            elif (epoch + 1) % 100 == 0: # Only log this periodically
-                print(f"Warning: Epoch {epoch+1} - No validation data available. Skipping NSE/RMSE calculation.")
+    loop_result = run_training_loop(
+        cfg=cfg,
+        cfg_dict=cfg_dict,
+        model=model,
+        params=params,
+        opt_state=opt_state,
+        train_key=train_key,
+        optimiser=optimiser,
+        generate_epoch_data_jit=generate_epoch_data_jit,
+        scan_body=scan_body,
+        num_batches=num_batches,
+        experiment_name="experiment_1",
+        trial_name=trial_name,
+        results_dir=results_dir,
+        model_dir=model_dir,
+        config_path=config_path,
+        validation_fn=validation_fn,
+        source_script_path=__file__,
+    )
 
-            val_metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+    def plot_fn(final_params):
+        print("  Generating 1D validation plot...")
+        aim_tracker = loop_result["aim_tracker"]
+        final_epoch = loop_result["epoch"]
+        plot_cfg = cfg.get("plotting", {})
+        eps_plot = cfg.get("numerics", {}).get("eps", 1e-6)
+        t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
+        nx_val_plot = plot_cfg.get("nx_val", 101)
+        y_const_plot = plot_cfg.get("y_const_plot", 0.0)
+        x_val_plot = jnp.linspace(0.0, cfg["domain"]["lx"], nx_val_plot, dtype=DTYPE)
+        plot_points_1d = jnp.stack([
+            x_val_plot,
+            jnp.full_like(x_val_plot, y_const_plot, dtype=DTYPE),
+            jnp.full_like(x_val_plot, t_const_val_plot, dtype=DTYPE),
+        ], axis=1)
+        U_plot_pred_1d = model.apply({'params': final_params['params']}, plot_points_1d, train=False)
+        h_plot_pred_1d = jnp.where(U_plot_pred_1d[..., 0] < eps_plot, 0.0, U_plot_pred_1d[..., 0])
+        plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
+        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d)
+        aim_tracker.log_image(plot_path_1d, 'validation_plot_1D', final_epoch)
+        print(f"Model and plot saved in {model_dir} and {results_dir} (and logged to Aim)")
 
-            # --- Negative Depth Diagnostics ---
-            neg_depth = {'count': 0, 'fraction': 0.0, 'min': 0.0, 'mean': 0.0}
-            # Only compute periodically to avoid overhead
-            if (epoch + 1) % 100 == 0:
-                try:
-                    neg_depth = compute_negative_depth_diagnostics(model, params, scan_inputs['pde'][0])
-                except Exception:
-                    pass
+    post_training_save(
+        loop_result=loop_result,
+        model=model,
+        model_dir=model_dir,
+        results_dir=results_dir,
+        trial_name=trial_name,
+        plot_fn=plot_fn,
+    )
 
-            # --- Update Best Model Statistics (parallel: manual dicts + CheckpointManager) ---
-            if nse_val > best_nse_stats['nse']:
-                best_nse_stats.update({
-                    'nse': nse_val, 'rmse': rmse_val, 'epoch': epoch, 'global_step': global_step,
-                    'time_elapsed_seconds': time.time() - start_time,
-                    'total_weighted_loss': avg_total_weighted_loss,
-                    'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
-                })
-                best_params_nse = copy.deepcopy(params)
-
-            if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
-                best_loss_stats.update({
-                    'total_weighted_loss': avg_total_weighted_loss, 'epoch': epoch, 'global_step': global_step,
-                    'time_elapsed_seconds': time.time() - start_time,
-                    'nse': nse_val, 'rmse': rmse_val,
-                    'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
-                })
-
-            saved_events = ckpt_mgr.update(
-                epoch, params, opt_state, val_metrics,
-                avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth
-            )
-            for event in saved_events:
-                event_type, value, ep, prev_value, prev_epoch = event
-                if event_type == 'best_nse':
-                    console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_nse(value, ep)
-                elif event_type == 'best_loss':
-                    console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_loss(value, ep)
-
-            # --- Per-Epoch Logging ---
-            epoch_time = time.time() - epoch_start_time
-            if (epoch + 1) % 100 == 0:
-                console.print_epoch(
-                    epoch, cfg["training"]["epochs"],
-                    avg_losses_unweighted, avg_total_weighted_loss,
-                    current_lr, 0.0,  # grad_norm is 0 since we can't extract it from lax.scan easily
-                    val_metrics, neg_depth.get('fraction', 0.0), epoch_time
-                )
-
-            aim_tracker.log_epoch(
-                epoch=epoch, step=global_step,
-                losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
-                val_metrics=val_metrics, lr=current_lr, grad_norm=0.0,
-                epoch_time=epoch_time, elapsed_time=time.time() - start_time,
-                neg_depth=neg_depth if (epoch + 1) % 100 == 0 else None,
-            )
-
-            # --- Early Stopping Check ---
-            min_epochs = cfg.get("device", {}).get("early_stop_min_epochs", float('inf'))
-            patience = cfg.get("device", {}).get("early_stop_patience", float('inf'))
-
-            if epoch >= min_epochs and (epoch - best_nse_stats['epoch']) >= patience:
-                print(f"--- Early stopping triggered at epoch {epoch+1} ---")
-                print(f"Best NSE {best_nse_stats['nse']:.6f} achieved at epoch {best_nse_stats['epoch']+1}.")
-                break
-            
-            # Key update for data sample is handled by train_key split above
-
-    except KeyboardInterrupt:
-        print("\n--- Training interrupted by user ---")
-    except Exception as e:
-        print(f"\n--- An error occurred during training loop: {e} ---")
-        import traceback
-        traceback.print_exc()
-
-    # --- 11. Final Summary and Artifact Saving ---
-    finally:
-        total_time = time.time() - start_time
-
-        # Save final checkpoint
-        ckpt_mgr.save_final(
-            epoch if 'epoch' in locals() else 0,
-            params, opt_state, val_metrics,
-            avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth
-        )
-
-        best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
-        best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
-
-        console.print_completion_summary(
-            total_time=total_time,
-            final_epoch=epoch if 'epoch' in locals() else 0,
-            best_nse_stats=best_nse_ckpt,
-            best_loss_stats=best_loss_ckpt,
-            final_losses=avg_losses_unweighted if 'avg_losses_unweighted' in locals() else {},
-            final_val_metrics=val_metrics if 'val_metrics' in locals() else {},
-            neg_depth_final=neg_depth if 'neg_depth' in locals() else {},
-            neg_depth_best_nse={},
-            neg_depth_best_loss={},
-            final_lr=current_lr if 'current_lr' in locals() else cfg["training"]["learning_rate"],
-            converged=False
-        )
-
-        if aim_tracker.enabled:
-            try:
-                summary_best_nse = best_nse_stats.copy()
-                summary_best_nse['epoch'] = best_nse_stats.get('epoch', 0) + 1
-                summary_best_loss = best_loss_stats.copy()
-                summary_best_loss['epoch'] = best_loss_stats.get('epoch', 0) + 1
-
-                summary_metrics = {
-                    'best_validation_model': summary_best_nse,
-                    'best_loss_model': summary_best_loss,
-                    'final_system': {
-                        'total_training_time_seconds': total_time,
-                        'total_epochs_run': (epoch + 1) if 'epoch' in locals() else 0,
-                        'total_steps_run': global_step
-                    }
-                }
-                aim_tracker.log_summary(summary_metrics)
-                print("Summary metrics logged to Aim.")
-            except Exception as e:
-                 print(f"Warning: Error logging summary metrics to Aim: {e}")
-
-        # --- Save Model and Generate Final Plots ---
-        if ask_for_confirmation():
-            if best_params_nse is not None:
-                try:
-                    model_save_path = save_model(best_params_nse, model_dir, trial_name)
-                    print(f"Best model (by NSE) saved to: {model_save_path}")
-
-                    if aim_tracker.enabled:
-                        aim_tracker.log_artifact(model_save_path, 'model_weights.pkl')
-
-                    # --- Generate 1D Plot ---
-                    print("  Generating 1D validation plot...")
-                    plot_cfg = cfg.get("plotting", {})
-                    eps_plot = cfg.get("numerics", {}).get("eps", 1e-6)
-                    t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
-
-                    nx_val_plot = plot_cfg.get("nx_val", 101)
-                    y_const_plot = plot_cfg.get("y_const_plot", 0.0)
-                    x_val_plot = jnp.linspace(0.0, cfg["domain"]["lx"], nx_val_plot, dtype=DTYPE)
-                    plot_points_1d = jnp.stack([
-                        x_val_plot,
-                        jnp.full_like(x_val_plot, y_const_plot, dtype=DTYPE),
-                        jnp.full_like(x_val_plot, t_const_val_plot, dtype=DTYPE)
-                    ], axis=1)
-
-                    U_plot_pred_1d = model.apply({'params': best_params_nse['params']}, plot_points_1d, train=False)
-                    h_plot_pred_1d = U_plot_pred_1d[..., 0]
-                    h_plot_pred_1d = jnp.where(h_plot_pred_1d < eps_plot, 0.0, h_plot_pred_1d)
-
-                    plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
-                    plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d)
-
-                    if aim_tracker.enabled:
-                        aim_tracker.log_image(plot_path_1d, 'validation_plot_1D', best_nse_stats['epoch'])
-
-                    print(f"Model and plot saved in {model_dir} and {results_dir} (and logged to Aim)")
-                except Exception as e:
-                     print(f"Error during saving/plotting: {e}")
-                     import traceback
-                     traceback.print_exc()
-            else:
-                print("Warning: No best model found (best_params_nse is None). Skipping save and plot.")
-        else:
-            print("Save aborted by user. Deleting artifacts...")
-            try:
-                aim_tracker.delete_run()
-
-                if os.path.exists(results_dir):
-                    shutil.rmtree(results_dir)
-                    print(f"Deleted results directory: {results_dir}")
-                if os.path.exists(model_dir):
-                    shutil.rmtree(model_dir)
-                    print(f"Deleted model directory: {model_dir}")
-
-                if aim_tracker.run_hash:
-                    run_artifact_dir = os.path.join("aim_repo", "aim_artifacts", aim_tracker.run_hash)
-                    if os.path.exists(run_artifact_dir):
-                        shutil.rmtree(run_artifact_dir)
-                        print(f"Deleted run artifact directory: {run_artifact_dir}")
-
-                print("Cleanup complete.")
-            except Exception as e:
-                print(f"Error during cleanup: {e}")
-
-        aim_tracker.close()
-
-    return best_nse_stats['nse'] if best_nse_stats['nse'] > -jnp.inf else -1.0
+    return loop_result["best_nse_stats"]["nse"] if loop_result["best_nse_stats"]["nse"] > -jnp.inf else -1.0
 
 
 if __name__ == "__main__":

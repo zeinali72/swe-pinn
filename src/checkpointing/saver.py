@@ -60,7 +60,7 @@ class CheckpointManager:
     ) -> List[str]:
         """Check both criteria and save if improved. Returns list of events."""
         saved = []
-        nse_h = val_metrics.get('nse_h', -float('inf'))
+        nse_h = val_metrics.get('selection_metric', val_metrics.get('nse_h', -float('inf')))
 
         if nse_h > self.best_nse_h:
             prev_nse = self.best_nse_h
@@ -153,7 +153,10 @@ class CheckpointManager:
         path = self.experiment_dir / 'checkpoints' / name / 'metadata.yaml'
         if path.exists():
             with open(path) as f:
-                return yaml.safe_load(f)
+                metadata = yaml.safe_load(f) or {}
+            if 'total_weighted_loss' not in metadata and 'total_loss' in metadata:
+                metadata['total_weighted_loss'] = metadata['total_loss']
+            return metadata
         return {}
 
     def _load_params(self, name) -> Optional[dict]:
