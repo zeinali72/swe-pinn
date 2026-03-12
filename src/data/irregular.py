@@ -121,6 +121,22 @@ class IrregularDomainSampler:
             starts, vecs, cdf
         )
 
+    def boundary_length(self, boundary_type: str) -> float:
+        """Return the total geometric length of a named boundary.
+
+        This is computed from the stored segment vectors.  For an inflow or
+        upstream boundary the value corresponds to the discharge width
+        needed to convert volumetric flow Q (m³/s) to specific discharge
+        hu (m²/s).
+        """
+        if boundary_type not in self.boundaries:
+            raise KeyError(
+                f"Boundary '{boundary_type}' not found. "
+                f"Available: {list(self.boundaries.keys())}"
+            )
+        _starts, vecs, _cdf = self.boundaries[boundary_type]
+        return float(jnp.sum(jnp.sqrt(jnp.sum(vecs ** 2, axis=1))))
+
 
 class DeepONetParametricSampler:
     """Unified sampler for DeepONet training.

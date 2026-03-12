@@ -11,42 +11,25 @@ logging and result visualization through Aim.
 
 import os
 import sys
-import time
-import copy
 import argparse
-import itertools
 from typing import Any, Dict, Tuple
-import shutil
 
 import jax
 import jax.numpy as jnp
-from jax import random, lax
+from jax import random
 import optax
-try:
-    from aim import Image
-except ImportError:
-    Image = None
 from flax.core import FrozenDict
 import numpy as np
 
 # Local application imports
-from src.config import load_config, DTYPE
-from src.data import sample_domain, get_batches, get_batches_tensor, get_sample_count
-from src.models import init_model
+from src.config import DTYPE
+from src.data import sample_domain, get_batches_tensor
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
     compute_data_loss, compute_neg_h_loss
 )
-from src.utils import (
-    nse, rmse, generate_trial_name, save_model, ask_for_confirmation,
-    plot_h_vs_x
-)
+from src.utils import nse, rmse, plot_h_vs_x
 from src.physics import h_exact
-from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
-from src.monitoring.diagnostics import compute_grad_norm
-from src.metrics.accuracy import compute_validation_metrics
-from src.checkpointing import CheckpointManager
-from src.predict import Predictor
 from src.training import (
     create_optimizer,
     calculate_num_batches,
@@ -54,6 +37,10 @@ from src.training import (
     get_active_loss_weights,
     get_boundary_segment_count,
     get_sampling_count_from_config,
+    make_scan_body,
+    sample_and_batch,
+    empty_batch,
+    maybe_batch_data,
     post_training_save,
     resolve_data_mode,
     run_training_loop,
@@ -281,73 +268,35 @@ def main(config_path: str):
     # --- Define JIT Data Generator ---
     def generate_epoch_data(key):
         key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
-        
-        # PDE
-        if n_pde // batch_size > 0:
-            pde_points = sample_domain(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
-            pde_data = get_batches_tensor(pde_key, pde_points, batch_size, num_batches)
-        else:
-            pde_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
 
-        # IC
-        if n_ic // batch_size > 0:
-            ic_points = sample_domain(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
-            ic_data = get_batches_tensor(ic_key, ic_points, batch_size, num_batches)
-        else:
-            ic_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
-            
-        # BCs
-        bc_data = {}
+        pde_data = sample_and_batch(pde_key, sample_domain, n_pde, batch_size, num_batches, x_range, y_range, t_range)
+        ic_data = sample_and_batch(ic_key, sample_domain, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
+
         l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
-        
-        # Helper for walls
-        def get_wall_data(k, n, x_rng, y_rng, t_rng):
-            if n // batch_size > 0:
-                pts = sample_domain(k, n, x_rng, y_rng, t_rng)
-                return get_batches_tensor(k, pts, batch_size, num_batches)
-            return jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
-
-        bc_data['left'] = get_wall_data(l_key, n_bc_per_wall, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
-        bc_data['right'] = get_wall_data(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
-        bc_data['bottom'] = get_wall_data(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.), (0., domain_cfg["t_final"]))
-        bc_data['top'] = get_wall_data(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]), (0., domain_cfg["t_final"]))
-
-        # Data
-        data_data = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
-        if not data_free and data_points_full is not None:
-             # get_batches_tensor reshapes/repeats data_points_full to match num_batches
-             data_data = get_batches_tensor(data_key, data_points_full, batch_size, num_batches)
+        bc_data = {
+            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (0., 0.), y_range, t_range),
+            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range),
+            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+        }
 
         return {
             'pde': pde_data,
             'ic': ic_data,
             'bc': bc_data,
-            'data': data_data,
-            'building_bc': {} # Empty for analytical
+            'data': maybe_batch_data(data_key, data_points_full, batch_size, num_batches, data_free),
+            'building_bc': {},
         }
 
     generate_epoch_data_jit = jax.jit(generate_epoch_data)
 
     # --- Define Scan Body Function ---
-    def scan_body(carry, batch_data):
-        curr_params, curr_opt_state = carry
-        
-        # Reconstruct hierarchical dict expected by train_step
-        current_all_batches = {
-            'pde': batch_data['pde'],
-            'ic': batch_data['ic'],
-            'bc': batch_data['bc'],
-            'data': batch_data['data'],
-            'building_bc': batch_data['building_bc']
-        }
-
-        new_params, new_opt_state, terms, total = train_step(
-            model, curr_params, curr_opt_state,
-            current_all_batches,
-            current_weights_dict,
-            optimiser, cfg, data_free
-        )
-        return (new_params, new_opt_state), (terms, total)
+    scan_body = make_scan_body(
+        train_step, model, optimiser, current_weights_dict, cfg, data_free,
+    )
 
     def validation_fn(model, params):
         nse_val, rmse_val = -jnp.inf, jnp.inf

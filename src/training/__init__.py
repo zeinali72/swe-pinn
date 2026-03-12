@@ -18,3 +18,9 @@ from src.training.setup import (
 from src.training.optimizer import create_optimizer
 from src.training.data_loading import resolve_data_mode, load_training_data, load_validation_from_file
 from src.training.loop import run_training_loop, post_training_save
+from src.training.epoch import (
+	make_scan_body,
+	sample_and_batch,
+	empty_batch,
+	maybe_batch_data,
+)

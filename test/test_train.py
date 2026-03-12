@@ -115,7 +115,7 @@ class TestTrain(unittest.TestCase):
         with open(self.config_path, 'w') as f:
             yaml.dump(config, f)
 
-    @patch('experiments.experiment_1.train.ask_for_confirmation', return_value=True)
+    @patch('src.training.loop.ask_for_confirmation', return_value=True)
     def test_train_script_runs_without_errors(self, mock_ask_for_confirmation):
         """
         Test that the main training script runs for a few epochs without raising exceptions.
@@ -126,17 +126,23 @@ class TestTrain(unittest.TestCase):
             train_main(self.config_path)
 
             # Check if output directories were created as expected
-            results_dir_content = os.listdir("results")
+            # Results/models are scoped under the experiment name directory
+            experiment_results_dir = os.path.join("results", "experiment")
+            experiment_models_dir = os.path.join("models", "experiment")
+            self.assertTrue(os.path.isdir(experiment_results_dir), "Results experiment directory not found.")
+            self.assertTrue(os.path.isdir(experiment_models_dir), "Models experiment directory not found.")
+
+            results_dir_content = os.listdir(experiment_results_dir)
             self.assertTrue(any(d.endswith("_test_config") for d in results_dir_content), "Results directory not found.")
-            models_dir_content = os.listdir("models")
+            models_dir_content = os.listdir(experiment_models_dir)
             self.assertTrue(any(d.endswith("_test_config") for d in models_dir_content), "Models directory not found.")
 
             # Find the specific trial directory to check for output files
             trial_name = [d for d in results_dir_content if d.endswith("_test_config")][0]
-            self.assertTrue(os.path.exists(os.path.join("results", trial_name, "final_validation_plot.png")))
+            self.assertTrue(os.path.exists(os.path.join(experiment_results_dir, trial_name, "final_validation_plot.png")))
 
             # Check that checkpoint directories exist (dual checkpoint strategy)
-            model_trial_dir = os.path.join("models", trial_name)
+            model_trial_dir = os.path.join(experiment_models_dir, trial_name)
             self.assertTrue(os.path.exists(os.path.join(model_trial_dir, "checkpoints", "best_nse")))
             self.assertTrue(os.path.exists(os.path.join(model_trial_dir, "checkpoints", "best_loss")))
             self.assertTrue(os.path.exists(os.path.join(model_trial_dir, "checkpoints", "final")))

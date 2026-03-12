@@ -6,42 +6,27 @@ Builds on: Experiment 3.
 """
 import os
 import sys
-import time
-import copy
 import argparse
-import itertools
 from typing import Any, Dict, Tuple
-import shutil
-import pandas as pd # Added for reading output CSV
-
-from jaxtyping import config
+import pandas as pd
 
 import jax
 import jax.numpy as jnp
-from jax import random, lax
+from jax import random
 import optax
-try:
-    from aim import Image
-except ImportError:
-    Image = None
 from flax.core import FrozenDict
-import numpy as np 
-import matplotlib.pyplot as plt 
+import numpy as np
+import matplotlib.pyplot as plt
 
 # Local application imports
-from src.config import load_config, DTYPE
+from src.config import DTYPE
 from src.data import (
-    sample_domain, 
     get_batches_tensor,
-    get_sample_count,
     bathymetry_fn,
     load_boundary_condition,
     load_bathymetry,
     sample_lhs,
-    load_validation_data,
-    resolve_scenario_asset_path,
 )
-from src.models import init_model
 from src.losses import (
     compute_pde_loss,
     loss_boundary_dirichlet_hu,
@@ -52,13 +37,7 @@ from src.losses import (
     compute_data_loss,
     total_loss
 )
-from src.utils import ( 
-   nse, rmse, generate_trial_name, save_model, ask_for_confirmation
-)
-
-from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
-from src.metrics.accuracy import compute_validation_metrics
-from src.checkpointing import CheckpointManager
+from src.utils import nse, rmse
 from src.training import (
     create_optimizer,
     calculate_num_batches,
@@ -68,6 +47,9 @@ from src.training import (
     get_boundary_segment_count,
     load_training_data,
     load_validation_from_file,
+    make_scan_body,
+    sample_and_batch,
+    maybe_batch_data,
     post_training_save,
     resolve_configured_asset_path,
     resolve_experiment_paths,
@@ -272,88 +254,42 @@ def main(config_path: str):
     # JIT Data Generator
     def generate_epoch_data(key):
         key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
-        
-        # PDE: Domain is 2000x2000, t_final from config (usually 48h)
-        if n_pde // batch_size > 0:
-            pde_pts = sample_lhs(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
-            pde_data = get_batches_tensor(pde_key, pde_pts, batch_size, num_batches)
-        else:
-            pde_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
 
-        # IC: Dry Bed everywhere
-        if n_ic // batch_size > 0:
-            ic_pts = sample_lhs(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
-            ic_data = get_batches_tensor(ic_key, ic_pts, batch_size, num_batches)
-        else:
-            ic_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
-            
-        # BCs
-        # Test 2 Logic: 
-        # Left Boundary (x=0) is split:
-        #   - Inflow: y in [1900, 2000] (North-West 100m)
-        #   - Wall: y in [0, 1900]
-        # Right, Top, Bottom are simple walls.
-        
-        l_in_key, l_wall_key, r_key, b_key, t_key = random.split(bc_keys, 5)
-        
-        def get_bc_batch(k, n, x_range, y_range):
-            if n // batch_size > 0:
-                pts = sample_lhs(k, n, x_range, y_range, (0., domain_cfg["t_final"]))
-                return get_batches_tensor(k, pts, batch_size, num_batches)
-            return jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+        pde_data = sample_and_batch(pde_key, sample_lhs, n_pde, batch_size, num_batches, x_range, y_range, t_range)
+        ic_data = sample_and_batch(ic_key, sample_lhs, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
 
         # Split Left Boundary
         inflow_segment = cfg["boundary_conditions"]["left_inflow_segment"]
         y_inflow_start = inflow_segment["y_start"]
         y_inflow_end = inflow_segment["y_end"]
-        bc_inflow = get_bc_batch(l_in_key, n_bc_inflow, (0., 0.), (y_inflow_start, y_inflow_end))
-        bc_left_wall = get_bc_batch(l_wall_key, n_bc_per_wall, (0., 0.), (0., y_inflow_start))
 
-        # Other Boundaries
-        bc_right = get_bc_batch(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]))
-        bc_bot = get_bc_batch(b_key, n_bc_per_wall, (0., domain_cfg["lx"]), (0., 0.))
-        bc_top = get_bc_batch(t_key, n_bc_per_wall, (0., domain_cfg["lx"]), (domain_cfg["ly"], domain_cfg["ly"]))
-
-        # Data
-        data_data = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
-        if not data_free and data_points_full is not None:
-             data_data = get_batches_tensor(data_key, data_points_full, batch_size, num_batches)
+        l_in_key, l_wall_key, r_key, b_key, t_key = random.split(bc_keys, 5)
+        bc_inflow = sample_and_batch(l_in_key, sample_lhs, n_bc_inflow, batch_size, num_batches, (0., 0.), (y_inflow_start, y_inflow_end), t_range)
+        bc_left_wall = sample_and_batch(l_wall_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, (0., 0.), (0., y_inflow_start), t_range)
+        bc_right = sample_and_batch(r_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range)
+        bc_bot = sample_and_batch(b_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range)
+        bc_top = sample_and_batch(t_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range)
 
         return {
             'pde': pde_data,
             'ic': ic_data,
-            'bc': {
-                'inflow': bc_inflow, 
-                'left_wall': bc_left_wall, 
-                'right': bc_right, 
-                'bottom': bc_bot, 
-                'top': bc_top
-            },
-            'data': data_data
+            'bc_inflow': bc_inflow,
+            'bc_left_wall': bc_left_wall,
+            'bc_right': bc_right,
+            'bc_bottom': bc_bot,
+            'bc_top': bc_top,
+            'data': maybe_batch_data(data_key, data_points_full, batch_size, num_batches, data_free),
         }
-    
+
     generate_epoch_data_jitted = jax.jit(generate_epoch_data)
 
-    # Scan Body
-    def scan_body(carry, batch_data):
-        curr_params, curr_opt_state = carry
-        
-        current_all_batches = {
-            'pde': batch_data['pde'],
-            'ic': batch_data['ic'],
-            'bc_inflow': batch_data['bc']['inflow'],
-            'bc_left_wall': batch_data['bc']['left_wall'],
-            'bc_right': batch_data['bc']['right'],
-            'bc_bottom': batch_data['bc']['bottom'],
-            'bc_top': batch_data['bc']['top'],
-            'data': batch_data['data']
-        }
-
-        new_params, new_opt_state, terms, total = train_step_jitted(
-            model, optimiser, curr_params, curr_opt_state,
-            current_all_batches, cfg, data_free, bc_fn_static, current_weights_dict
-        )
-        return (new_params, new_opt_state), (terms, total)
+    scan_body = make_scan_body(
+        train_step_jitted, model, optimiser, current_weights_dict,
+        cfg, data_free, extra_static_args=(bc_fn_static,),
+    )
 
     loop_result = run_training_loop(
         cfg=cfg,
