@@ -60,10 +60,16 @@ from src.metrics.accuracy import compute_validation_metrics
 from src.checkpointing import CheckpointManager
 from src.training import (
     create_optimizer,
+    calculate_num_batches,
     extract_loss_weights,
+    get_data_filename,
+    get_sampling_count_from_config,
+    get_boundary_segment_count,
     load_training_data,
     load_validation_from_file,
     post_training_save,
+    resolve_configured_asset_path,
+    resolve_experiment_paths,
     resolve_data_mode,
     run_training_loop,
     setup_experiment,
@@ -106,7 +112,8 @@ def train_step(
         
         # Calculate target depth based on absolute water level 9.7m
         # h_target = max(0, 9.7 - z)
-        h_target_ic = jnp.maximum(0.0, 9.7 - z_ic)
+        initial_water_level = config["initial_condition"]["absolute_water_level"]
+        h_target_ic = jnp.maximum(0.0, initial_water_level - z_ic)
 
         loss_ic_h = jnp.mean((h_ic_pred - h_target_ic)**2)
         # Enforce zero velocity at t=0
@@ -171,9 +178,10 @@ def main(config_path: str):
     """
     
     #--- 1. LOAD CONFIGURATION ---
-    setup = setup_experiment(config_path, "experiment_3")
+    setup = setup_experiment(config_path)
     cfg_dict = setup["cfg_dict"]
     cfg = setup["cfg"]
+    experiment_name = setup["experiment_name"]
     model = setup["model"]
     params = setup["params"]
     train_key = setup["train_key"]
@@ -188,16 +196,18 @@ def main(config_path: str):
     static_weights_dict, current_weights_dict = extract_loss_weights(cfg)
 
     # --- 5. Load Data Assets ---
-    scenario_name = cfg.get('scenario')
-    if not scenario_name:
-         print(f"Error: 'scenario' key must be set in config '{config_path}'.")
-         sys.exit(1)
-         
-    base_data_path = os.path.join("data", scenario_name)
+    try:
+        experiment_paths = resolve_experiment_paths(cfg, experiment_name, require_scenario=True)
+    except ValueError as exc:
+        print(f"Error: {exc} in config '{config_path}'.")
+        sys.exit(1)
+
+    scenario_name = experiment_paths["scenario_name"]
+    base_data_path = experiment_paths["base_data_path"]
     
     # A. Load Bathymetry (REQUIRED)
     try:
-        dem_path = resolve_scenario_asset_path(base_data_path, scenario_name, "dem")
+        dem_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "dem")
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
@@ -206,7 +216,7 @@ def main(config_path: str):
 
     # B. Load Boundary Condition Function
     try:
-        bc_csv_path = resolve_scenario_asset_path(base_data_path, scenario_name, "boundary_condition")
+        bc_csv_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "boundary_condition")
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
@@ -219,43 +229,36 @@ def main(config_path: str):
         base_data_path,
         has_data_loss,
         static_weights_dict,
+        filename=get_data_filename(cfg, "training_file", "training_dataset_sample.npy"),
     )
 
     # C. Load Validation Data (Optional)
-    validation = load_validation_from_file(base_data_path, "validation_gauges.npy")
+    validation = load_validation_from_file(
+        base_data_path,
+        get_data_filename(cfg, "validation_file", "validation_gauges.npy"),
+    )
     validation_data_loaded = validation["loaded"]
     full_val_data = validation["full_val_data"]
     val_points_all = validation["val_points"]
     h_true_val_all = validation["h_true_val"]
 
-    # --- 6. Initialize Aim & Log Source Code ---
-    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
-    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
-    aim_tracker.log_flags({"scenario_type": "experiment_3"})
-    if aim_enabled:
-        try:
-            aim_tracker.log_artifact(config_path, 'run_config.yaml')
-            aim_tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
-        except Exception:
-            pass
-
-    # --- 7. Data Generation Setup ---
+    # --- 6. Data Generation Setup ---
     sampling_cfg = cfg["sampling"]
     batch_size = cfg["training"]["batch_size"]
     domain_cfg = cfg["domain"]
     
-    n_pde = get_sample_count(sampling_cfg, "n_points_pde", 1000)
-    n_ic = get_sample_count(sampling_cfg, "n_points_ic", 100)
-    n_bc_domain = get_sample_count(sampling_cfg, "n_points_bc_domain", 100)
-    n_bc_per_wall = max(5, n_bc_domain // 4)
+    n_pde = get_sampling_count_from_config(cfg, "n_points_pde")
+    n_ic = get_sampling_count_from_config(cfg, "n_points_ic")
+    n_bc_domain = get_sampling_count_from_config(cfg, "n_points_bc_domain")
+    n_bc_per_wall = get_boundary_segment_count(cfg, n_bc_domain)
 
     # Check batch size viability
-    bc_counts = [n_pde//batch_size, n_ic//batch_size, n_bc_per_wall//batch_size]
-
-    if not data_free and data_points_full is not None:
-        bc_counts.append(data_points_full.shape[0] // batch_size)
-
-    num_batches = max(bc_counts) if bc_counts else 0
+    num_batches = calculate_num_batches(
+        batch_size,
+        [n_pde, n_ic, n_bc_per_wall],
+        data_points_full,
+        data_free=data_free,
+    )
     
     if num_batches == 0:
         print(f"Error: Batch size {batch_size} is too large for sample counts.")
@@ -343,7 +346,7 @@ def main(config_path: str):
         generate_epoch_data_jit=generate_epoch_data_jitted,
         scan_body=scan_body,
         num_batches=num_batches,
-        experiment_name="experiment_3",
+        experiment_name=experiment_name,
         trial_name=trial_name,
         results_dir=results_dir,
         model_dir=model_dir,
