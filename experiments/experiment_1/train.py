@@ -26,7 +26,7 @@ from src.losses import (
     compute_data_loss, compute_neg_h_loss
 )
 from src.utils import nse, rmse, plot_h_vs_x
-from src.physics import h_exact
+from src.physics import h_exact, hu_exact, hv_exact
 from src.training import (
     create_optimizer,
     calculate_num_batches,
@@ -109,31 +109,30 @@ def main(config_path: str):
     # --- 5. Create Validation and Training Data (Analytical) ---
     
     # Create Analytical Validation Data
-    val_points, h_true_val = None, None
+    val_points, h_true_val, hu_true_val, hv_true_val = None, None, None, None
     validation_data_loaded = False
     try:
         val_grid_cfg = cfg["validation_grid"]
         domain_cfg = cfg["domain"]
         print(f"Creating analytical validation set from 'validation_grid' config...")
-        
+
         val_points = sample_domain(
             val_key,
             val_grid_cfg["n_points_val"],
             (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
         )
-        h_true_val = h_exact(
-            val_points[:, 0], # x
-            val_points[:, 2], # t
-            cfg["physics"]["n_manning"],
-            cfg["physics"]["u_const"]
-        )
-        
+        n_manning = cfg["physics"]["n_manning"]
+        u_const = cfg["physics"]["u_const"]
+        h_true_val = h_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
+        hu_true_val = hu_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
+        hv_true_val = hv_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
+
         if val_points.shape[0] > 0:
             validation_data_loaded = True
             print(f"Created analytical validation set with {val_points.shape[0]} points.")
         else:
             print("Warning: Analytical validation set is empty.")
-            
+
     except KeyError:
         print("Warning: 'validation_grid' not found in config. Skipping NSE/RMSE calculation.")
     except Exception as e:
@@ -267,15 +266,24 @@ def main(config_path: str):
 
     def validation_fn(model, params):
         nse_val, rmse_val = -jnp.inf, jnp.inf
+        metrics = {}
         if validation_data_loaded:
             try:
                 U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
                 h_pred_val = U_pred_val[..., 0]
                 nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))
+                metrics = {'nse_h': nse_val, 'rmse_h': rmse_val}
+                if hu_true_val is not None and hv_true_val is not None:
+                    metrics['nse_hu'] = float(nse(U_pred_val[..., 1], hu_true_val))
+                    metrics['rmse_hu'] = float(rmse(U_pred_val[..., 1], hu_true_val))
+                    metrics['nse_hv'] = float(nse(U_pred_val[..., 2], hv_true_val))
+                    metrics['rmse_hv'] = float(rmse(U_pred_val[..., 2], hv_true_val))
             except Exception as exc:
                 print(f"Warning: Validation calculation failed: {exc}")
-        return {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+        if not metrics:
+            metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+        return metrics
 
     loop_result = run_training_loop(
         cfg=cfg,
