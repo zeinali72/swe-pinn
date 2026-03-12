@@ -203,6 +203,8 @@ swe-pinn/
 │   ├── filter_by_time.py           # Filter .npy by maximum time
 │   ├── preprocess_irregular.py     # Mesh preprocessing for irregular domains (Exp 7/8)
 │   ├── render_video.py             # Render solution animations (CLI-driven)
+│   ├── infer.py                    # Post-training inference CLI wrapper
+│   ├── lidar_download.py           # Download LIDAR elevation data from UK gov WCS
 │   └── cpp/                        # C++ CSV→binary converter
 │       └── preprocess.cpp
 ├── optimisation/                   # Hyperparameter optimisation (Optuna)
