@@ -73,12 +73,17 @@ swe-pinn/
 │   └── test_assets/
 │       └── test_config.yaml        # Minimal test configuration
 ├── scripts/                        # Data processing and utility scripts
-│   ├── create_samples.py           # Generate training samples from simulation output
-│   ├── filter_sample.py            # Filter/preprocess samples
-│   ├── convert_bin_to_npy.py       # Binary-to-numpy conversion
+│   ├── run_preprocess.sh           # Stage 1: Build & run C++ CSV→binary converter
+│   ├── binary_to_numpy.py          # Stage 2: Binary→.npy conversion
+│   ├── generate_training_data.py   # Stage 3: .npy→training/validation/plotting datasets
+│   ├── process_gauge_csvs.py       # Gauge CSV processing (depth/angle/speed→.npy)
+│   ├── extract_gauge_timeseries.py # Extract gauge time series from tensor
+│   ├── filter_by_time.py           # Filter .npy by maximum time
 │   ├── preprocess_irregular.py     # Mesh preprocessing for irregular domains (Exp 7/8)
 │   ├── render_video.py             # Render solution animations (CLI-driven)
-│   └── cpp/                        # C++ utilities for data generation
+│   ├── infer.py                    # Post-training inference CLI wrapper
+│   ├── lidar_download.py           # Download LIDAR elevation data from UK gov WCS
+│   └── cpp/                        # C++ CSV→binary converter
 │       └── preprocess.cpp
 ├── optimisation/                   # Hyperparameter optimisation (Optuna)
 │   ├── run_optimization.py         # Main HPO entry point
