@@ -7,42 +7,28 @@ Builds on: Experiment 7.
 """
 import os
 import sys
-import time
-import copy
 import argparse
-import itertools
 from typing import Any, Dict, Tuple
-import shutil
-import pandas as pd 
-
-from jaxtyping import config
+import pandas as pd
 
 import jax
 import jax.numpy as jnp
-from jax import random, lax
+from jax import random
 import optax
-try:
-    from aim import Image
-except ImportError:
-    Image = None
 from flax.core import FrozenDict
-import numpy as np 
+import numpy as np
 import matplotlib
-matplotlib.use('Agg') # Ensure headless plotting
-import matplotlib.pyplot as plt 
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # Local application imports
 from src.config import load_config, DTYPE
 from src.data import (
     get_batches_tensor,
-    get_sample_count,
     load_boundary_condition,
     IrregularDomainSampler,
     load_bathymetry,
-    load_validation_data,
-    resolve_scenario_asset_path,
 )
-from src.models import init_model
 from src.losses import (
     compute_pde_loss,
     loss_boundary_dirichlet_hu,
@@ -52,13 +38,7 @@ from src.losses import (
     compute_data_loss,
     total_loss
 )
-from src.utils import ( 
-   nse, rmse, generate_trial_name, save_model, ask_for_confirmation
-)
-
-from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
-from src.metrics.accuracy import compute_validation_metrics
-from src.checkpointing import CheckpointManager
+from src.utils import nse, rmse
 from src.training import (
     apply_irregular_domain_bounds,
     apply_output_scales,
@@ -72,6 +52,8 @@ from src.training import (
     init_model_from_config,
     load_training_data,
     load_validation_from_file,
+    make_scan_body,
+    maybe_batch_data,
     post_training_save,
     resolve_configured_asset_path,
     resolve_experiment_paths,
@@ -191,6 +173,13 @@ def main(config_path: str):
     output_scales = apply_output_scales(cfg_dict, (1.0, 1.0, 1.0))
     print(f"Active Output Scaling: {output_scales}")
 
+    # Derive upstream discharge width from the domain geometry
+    bc_cfg = cfg_dict.setdefault("boundary_conditions", {})
+    if 'upstream' in domain_sampler.boundaries:
+        computed_width = domain_sampler.boundary_length('upstream')
+        bc_cfg["upstream_discharge_width"] = computed_width
+        print(f"Upstream discharge width derived from shapefile: {computed_width:.4f} m")
+
     # --- 3. FINALIZE CONFIG & INIT MODEL ---
     cfg = FrozenDict(cfg_dict)
     model, params, train_key, val_key = init_model_from_config(cfg)
@@ -219,7 +208,6 @@ def main(config_path: str):
     bc_fn_static = load_boundary_condition(bc_csv_path)
 
     # D. Load Validation and Training Data
-    val_points, h_true_val = None, None
     data_points_full = None
     
     data_free, has_data_loss = resolve_data_mode(cfg)
@@ -278,58 +266,37 @@ def main(config_path: str):
 
     def generate_epoch_data(key):
         k1, k2, k3, k4, k5, k6 = random.split(key, 6)
-        
-        # Interior
-        pde_pts = domain_sampler.sample_interior(k1, n_pde, (0., domain_cfg["t_final"]))
+        t_range = (0., domain_cfg["t_final"])
+
+        pde_pts = domain_sampler.sample_interior(k1, n_pde, t_range)
         pde_data = get_batches_tensor(k1, pde_pts, batch_size, num_batches)
-        
-        # IC
+
         ic_pts = domain_sampler.sample_interior(k2, n_ic, (0., 0.))
         ic_data = get_batches_tensor(k2, ic_pts, batch_size, num_batches)
-        
-        # BCs
-        # CHANGED: Sampling 'upstream' boundary instead of generic 'inflow'
-        bc_upstream_pts = domain_sampler.sample_boundary(k3, n_bc_upstream, (0., domain_cfg["t_final"]), 'upstream')
+
+        bc_upstream_pts = domain_sampler.sample_boundary(k3, n_bc_upstream, t_range, 'upstream')
         bc_upstream = get_batches_tensor(k3, bc_upstream_pts, batch_size, num_batches)
 
-        bc_wall_pts = domain_sampler.sample_boundary(k4, n_bc_wall, (0., domain_cfg["t_final"]), 'wall')
+        bc_wall_pts = domain_sampler.sample_boundary(k4, n_bc_wall, t_range, 'wall')
         bc_wall = get_batches_tensor(k4, bc_wall_pts, batch_size, num_batches)
-        
-        bc_building_pts = domain_sampler.sample_boundary(k5, n_building, (0., domain_cfg["t_final"]), 'building')
+
+        bc_building_pts = domain_sampler.sample_boundary(k5, n_building, t_range, 'building')
         bc_building = get_batches_tensor(k5, bc_building_pts, batch_size, num_batches)
-        
-        # Data
-        if not data_free and data_points_full is not None:
-             data_d = get_batches_tensor(k6, data_points_full, batch_size, num_batches)
-        else:
-             data_d = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
 
         return {
-            'pde': pde_data, 'ic': ic_data, 
+            'pde': pde_data, 'ic': ic_data,
             'bc_upstream': bc_upstream,
-            'bc_wall': bc_wall, 
+            'bc_wall': bc_wall,
             'bc_building': bc_building,
-            'data': data_d
+            'data': maybe_batch_data(k6, data_points_full, batch_size, num_batches, data_free),
         }
     
     generate_epoch_data_jitted = jax.jit(generate_epoch_data)
 
-    # Scan Body
-    def scan_body(carry, batch_data):
-        curr_params, curr_opt_state = carry
-        current_all_batches = {
-            'pde': batch_data['pde'],
-            'ic': batch_data['ic'],
-            'bc_upstream': batch_data['bc_upstream'],
-            'bc_wall': batch_data['bc_wall'], 
-            'bc_building': batch_data['bc_building'],
-            'data': batch_data['data']
-        }
-        new_params, new_opt_state, terms, total = train_step_jitted(
-            model, optimiser, curr_params, curr_opt_state,
-            current_all_batches, cfg, data_free, bc_fn_static, current_weights_dict
-        )
-        return (new_params, new_opt_state), (terms, total)
+    scan_body = make_scan_body(
+        train_step_jitted, model, optimiser, current_weights_dict,
+        cfg, data_free, extra_static_args=(bc_fn_static,),
+    )
 
     def validation_fn(model, params):
         combined_nse_val = -float('inf')

@@ -58,13 +58,12 @@ from src.losses import (
     compute_data_loss,
     total_loss
 )
-from src.utils import ( 
-   nse, rmse, generate_trial_name, save_model, ask_for_confirmation
+from src.utils import (
+    nse, rmse, generate_trial_name, save_model, ask_for_confirmation
 )
-
 from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
-from src.metrics.accuracy import compute_validation_metrics
 from src.checkpointing import CheckpointManager
+from src.training import make_scan_body, maybe_batch_data
 
 from src.physics import SWEPhysics 
 
@@ -208,7 +207,8 @@ def train_step(
         if batch['bc_upstream'].shape[0] > 0:
             t_inflow = batch['bc_upstream'][..., 2]
             Q_target = bc_fn_static(t_inflow) 
-            flux_target_x = Q_target / 372.92  
+            upstream_width = config["boundary_conditions"]["upstream_discharge_width"]
+            flux_target_x = Q_target / upstream_width
             loss_inflow_x = loss_boundary_dirichlet_hu(model, params, batch['bc_upstream'], flux_target_x)
             loss_inflow_y = loss_boundary_dirichlet_hv(model, params, batch['bc_upstream'], jnp.zeros_like(flux_target_x))
             loss_bc_inflow = loss_inflow_x + loss_inflow_y
@@ -299,6 +299,13 @@ def main(config_path: str):
 
     if 'model' not in cfg_dict: cfg_dict['model'] = {}
     cfg_dict['model']['output_scales'] = (h_scale, hu_scale, hv_scale)
+
+    # Derive upstream discharge width from the domain geometry
+    bc_cfg = cfg_dict.setdefault("boundary_conditions", {})
+    if 'upstream' in domain_sampler.boundaries:
+        computed_width = domain_sampler.boundary_length('upstream')
+        bc_cfg["upstream_discharge_width"] = computed_width
+        print(f"Upstream discharge width derived from shapefile: {computed_width:.4f} m")
 
     # --- 3. FINALIZE CONFIG & INIT MODEL ---
     cfg = FrozenDict(cfg_dict)
@@ -484,54 +491,38 @@ def main(config_path: str):
     # --- Epoch Data Generation ---
     def generate_epoch_data_with_IS(key, current_pde_pts, current_pde_weights):
         k1, k2, k3, k4, k5 = random.split(key, 5)
-        # PDE: Use provided active set (assumed shuffled)
+        t_range = (0., domain_cfg["t_final"])
+
         pde_data = current_pde_pts.reshape((num_batches, batch_size, 3))
         pde_w = current_pde_weights.reshape((num_batches, batch_size))
-        
+
         ic_pts = domain_sampler.sample_interior(k2, n_ic, (0., 0.))
         ic_data = get_batches_tensor(k2, ic_pts, batch_size, num_batches)
-        
-        bc_upstream_pts = domain_sampler.sample_boundary(k3, n_bc_upstream, (0., domain_cfg["t_final"]), 'upstream')
+
+        bc_upstream_pts = domain_sampler.sample_boundary(k3, n_bc_upstream, t_range, 'upstream')
         bc_upstream = get_batches_tensor(k3, bc_upstream_pts, batch_size, num_batches)
 
-        bc_wall_pts = domain_sampler.sample_boundary(k4, n_bc_wall, (0., domain_cfg["t_final"]), 'wall')
+        bc_wall_pts = domain_sampler.sample_boundary(k4, n_bc_wall, t_range, 'wall')
         bc_wall = get_batches_tensor(k4, bc_wall_pts, batch_size, num_batches)
-        
-        bc_building_pts = domain_sampler.sample_boundary(k5, n_building, (0., domain_cfg["t_final"]), 'building')
+
+        bc_building_pts = domain_sampler.sample_boundary(k5, n_building, t_range, 'building')
         bc_building = get_batches_tensor(k5, bc_building_pts, batch_size, num_batches)
-        
-        if not data_free and data_points_full is not None:
-             data_d = get_batches_tensor(k5, data_points_full, batch_size, num_batches)
-        else:
-             data_d = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
 
         return {
             'pde': pde_data, 'pde_weights': pde_w,
-            'ic': ic_data, 
+            'ic': ic_data,
             'bc_upstream': bc_upstream,
-            'bc_wall': bc_wall, 
+            'bc_wall': bc_wall,
             'bc_building': bc_building,
-            'data': data_d
+            'data': maybe_batch_data(k5, data_points_full, batch_size, num_batches, data_free),
         }
 
     generate_epoch_data_jitted = jax.jit(generate_epoch_data_with_IS)
 
-    def scan_body(carry, batch_data):
-        curr_params, curr_opt_state = carry
-        current_all_batches = {
-            'pde': batch_data['pde'],
-            'pde_weights': batch_data['pde_weights'], 
-            'ic': batch_data['ic'],
-            'bc_upstream': batch_data['bc_upstream'],
-            'bc_wall': batch_data['bc_wall'], 
-            'bc_building': batch_data['bc_building'],
-            'data': batch_data['data']
-        }
-        new_params, new_opt_state, terms, total = train_step_jitted(
-            model, optimiser, curr_params, curr_opt_state,
-            current_all_batches, cfg, data_free, bc_fn_static, current_weights_dict
-        )
-        return (new_params, new_opt_state), (terms, total)
+    scan_body = make_scan_body(
+        train_step_jitted, model, optimiser, current_weights_dict,
+        cfg, data_free, extra_static_args=(bc_fn_static,),
+    )
 
     # --- 10. Training Loop ---
     best_nse_stats = {
