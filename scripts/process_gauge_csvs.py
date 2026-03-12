@@ -179,14 +179,18 @@ def process_gauge_csvs(
 
         # Save training data
         train_data = np.vstack([processed_gauges[i] for i in train_indices])
-        os.makedirs(os.path.dirname(output_train), exist_ok=True)
+        output_dir = os.path.dirname(output_train)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         np.save(output_train, train_data.astype(np.float32))
         print(f"Saved training data to: {output_train} {train_data.shape}")
 
         # Save validation data
         if len(val_indices) > 0:
             val_data = np.vstack([processed_gauges[i] for i in val_indices])
-            os.makedirs(os.path.dirname(output_val), exist_ok=True)
+            output_dir = os.path.dirname(output_val)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
             np.save(output_val, val_data.astype(np.float32))
             print(f"Saved validation data to: {output_val} {val_data.shape}")
     else:
@@ -194,7 +198,9 @@ def process_gauge_csvs(
         final_array = np.vstack(processed_gauges)
         final_array = final_array[final_array[:, 0].argsort()]
 
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         np.save(output_file, final_array.astype(np.float32))
 
         print(f"\nProcessed {matched_count} gauges.")

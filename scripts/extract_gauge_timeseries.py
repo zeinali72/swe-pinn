@@ -14,18 +14,20 @@ Usage:
     python extract_gauge_timeseries.py --input data.npy --output gauges.npy \\
         --gauges 400,50 600,50
 """
+from __future__ import annotations
 
 import numpy as np
 import argparse
 import os
 import sys
 import time
+from typing import Optional
 
 
 def extract_gauges_fast(
     input_path: str,
     output_path: str,
-    gauge_coords: list[tuple[float, float]] | None = None,
+    gauge_coords: Optional[list[tuple[float, float]]] = None,
 ):
     """Extract time series at gauge locations from a spatiotemporal tensor.
 
