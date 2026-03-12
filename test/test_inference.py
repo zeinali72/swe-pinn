@@ -351,5 +351,97 @@ class TestIntegrationSmokeTest(unittest.TestCase):
 import jax
 
 
+# ---------------------------------------------------------------------------
+# Min-depth threshold tests
+# ---------------------------------------------------------------------------
+
+
+class TestApplyMinDepth(unittest.TestCase):
+    """Unit tests for the _apply_min_depth post-processing function."""
+
+    def test_no_masking_when_disabled(self):
+        from src.predict.predictor import _apply_min_depth
+        preds = jnp.array([[0.001, 0.01, 0.02], [0.1, 0.2, 0.3]])
+        result = _apply_min_depth(preds, 0.0)
+        np.testing.assert_array_equal(np.array(result), np.array(preds))
+
+    def test_zeros_below_threshold(self):
+        from src.predict.predictor import _apply_min_depth
+        preds = jnp.array([
+            [0.001, 0.5, 0.3],   # h=0.001 < 0.005 → dry
+            [0.01,  0.2, 0.1],   # h=0.01  >= 0.005 → wet
+            [0.004, 0.8, 0.4],   # h=0.004 < 0.005 → dry
+            [-0.01, 0.1, 0.2],   # h=-0.01 < 0.005 → dry
+        ])
+        result = _apply_min_depth(preds, 0.005)
+        expected = jnp.array([
+            [0.0,  0.0, 0.0],
+            [0.01, 0.2, 0.1],
+            [0.0,  0.0, 0.0],
+            [0.0,  0.0, 0.0],
+        ])
+        np.testing.assert_array_almost_equal(np.array(result), np.array(expected))
+
+    def test_all_wet(self):
+        from src.predict.predictor import _apply_min_depth
+        preds = jnp.array([[0.1, 0.5, 0.3], [1.0, 0.2, 0.1]])
+        result = _apply_min_depth(preds, 0.005)
+        np.testing.assert_array_almost_equal(np.array(result), np.array(preds))
+
+    def test_all_dry(self):
+        from src.predict.predictor import _apply_min_depth
+        preds = jnp.array([[0.001, 0.5, 0.3], [0.002, 0.2, 0.1]])
+        result = _apply_min_depth(preds, 0.005)
+        expected = jnp.zeros_like(preds)
+        np.testing.assert_array_almost_equal(np.array(result), np.array(expected))
+
+    def test_negative_min_depth_is_noop(self):
+        from src.predict.predictor import _apply_min_depth
+        preds = jnp.array([[0.001, 0.5, 0.3]])
+        result = _apply_min_depth(preds, -1.0)
+        np.testing.assert_array_equal(np.array(result), np.array(preds))
+
+
+class TestPredictorMinDepth(unittest.TestCase):
+    """Tests that Predictor applies min_depth threshold during prediction."""
+
+    def _make_model_and_params(self):
+        import flax.linen as nn
+
+        class ConstantModel(nn.Module):
+            values: tuple
+
+            @nn.compact
+            def __call__(self, x, train=False):
+                # Return constant values for every input point
+                v = jnp.array(self.values)
+                return jnp.broadcast_to(v, (x.shape[0], len(self.values)))
+
+        model = ConstantModel(values=(0.003, 0.5, 0.2))
+        variables = model.init(jax.random.PRNGKey(0), jnp.ones((1, 3)))
+        params = {"params": variables.get("params", {})}
+        return model, params
+
+    def test_predictor_without_min_depth(self):
+        from src.predict import Predictor
+        model, params = self._make_model_and_params()
+        predictor = Predictor(model, batch_size=10, min_depth=0.0)
+        coords = jnp.ones((5, 3))
+        result = predictor.predict_full(params, coords)
+        # h=0.003 should be preserved (no threshold)
+        self.assertAlmostEqual(float(result[0, 0]), 0.003, places=5)
+
+    def test_predictor_with_min_depth(self):
+        from src.predict import Predictor
+        model, params = self._make_model_and_params()
+        predictor = Predictor(model, batch_size=10, min_depth=0.005)
+        coords = jnp.ones((5, 3))
+        result = predictor.predict_full(params, coords)
+        # h=0.003 < 0.005 → all zeroed
+        np.testing.assert_array_almost_equal(
+            np.array(result), np.zeros((5, 3))
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
