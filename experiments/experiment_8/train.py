@@ -259,7 +259,7 @@ def main(config_path: str):
     def validation_fn(model, params):
         combined_nse_val = -float('inf')
         nse_h_val, nse_hu_val, nse_hv_val = -float('inf'), -float('inf'), -float('inf')
-        rmse_val = float('inf')
+        rmse_h_val, rmse_hu_val, rmse_hv_val = float('inf'), float('inf'), float('inf')
         if validation_data_loaded:
             try:
                 U_pred = model.apply(params, val_pts_batch, train=False)
@@ -270,7 +270,9 @@ def main(config_path: str):
                 nse_hu_val = float(nse(hu_pred, val_hu_true))
                 nse_hv_val = float(nse(hv_pred, val_hv_true))
                 combined_nse_val = (nse_h_val + nse_hu_val + nse_hv_val) / 3.0
-                rmse_val = float(rmse(h_pred, val_h_true))
+                rmse_h_val = float(rmse(h_pred, val_h_true))
+                rmse_hu_val = float(rmse(hu_pred, val_hu_true))
+                rmse_hv_val = float(rmse(hv_pred, val_hv_true))
             except Exception as exc:
                 print(f"Validation Error: {exc}")
 
@@ -280,7 +282,9 @@ def main(config_path: str):
             'nse_hu': float(nse_hu_val),
             'nse_hv': float(nse_hv_val),
             'combined_nse': float(combined_nse_val),
-            'rmse_h': float(rmse_val),
+            'rmse_h': float(rmse_h_val),
+            'rmse_hu': float(rmse_hu_val),
+            'rmse_hv': float(rmse_hv_val),
         }
 
     loop_result = run_training_loop(

@@ -121,10 +121,11 @@ class AimTracker:
                 _safe_float(lr), name='optim/lr',
                 step=step, epoch=epoch, context=ctx_train,
             )
-            run.track(
-                _safe_float(grad_norm), name='optim/grad_norm',
-                step=step, epoch=epoch, context=ctx_train,
-            )
+            if grad_norm is not None and grad_norm != 0.0:
+                run.track(
+                    _safe_float(grad_norm), name='optim/grad_norm',
+                    step=step, epoch=epoch, context=ctx_train,
+                )
             run.track(
                 _safe_float(epoch_time), name='optim/epoch_time_sec',
                 step=step, epoch=epoch, context=ctx_sys,
@@ -174,10 +175,7 @@ class AimTracker:
                 _safe_float(nse_h), name='best/nse_h_value',
                 step=epoch, epoch=epoch,
             )
-            self.aim_run.track(
-                epoch + 1, name='best/nse_h_epoch',
-                step=epoch, epoch=epoch,
-            )
+            self.aim_run['best_nse_h_epoch'] = epoch + 1
         except Exception:
             pass
 
@@ -189,10 +187,7 @@ class AimTracker:
                 _safe_float(loss), name='best/loss_value',
                 step=epoch, epoch=epoch,
             )
-            self.aim_run.track(
-                epoch + 1, name='best/loss_epoch',
-                step=epoch, epoch=epoch,
-            )
+            self.aim_run['best_loss_epoch'] = epoch + 1
         except Exception:
             pass
 

@@ -82,7 +82,7 @@ def load_validation_from_file(base_data_path, filename="validation_gauges.npy"):
         val_points : ndarray | None
         h_true_val : ndarray | None
     """
-    result = {"loaded": False, "full_val_data": None, "val_points": None, "h_true_val": None}
+    result = {"loaded": False, "full_val_data": None, "val_points": None, "h_true_val": None, "val_targets": None}
     validation_data_file = os.path.join(base_data_path, filename)
 
     if not os.path.exists(validation_data_file):
@@ -99,6 +99,7 @@ def load_validation_from_file(base_data_path, filename="validation_gauges.npy"):
                 "full_val_data": full_val_data,
                 "val_points": val_points,
                 "h_true_val": h_true_val,
+                "val_targets": val_targets,
             })
         else:
             print("Warning: No validation points remaining after masking. NSE/RMSE calculation will be skipped.")

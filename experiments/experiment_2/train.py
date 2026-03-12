@@ -163,6 +163,8 @@ def main(config_path: str):
         get_data_filename(cfg, "validation_file", "validation_sample.npy"),
     )
     validation_data_loaded = False
+    val_hu_true = None
+    val_hv_true = None
     if os.path.exists(validation_data_file):
         try:
             print(f"Loading VALIDATION data from: {validation_data_file}")
@@ -172,6 +174,9 @@ def main(config_path: str):
             mask_val = mask_points_inside_building(val_points_all, cfg["building"])
             val_points = val_points_all[mask_val]
             h_true_val = h_true_val_all[mask_val]
+            if val_targets_all.shape[-1] >= 3:
+                val_hu_true = (val_targets_all[:, 0] * val_targets_all[:, 1])[mask_val]
+                val_hv_true = (val_targets_all[:, 0] * val_targets_all[:, 2])[mask_val]
             num_masked_val_points = val_points.shape[0]
             print(f"Masked validation metrics points remaining: {num_masked_val_points}.")
             if num_masked_val_points > 0:
@@ -267,15 +272,24 @@ def main(config_path: str):
 
     def validation_fn(model, params):
         nse_val, rmse_val = -jnp.inf, jnp.inf
+        metrics = {}
         if validation_data_loaded:
             try:
                 U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
                 h_pred_val = U_pred_val[..., 0]
                 nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))
+                metrics = {'nse_h': nse_val, 'rmse_h': rmse_val}
+                if val_hu_true is not None and val_hv_true is not None:
+                    metrics['nse_hu'] = float(nse(U_pred_val[..., 1], val_hu_true))
+                    metrics['rmse_hu'] = float(rmse(U_pred_val[..., 1], val_hu_true))
+                    metrics['nse_hv'] = float(nse(U_pred_val[..., 2], val_hv_true))
+                    metrics['rmse_hv'] = float(rmse(U_pred_val[..., 2], val_hv_true))
             except Exception as exc:
                 print(f"Warning: Validation calculation failed: {exc}")
-        return {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+        if not metrics:
+            metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+        return metrics
 
     loop_result = run_training_loop(
         cfg=cfg,
