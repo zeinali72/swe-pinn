@@ -152,6 +152,7 @@ def main(config_path: str):
     full_val_data = validation["full_val_data"]
     val_points_all = validation["val_points"]
     h_true_val_all = validation["h_true_val"]
+    val_targets_all = validation["val_targets"]
 
     # --- 6. Data Generation Setup ---
     sampling_cfg = cfg["sampling"]
@@ -233,6 +234,7 @@ def main(config_path: str):
         validation_data_loaded=validation_data_loaded,
         val_points_all=val_points_all,
         h_true_val_all=h_true_val_all,
+        val_targets_all=val_targets_all,
         source_script_path=__file__,
     )
 

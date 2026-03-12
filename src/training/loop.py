@@ -37,6 +37,7 @@ def run_training_loop(
     config_path,
     validation_data_loaded=False,
     val_points_all=None, h_true_val_all=None,
+    val_targets_all=None,
     pde_key_for_diag="pde",
     validation_fn=None,
     selection_metric_key="nse_h",
@@ -132,9 +133,19 @@ def run_training_loop(
                         U_val = model.apply(params, val_points_all, train=False)
                         nse_val = nse(U_val[..., 0], h_true_val_all)
                         rmse_val = rmse(U_val[..., 0], h_true_val_all)
+                        val_metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+                        # Compute hu/hv metrics when full targets [h, u, v] are available
+                        if val_targets_all is not None and val_targets_all.shape[-1] >= 3:
+                            hu_true = val_targets_all[..., 0] * val_targets_all[..., 1]
+                            hv_true = val_targets_all[..., 0] * val_targets_all[..., 2]
+                            val_metrics['nse_hu'] = float(nse(U_val[..., 1], hu_true))
+                            val_metrics['rmse_hu'] = float(rmse(U_val[..., 1], hu_true))
+                            val_metrics['nse_hv'] = float(nse(U_val[..., 2], hv_true))
+                            val_metrics['rmse_hv'] = float(rmse(U_val[..., 2], hv_true))
                     except Exception:
                         pass
-                val_metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+                if not val_metrics:
+                    val_metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
 
             selection_metric = float(val_metrics.get(selection_metric_key, -jnp.inf))
             rmse_val = float(val_metrics.get('rmse_h', jnp.inf))
