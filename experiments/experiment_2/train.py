@@ -14,12 +14,9 @@ This is derived from the unified 'src/train.py'.
 import os
 import sys
 import argparse
-from typing import Any, Dict, Tuple
-
 import jax
 import jax.numpy as jnp
 from jax import random
-import optax
 from flax.core import FrozenDict
 import numpy as np
 
@@ -32,7 +29,7 @@ if project_root not in sys.path:
 from src.config import DTYPE
 from src.data import sample_domain, get_batches_tensor, load_validation_data
 from src.losses import (
-    compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
+    compute_pde_loss, compute_ic_loss, compute_bc_loss,
     compute_building_bc_loss, compute_data_loss, compute_neg_h_loss
 )
 from src.utils import (
@@ -48,6 +45,7 @@ from src.training import (
     get_data_filename,
     get_sampling_count_from_config,
     load_training_data,
+    train_step_jitted,
     make_scan_body,
     sample_and_batch,
     maybe_batch_data,
@@ -62,74 +60,46 @@ from src.training import (
 # jax.config.update('jax_enable_x64', True)
 
 
-def train_step(model: Any, params: FrozenDict, opt_state: Any,
-               all_batches: Dict[str, Any],
-               weights_dict: Dict[str, float],
-               optimiser: optax.GradientTransformation,
-               config: FrozenDict,
-               data_free: bool = True
-               ) -> Tuple[FrozenDict, Any, Dict[str, jnp.ndarray], jnp.ndarray]:
-    """
-    Performs a single training step, including loss calculation and parameter updates.
-    (This function is identical to the one in src/train.py)
-    """
-    has_building = "building" in config # This will always be true for this script
-    active_loss_keys_base = list(weights_dict.keys())
+def compute_losses(model, params, batch, config, data_free):
+    """Compute all loss terms for Experiment 2 (building obstacle)."""
+    terms = {}
 
-    def loss_and_individual_terms(p):
-        terms = {}
-        pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
-        if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
-            pde_mask = mask_points_inside_building(pde_batch_data, config["building"])
-            terms['pde'] = compute_pde_loss(model, p, pde_batch_data, config, pde_mask)
-            if 'neg_h' in active_loss_keys_base:
-                terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data, pde_mask)
+    pde_batch_data = batch.get('pde', jnp.empty((0, 3), dtype=DTYPE))
+    if pde_batch_data.shape[0] > 0:
+        pde_mask = mask_points_inside_building(pde_batch_data, config["building"])
+        terms['pde'] = compute_pde_loss(model, params, pde_batch_data, config, pde_mask)
+        terms['neg_h'] = compute_neg_h_loss(model, params, pde_batch_data, pde_mask)
 
-        ic_batch_data = all_batches.get('ic', jnp.empty((0,3), dtype=DTYPE))
-        if 'ic' in active_loss_keys_base and ic_batch_data.shape[0] > 0:
-            terms['ic'] = compute_ic_loss(model, p, ic_batch_data)
+    ic_batch_data = batch.get('ic', jnp.empty((0, 3), dtype=DTYPE))
+    if ic_batch_data.shape[0] > 0:
+        terms['ic'] = compute_ic_loss(model, params, ic_batch_data)
 
-        bc_batches = all_batches.get('bc', {})
-        if 'bc' in active_loss_keys_base and any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
-             terms['bc'] = compute_bc_loss(
-                 model, p, 
-                 bc_batches.get('left', jnp.empty((0,3), dtype=DTYPE)),
-                 bc_batches.get('right', jnp.empty((0,3), dtype=DTYPE)),
-                 bc_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE)),
-                 bc_batches.get('top', jnp.empty((0,3), dtype=DTYPE)),
-                 config
-             )
+    bc_batches = batch.get('bc', {})
+    if any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape')):
+        terms['bc'] = compute_bc_loss(
+            model, params,
+            bc_batches.get('left', jnp.empty((0, 3), dtype=DTYPE)),
+            bc_batches.get('right', jnp.empty((0, 3), dtype=DTYPE)),
+            bc_batches.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
+            bc_batches.get('top', jnp.empty((0, 3), dtype=DTYPE)),
+            config,
+        )
 
-        # This block is the key part for the building scenario
-        if has_building and 'building_bc' in active_loss_keys_base:
-            bldg_batches = all_batches.get('building_bc', {})
-            if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
-                terms['building_bc'] = compute_building_bc_loss(
-                    model, p, 
-                    bldg_batches.get('left', jnp.empty((0,3), dtype=DTYPE)),
-                    bldg_batches.get('right', jnp.empty((0,3), dtype=DTYPE)),
-                    bldg_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE)),
-                    bldg_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
-                )
+    bldg_batches = batch.get('building_bc', {})
+    if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if hasattr(b, 'shape')):
+        terms['building_bc'] = compute_building_bc_loss(
+            model, params,
+            bldg_batches.get('left', jnp.empty((0, 3), dtype=DTYPE)),
+            bldg_batches.get('right', jnp.empty((0, 3), dtype=DTYPE)),
+            bldg_batches.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
+            bldg_batches.get('top', jnp.empty((0, 3), dtype=DTYPE)),
+        )
 
-        data_batch_data = all_batches.get('data', jnp.empty((0,6), dtype=DTYPE))
-        if not data_free and 'data' in active_loss_keys_base and data_batch_data.shape[0] > 0:
-             terms['data'] = compute_data_loss(model, p, data_batch_data, config)
+    data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+    if not data_free and data_batch_data.shape[0] > 0:
+        terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
-        terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
-        total = total_loss(terms_with_defaults, weights_dict)
-        return total, terms
-
-    (total_loss_val, individual_terms_val), grads = jax.value_and_grad(loss_and_individual_terms, has_aux=True)(params)
-    updates, new_opt_state = optimiser.update(grads, opt_state, params, value=total_loss_val)
-    new_params = optax.apply_updates(params, updates)
-    return new_params, new_opt_state, individual_terms_val, total_loss_val
-
-# JIT compile the training step
-train_step_jitted = jax.jit(
-    train_step,
-    static_argnames=('model', 'optimiser', 'config', 'data_free')
-)
+    return terms
 
 
 def main(config_path: str):
@@ -291,7 +261,8 @@ def main(config_path: str):
 
     # --- Define Scan Body Function ---
     scan_body = make_scan_body(
-        train_step, model, optimiser, current_weights_dict, cfg, data_free,
+        train_step_jitted, model, optimiser, current_weights_dict, cfg, data_free,
+        compute_losses_fn=compute_losses,
     )
 
     def validation_fn(model, params):
