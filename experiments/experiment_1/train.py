@@ -149,13 +149,32 @@ def main(config_path: str):
             domain_cfg = cfg["domain"]
             print(f"Creating analytical training dataset from 'train_grid' config...")
             
-            # 1. Sample points (x, y, t)
-            data_points_coords = sample_domain(
+            # 1. Sample gauge locations (x, y) and expand to full time series
+            n_gauges = train_grid_cfg["n_gauges"]
+            dt_data = train_grid_cfg["dt_data"]
+            t_final = domain_cfg["t_final"]
+
+            # Create time array at specified resolution
+            t_steps = jnp.arange(0., t_final + dt_data * 0.5, dt_data, dtype=DTYPE)
+            n_timesteps = t_steps.shape[0]
+
+            # Sample n_gauges random spatial locations
+            gauge_xy = sample_domain(
                 train_key,
-                train_grid_cfg["n_points_train"],
-                (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
-            )
-            
+                n_gauges,
+                (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.)
+            )[:, :2]  # shape (n_gauges, 2) — keep only x, y
+
+            # Expand: each gauge gets the full time series
+            # gauge_xy_rep: (n_gauges * n_timesteps, 2)
+            gauge_xy_rep = jnp.repeat(gauge_xy, n_timesteps, axis=0)
+            # t_rep: (n_gauges * n_timesteps, 1)
+            t_rep = jnp.tile(t_steps, n_gauges).reshape(-1, 1)
+            # data_points_coords: (n_gauges * n_timesteps, 3) — [x, y, t]
+            data_points_coords = jnp.hstack([gauge_xy_rep, t_rep])
+
+            print(f"Gauge-based sampling: {n_gauges} gauges x {n_timesteps} timesteps (dt={dt_data}s) = {data_points_coords.shape[0]} data points")
+
             # 2. Calculate true values (h, u, v)
             h_true_train = h_exact(
                 data_points_coords[:, 0], # x
