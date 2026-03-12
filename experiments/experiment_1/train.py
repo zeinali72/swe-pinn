@@ -311,7 +311,7 @@ def main(config_path: str):
         aim_tracker = loop_result["aim_tracker"]
         final_epoch = loop_result["epoch"]
         plot_cfg = cfg.get("plotting", {})
-        eps_plot = cfg.get("numerics", {}).get("eps", 1e-6)
+        min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
         t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
         nx_val_plot = plot_cfg.get("nx_val", 101)
         y_const_plot = plot_cfg.get("y_const_plot", 0.0)
@@ -322,7 +322,7 @@ def main(config_path: str):
             jnp.full_like(x_val_plot, t_const_val_plot, dtype=DTYPE),
         ], axis=1)
         U_plot_pred_1d = model.apply({'params': final_params['params']}, plot_points_1d, train=False)
-        h_plot_pred_1d = jnp.where(U_plot_pred_1d[..., 0] < eps_plot, 0.0, U_plot_pred_1d[..., 0])
+        h_plot_pred_1d = jnp.where(U_plot_pred_1d[..., 0] < min_depth_plot, 0.0, U_plot_pred_1d[..., 0])
         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
         plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d)
         aim_tracker.log_image(plot_path_1d, 'validation_plot_1D', final_epoch)

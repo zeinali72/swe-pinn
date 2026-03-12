@@ -292,7 +292,8 @@ def main(config_path: str):
         def plot_gauge(x, y, name, filename):
             pts = jnp.stack([jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot], axis=-1)
             U = model.apply(final_params, pts, train=False)
-            h_pred = U[..., 0]
+            min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
+            h_pred = jnp.where(U[..., 0] < min_depth_plot, 0.0, U[..., 0])
             plt.figure(figsize=(10, 6))
             if full_val_data is not None:
                 val_np = np.array(full_val_data)

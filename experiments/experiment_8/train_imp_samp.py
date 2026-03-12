@@ -767,7 +767,8 @@ def main(config_path: str):
                 for px, py, pname in output_points:
                     pts = jnp.stack([jnp.full_like(t_plot, px), jnp.full_like(t_plot, py), t_plot], axis=-1)
                     U = model.apply(final_params, pts, train=False)
-                    h_pred = U[..., 0]
+                    min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
+                    h_pred = jnp.where(U[..., 0] < min_depth_plot, 0.0, U[..., 0])
 
                     plt.figure(figsize=(10, 6))
                     if loaded_val_data is not None:
