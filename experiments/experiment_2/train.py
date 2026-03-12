@@ -336,6 +336,9 @@ def main(config_path: str):
         hu_true_plot = h_true_safe * u_true_plot
         hv_true_plot = h_true_safe * v_true_plot
         U_plot_pred_scatter = model.apply({'params': final_params['params']}, plot_points_scatter, train=False)
+        min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
+        dry_mask = jnp.where(U_plot_pred_scatter[..., 0] >= min_depth_plot, 1.0, 0.0)
+        U_plot_pred_scatter = U_plot_pred_scatter * dry_mask[..., None]
         h_pred_plot = U_plot_pred_scatter[..., 0]
         hu_pred_plot = U_plot_pred_scatter[..., 1]
         hv_pred_plot = U_plot_pred_scatter[..., 2]
