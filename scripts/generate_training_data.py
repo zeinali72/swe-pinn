@@ -1,4 +1,17 @@
-# scripts/create_samples.py
+"""Generate training, validation, and plotting datasets from a validation tensor.
+
+Samples subsets from a large .npy file (memory-mapped) containing spatiotemporal
+data with columns [t, x, y, h, u, v]. Supports GPU acceleration via CuPy.
+
+This is stage 3 of the preprocessing pipeline:
+  1. InfoWorks ICM CSV -> binary (cpp/preprocess.cpp)
+  2. Binary -> .npy (binary_to_numpy.py)
+  3. .npy tensor -> training/validation/plotting datasets (this script)
+
+Usage:
+    python generate_training_data.py --scenario experiment_2 \\
+        --train_samples 2000 --val_samples 65536 --train_max_time 21600
+"""
 import numpy as np
 import os
 import argparse

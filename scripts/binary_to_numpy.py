@@ -1,6 +1,20 @@
+"""Convert C++ preprocessor binary output to NumPy .npy format.
+
+This is stage 2 of the preprocessing pipeline:
+  1. InfoWorks ICM CSV -> binary (cpp/preprocess.cpp via run_preprocess.sh)
+  2. Binary -> .npy (this script)
+  3. .npy tensor -> training/validation/plotting datasets (generate_training_data.py)
+
+The binary file contains rows of 6 float64 values: [t, x, y, h, u, v].
+Output is saved as float32 to reduce file size.
+
+Usage:
+    python binary_to_numpy.py input.bin output.npy
+"""
 import numpy as np
 import argparse
 import os
+
 
 def convert_bin_to_npy(bin_filepath: str, npy_filepath: str):
     """
