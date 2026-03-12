@@ -28,4 +28,4 @@ def hu_exact(x: jnp.ndarray, t: jnp.ndarray, n_manning: float, u_const: float) -
 
 def hv_exact(x: jnp.ndarray, t: jnp.ndarray, n_manning: float, u_const: float) -> jnp.ndarray:
     """Compute hv(x, t) = 0 (no y-velocity in 1D dam-break)."""
-    return jnp.zeros_like(h_exact(x, t, n_manning, u_const))
+    return jnp.zeros_like(x)
