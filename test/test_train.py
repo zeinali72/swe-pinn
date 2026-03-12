@@ -9,7 +9,7 @@ import yaml
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.scenarios.experiment_1.experiment_1 import main as train_main
+from experiments.experiment_1.train import main as train_main
 
 class TestTrain(unittest.TestCase):
 
@@ -115,7 +115,7 @@ class TestTrain(unittest.TestCase):
         with open(self.config_path, 'w') as f:
             yaml.dump(config, f)
 
-    @patch('src.scenarios.experiment_1.experiment_1.ask_for_confirmation', return_value=True)
+    @patch('experiments.experiment_1.train.ask_for_confirmation', return_value=True)
     def test_train_script_runs_without_errors(self, mock_ask_for_confirmation):
         """
         Test that the main training script runs for a few epochs without raising exceptions.
