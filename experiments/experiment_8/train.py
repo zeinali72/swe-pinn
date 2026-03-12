@@ -263,6 +263,7 @@ def main(config_path: str):
         if validation_data_loaded:
             try:
                 U_pred = model.apply(params, val_pts_batch, train=False)
+                U_pred = U_pred * jnp.where(U_pred[..., 0] >= 0, 1.0, 0.0)[..., None]
                 h_pred = U_pred[..., 0]
                 hu_pred = U_pred[..., 1]
                 hv_pred = U_pred[..., 2]

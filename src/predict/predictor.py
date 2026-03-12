@@ -13,13 +13,12 @@ import jax.numpy as jnp
 def _apply_min_depth(predictions: jnp.ndarray, min_depth: float) -> jnp.ndarray:
     """Zero out predictions where water depth h falls below min_depth.
 
-    When h < min_depth the cell is considered dry: h, hu, and hv are all set
-    to zero.  When min_depth <= 0 the function is a no-op.
+    Negative depths are always clamped to zero (physical constraint).
+    When min_depth > 0, cells with h below that threshold are also zeroed.
     """
-    if min_depth <= 0.0:
-        return predictions
+    threshold = max(min_depth, 0.0)
     h = predictions[..., 0]
-    mask = jnp.where(h >= min_depth, 1.0, 0.0)
+    mask = jnp.where(h >= threshold, 1.0, 0.0)
     return predictions * mask[..., None]
 
 
