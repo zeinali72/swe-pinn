@@ -53,4 +53,5 @@ loss_weights:
   data_weight: 0.0
 data_free: true
 train_grid:
-  n_points_train: 0
+  n_gauges: 0           # number of spatial gauge locations to sample
+  dt_data: 10.0         # temporal resolution in seconds for gauge time series
