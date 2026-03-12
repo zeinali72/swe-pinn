@@ -14,7 +14,7 @@ device:
   early_stop_patience: 3000
 numerics:
   eps: 1.0e-06
-  min_depth: 0.005
+  min_depth: 0.0
 plotting:
   nx_val: 101
   plot_resolution: 150
@@ -46,11 +46,11 @@ sampling:
   n_points_ic: 1857
   n_points_bc_domain: 22000
 loss_weights:
-  pde_weight: 414759.9286194015
-  ic_weight: 1.0
-  bc_weight: 431.6350485748533
-  neg_h_weight: 1.0
-  data_weight: 10.0
+  pde_weight: 1.0
+  ic_weight: 0.000002409
+  bc_weight: 0.001038074
+  neg_h_weight: 0.000002409
+  data_weight: 0.0
 gradnorm:
   enable: false
 data_free: true

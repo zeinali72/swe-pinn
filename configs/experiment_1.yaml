@@ -14,7 +14,7 @@ device:
   early_stop_patience: 3000
 numerics:
   eps: 1.0e-06
-  min_depth: 0.005
+  min_depth: 0.05
 plotting:
   nx_val: 101
   plot_resolution: 150
