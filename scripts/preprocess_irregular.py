@@ -199,7 +199,7 @@ def main():
 
     # 5. Save to Disk
     os.makedirs(args.out, exist_ok=True)
-    out_path = os.path.join(args.out, "domain_artifacts.npz")
+    out_path = os.path.join(args.out, "domain.npz")
     np.savez(out_path, **save_dict)
     print(f"Artifacts saved to {out_path}")
 

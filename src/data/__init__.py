@@ -7,3 +7,8 @@ from src.data.irregular import (
     IrregularDomainSampler,
     DeepONetParametricSampler,
 )
+from src.data.paths import (
+    canonical_scenario_asset_path,
+    get_asset_candidates,
+    resolve_scenario_asset_path,
+)

@@ -9,15 +9,17 @@ def load_validation_data(path: str, dtype=None):
     Returns:
         raw_data: Full loaded array (for plotting)
         inputs: Reordered coordinates [x, y, t]
-        targets: Target values [h, hu, hv]
+        targets: Target values [h] or [h, hu, hv], depending on file format
     """
     data = np.load(path)
     assert data.ndim == 2, f"{path}: Expected 2D array, got {data.ndim}D"
-    assert data.shape[1] >= 6, f"{path}: Expected >=6 columns [t,x,y,h,u,v], got {data.shape[1]}"
+    assert data.shape[1] >= 4, (
+        f"{path}: Expected >=4 columns [t,x,y,h] or [t,x,y,h,hu,hv], got {data.shape[1]}"
+    )
     if dtype is not None:
         data = data.astype(dtype)
     inputs = data[:, [1, 2, 0]]   # [x, y, t]
-    targets = data[:, 3:6]         # [h, hu, hv]
+    targets = data[:, 3:6] if data.shape[1] >= 6 else data[:, 3:4]
     return data, inputs, targets
 
 

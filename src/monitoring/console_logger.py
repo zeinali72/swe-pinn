@@ -4,6 +4,7 @@ Provides structured logging: training header, per-epoch status lines,
 checkpoint events, learning-rate events, and a completion summary.
 """
 import datetime
+import math
 import time
 from typing import Dict, Optional
 
@@ -59,10 +60,15 @@ class ConsoleLogger:
             f"Buildings: {has_building}"
         )
 
-        grid = cfg.get('grid', {})
-        ic_bc = cfg.get('ic_bc_grid', {})
-        n_pde = grid.get('nx', 0) * grid.get('ny', 0) * grid.get('nt', 0)
-        n_ic = ic_bc.get('nx_ic', 0) * ic_bc.get('ny_ic', 0)
+        sampling = cfg.get('sampling', {})
+        if sampling:
+            n_pde = sampling.get('n_points_pde', 0)
+            n_ic = sampling.get('n_points_ic', 0)
+        else:
+            grid = cfg.get('grid', {})
+            ic_bc = cfg.get('ic_bc_grid', {})
+            n_pde = grid.get('nx', 0) * grid.get('ny', 0) * grid.get('nt', 0)
+            n_ic = ic_bc.get('nx_ic', 0) * ic_bc.get('ny_ic', 0)
         print(f"Collocation: PDE={n_pde} IC={n_ic}")
 
         w_parts = []
@@ -102,10 +108,11 @@ class ConsoleLogger:
         }
         parts = []
         for key in ['pde', 'ic', 'bc', 'building_bc', 'data', 'neg_h']:
-            val = losses.get(key, 0.0)
-            if abs(float(val)) > 1e-12:
+            val = float(losses.get(key, 0.0))
+            key_is_active = key in losses or (weights is not None and key in weights)
+            if key_is_active:
                 label = key_map.get(key, key.upper())
-                parts.append(f"{label}:{float(val):.4e}")
+                parts.append(f"{label}:{val:.4e}")
         parts_str = ' '.join(parts)
 
         nse_h = val_metrics.get('nse_h', float('nan'))
@@ -190,6 +197,24 @@ class ConsoleLogger:
         print(f"Final epoch: {final_epoch + 1}")
         print(f"Total training time: {h}h {m}m {s}s")
 
+        def _fmt_metric(value, *, precision=4, suffix=''):
+            if value is None:
+                return "N/A"
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return str(value)
+            if not math.isfinite(numeric):
+                return str(numeric)
+            return f"{numeric:.{precision}f}{suffix}"
+
+        def _checkpoint_loss(stats):
+            if not stats:
+                return float('inf')
+            if 'total_weighted_loss' in stats:
+                return stats['total_weighted_loss']
+            return stats.get('total_loss', float('inf'))
+
         # --- Best NSE checkpoint ---
         if best_nse_stats:
             vm = best_nse_stats.get('validation_metrics', {})
@@ -198,23 +223,23 @@ class ConsoleLogger:
                 f"{best_nse_stats.get('epoch', 0) + 1}):"
             )
             print(
-                f"  NSE:  h={vm.get('nse_h', -999):.4f}  "
-                f"hu={vm.get('nse_hu', -999):.4f}  "
-                f"hv={vm.get('nse_hv', -999):.4f}"
+                f"  NSE:  h={_fmt_metric(vm.get('nse_h'))}  "
+                f"hu={_fmt_metric(vm.get('nse_hu'))}  "
+                f"hv={_fmt_metric(vm.get('nse_hv'))}"
             )
             print(
-                f"  RMSE: h={vm.get('rmse_h', 999):.6f}m  "
-                f"hu={vm.get('rmse_hu', 999):.6f}  "
-                f"hv={vm.get('rmse_hv', 999):.6f}"
+                f"  RMSE: h={_fmt_metric(vm.get('rmse_h'), precision=6, suffix='m')}  "
+                f"hu={_fmt_metric(vm.get('rmse_hu'), precision=6)}  "
+                f"hv={_fmt_metric(vm.get('rmse_hv'), precision=6)}"
             )
             print(
-                f"  L2:   h={vm.get('rel_l2_h', 999):.6f}  "
-                f"hu={vm.get('rel_l2_hu', 999):.6f}  "
-                f"hv={vm.get('rel_l2_hv', 999):.6f}"
+                f"  L2:   h={_fmt_metric(vm.get('rel_l2_h'), precision=6)}  "
+                f"hu={_fmt_metric(vm.get('rel_l2_hu'), precision=6)}  "
+                f"hv={_fmt_metric(vm.get('rel_l2_hv'), precision=6)}"
             )
             print(
                 f"  Loss at that epoch: "
-                f"{best_nse_stats.get('total_loss', float('inf')):.6e}"
+                f"{_checkpoint_loss(best_nse_stats):.6e}"
             )
 
         # --- Best loss checkpoint ---
@@ -226,22 +251,22 @@ class ConsoleLogger:
             )
             print(
                 f"  Loss: "
-                f"{best_loss_stats.get('total_loss', float('inf')):.6e}"
+                f"{_checkpoint_loss(best_loss_stats):.6e}"
             )
             print(
-                f"  NSE:  h={vm.get('nse_h', -999):.4f}  "
-                f"hu={vm.get('nse_hu', -999):.4f}  "
-                f"hv={vm.get('nse_hv', -999):.4f}"
+                f"  NSE:  h={_fmt_metric(vm.get('nse_h'))}  "
+                f"hu={_fmt_metric(vm.get('nse_hu'))}  "
+                f"hv={_fmt_metric(vm.get('nse_hv'))}"
             )
             print(
-                f"  RMSE: h={vm.get('rmse_h', 999):.6f}m  "
-                f"hu={vm.get('rmse_hu', 999):.6f}  "
-                f"hv={vm.get('rmse_hv', 999):.6f}"
+                f"  RMSE: h={_fmt_metric(vm.get('rmse_h'), precision=6, suffix='m')}  "
+                f"hu={_fmt_metric(vm.get('rmse_hu'), precision=6)}  "
+                f"hv={_fmt_metric(vm.get('rmse_hv'), precision=6)}"
             )
             print(
-                f"  L2:   h={vm.get('rel_l2_h', 999):.6f}  "
-                f"hu={vm.get('rel_l2_hu', 999):.6f}  "
-                f"hv={vm.get('rel_l2_hv', 999):.6f}"
+                f"  L2:   h={_fmt_metric(vm.get('rel_l2_h'), precision=6)}  "
+                f"hu={_fmt_metric(vm.get('rel_l2_hu'), precision=6)}  "
+                f"hv={_fmt_metric(vm.get('rel_l2_hv'), precision=6)}"
             )
 
         # --- Final epoch ---
@@ -250,16 +275,15 @@ class ConsoleLogger:
             parts = ' '.join(
                 f"{k.upper()}:{float(v):.6e}"
                 for k, v in final_losses.items()
-                if abs(float(v)) > 1e-12
             )
             print(f"\nFINAL EPOCH ({final_epoch + 1}):")
             print(f"  Loss: {total:.6e} [{parts}]")
 
         if final_val_metrics:
             print(
-                f"  NSE:  h={final_val_metrics.get('nse_h', -999):.4f}  "
-                f"hu={final_val_metrics.get('nse_hu', -999):.4f}  "
-                f"hv={final_val_metrics.get('nse_hv', -999):.4f}"
+                f"  NSE:  h={_fmt_metric(final_val_metrics.get('nse_h'))}  "
+                f"hu={_fmt_metric(final_val_metrics.get('nse_hu'))}  "
+                f"hv={_fmt_metric(final_val_metrics.get('nse_hv'))}"
             )
 
         # --- Negative depth ---

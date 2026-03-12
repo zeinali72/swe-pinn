@@ -24,6 +24,7 @@ try:
     from src.config import load_config
     from src.models import init_model
     from src.data import IrregularDomainSampler
+    from src.data import resolve_scenario_asset_path
 except ImportError as e:
     print(f"ModuleNotFoundError: {e}. Please check the project root and script directory.")
     sys.exit(1)
@@ -35,14 +36,14 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Render PINN solution video from trained model weights.",
         epilog="Example: python render_video.py --trial-dir 2026-02-10_17-41_experiment_6 "
-               "--config experiment_6.yaml --shapefile data/experiment_6/2D\\ Zones.shp"
+               "--config experiment_8.yaml --shapefile data/experiment_8/mesh_cells.shp"
     )
     parser.add_argument("--trial-dir", required=True,
                         help="Trial directory name under models/ (e.g. 2026-02-10_17-41_experiment_6)")
     parser.add_argument("--config", required=True,
                         help="Config YAML filename under configs/ (e.g. experiment_6.yaml)")
     parser.add_argument("--shapefile", default=None,
-                        help="Path to shapefile for mesh geometry (e.g. data/experiment_6/2D Zones.shp)")
+                        help="Path to shapefile for mesh geometry (e.g. data/experiment_8/mesh_cells.shp)")
     parser.add_argument("--t-start", type=float, default=0.0, help="Start time in seconds (default: 0)")
     parser.add_argument("--t-end", type=float, default=21600.0, help="End time in seconds (default: 21600)")
     parser.add_argument("--dt-frame", type=float, default=20.0, help="Time step per frame (default: 20)")
@@ -52,7 +53,7 @@ def parse_args():
 args = parse_args()
 TRIAL_DIR_NAME = args.trial_dir
 CONFIG_NAME = args.config
-SHAPEFILE_PATH = args.shapefile if args.shapefile else os.path.join(PROJECT_ROOT, "data", "experiment_6", "2D Zones.shp")
+SHAPEFILE_PATH = args.shapefile
 
 # Animation Settings
 T_START = args.t_start
@@ -67,9 +68,18 @@ cfg_dict = load_config(config_path)
 # Load Domain Artifacts (for Normalization)
 scenario_name = cfg_dict.get('scenario', 'experiment_6')
 base_data_path = os.path.join(PROJECT_ROOT, "data", scenario_name)
-artifacts_path = os.path.join(base_data_path, "domain_artifacts.npz")
-if not os.path.exists(artifacts_path):
-    artifacts_path = os.path.join(base_data_path, "domain.npz")
+try:
+    artifacts_path = resolve_scenario_asset_path(base_data_path, scenario_name, "domain_artifacts")
+except FileNotFoundError as exc:
+    print(f"Error: {exc}")
+    sys.exit(1)
+
+if SHAPEFILE_PATH is None:
+    try:
+        SHAPEFILE_PATH = resolve_scenario_asset_path(base_data_path, scenario_name, "mesh_geometry")
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
 
 domain_sampler = IrregularDomainSampler(artifacts_path)
 all_coords = domain_sampler.tri_coords.reshape(-1, 2)

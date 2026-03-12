@@ -46,6 +46,7 @@ from src.data import (
     load_bathymetry,
     bathymetry_fn,
     load_validation_data,
+    resolve_scenario_asset_path,
 )
 from src.models import init_model
 from src.losses import (
@@ -264,12 +265,10 @@ def main(config_path: str):
     scenario_name = cfg_dict.get('scenario', 'experiment_8')
     base_data_path = os.path.join("data", scenario_name)
 
-    artifacts_path = os.path.join(base_data_path, "domain_artifacts.npz")
-    if not os.path.exists(artifacts_path):
-        artifacts_path = os.path.join(base_data_path, "domain.npz")
-        
-    if not os.path.exists(artifacts_path):
-        print(f"Error: Domain artifacts file not found at {artifacts_path}")
+    try:
+        artifacts_path = resolve_scenario_asset_path(base_data_path, scenario_name, "domain_artifacts")
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
         sys.exit(1)
     
     print(f"Loading domain geometry from: {artifacts_path}")
@@ -328,16 +327,18 @@ def main(config_path: str):
     current_weights_dict = FrozenDict({k: static_weights_dict[k] for k in active_loss_term_keys})
 
     # --- 6. Load Remaining Assets ---
-    dem_path = os.path.join(base_data_path, "DEM_v2_asc.asc")
-    if not os.path.exists(dem_path):
-        print(f"Error: DEM file not found at {dem_path}")
+    try:
+        dem_path = resolve_scenario_asset_path(base_data_path, scenario_name, "dem")
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
         sys.exit(1)
     print(f"Loading Bathymetry from {dem_path}...")
     load_bathymetry(dem_path)
     
-    bc_csv_path = os.path.join(base_data_path, "Test6_BC_interpolated.csv")
-    if not os.path.exists(bc_csv_path):
-        print(f"Error: Boundary condition CSV file not found at {bc_csv_path}.")
+    try:
+        bc_csv_path = resolve_scenario_asset_path(base_data_path, scenario_name, "boundary_condition")
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
         sys.exit(1)
     bc_fn_static = load_boundary_condition(bc_csv_path)
 
@@ -651,11 +652,11 @@ def main(config_path: str):
                     hu_pred = U_pred[..., 1]
                     hv_pred = U_pred[..., 2]
 
-                    nse_h_val = float(nse(val_h_true, h_pred))
-                    nse_hu_val = float(nse(val_hu_true, hu_pred))
-                    nse_hv_val = float(nse(val_hv_true, hv_pred))
+                    nse_h_val = float(nse(h_pred, val_h_true))
+                    nse_hu_val = float(nse(hu_pred, val_hu_true))
+                    nse_hv_val = float(nse(hv_pred, val_hv_true))
                     combined_nse_val = (nse_h_val + nse_hu_val + nse_hv_val)/3.0
-                    rmse_val = float(rmse(val_h_true, h_pred))
+                    rmse_val = float(rmse(h_pred, val_h_true))
                 except Exception as e:
                     print(f"Validation Error: {e}")
 
@@ -783,7 +784,9 @@ def main(config_path: str):
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
                 output_points = []
 
-                output_csv_path = os.path.join(base_data_path, "Test6output.csv")
+                output_csv_path = resolve_scenario_asset_path(
+                    base_data_path, scenario_name, "output_reference", required=False
+                )
                 if os.path.exists(output_csv_path):
                      try:
                         df_out = pd.read_csv(output_csv_path)
