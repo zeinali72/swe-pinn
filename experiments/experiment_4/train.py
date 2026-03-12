@@ -7,14 +7,11 @@ Builds on: Experiment 3.
 import os
 import sys
 import argparse
-from typing import Any, Dict, Tuple
 import pandas as pd
 
 import jax
 import jax.numpy as jnp
 from jax import random
-import optax
-from flax.core import FrozenDict
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -35,7 +32,6 @@ from src.losses import (
     loss_boundary_wall_vertical,
     compute_neg_h_loss,
     compute_data_loss,
-    total_loss
 )
 from src.utils import nse, rmse
 from src.training import (
@@ -47,6 +43,7 @@ from src.training import (
     get_boundary_segment_count,
     load_training_data,
     load_validation_from_file,
+    train_step_jitted,
     make_scan_body,
     sample_and_batch,
     maybe_batch_data,
@@ -58,103 +55,40 @@ from src.training import (
     setup_experiment,
 )
 
-def train_step(
-        model: Any, 
-        optimiser: optax.GradientTransformation, 
-        params: FrozenDict, 
-        opt_state: optax.OptState, 
-        batch: Dict[str, jnp.ndarray], 
-        config: Dict[str, Any],
-        data_free: bool,
-        bc_fn_static: Any,
-        weights_dict: FrozenDict 
-        ) -> Tuple[FrozenDict, optax.OptState, Dict[str, float], float]:
-    """
-    Performs one step of gradient descent for Experiment 4.
-    """
-    
-    active_loss_keys_base = list(weights_dict.keys())
+def make_compute_losses(bc_fn_static):
+    """Return a compute_losses closure for Experiment 4 (x+y slope, split inflow)."""
 
-    def loss_fn(params):
-        
+    def compute_losses(model, params, batch, config, data_free):
         terms = {}
-        # --- 1. PDE Loss (Physics + Bathymetry) ---
-        loss_pde = compute_pde_loss(model, params, batch['pde'], config)
-        loss_neg_h = compute_neg_h_loss(model, params, batch['pde'])
-        
-        # --- 2. Initial Condition Loss (Dry Bed: h=0, u=0, v=0) ---
-        # Test 2 Spec: "Initial condition: Dry bed."
-        U_ic = model.apply(params, batch['ic'], train=True)        
-        h_ic_pred = U_ic[..., 0]
-        hu_ic_pred = U_ic[..., 1]
-        hv_ic_pred = U_ic[..., 2]
+        terms['pde'] = compute_pde_loss(model, params, batch['pde'], config)
+        terms['neg_h'] = compute_neg_h_loss(model, params, batch['pde'])
 
-        # Target is strictly zero
-        loss_ic_h = jnp.mean(h_ic_pred**2)
-        loss_ic_vel = jnp.mean(hu_ic_pred**2 + hv_ic_pred**2) 
-        loss_ic = loss_ic_h + loss_ic_vel
+        # IC: dry bed (all outputs zero)
+        U_ic = model.apply(params, batch['ic'], train=True)
+        terms['ic'] = jnp.mean(U_ic[..., 0] ** 2) + jnp.mean(U_ic[..., 1] ** 2 + U_ic[..., 2] ** 2)
 
-        # --- 3. Boundary Conditions ---
-        
-        # A. Inflow Boundary (Part of Left Edge): Flux BC
-        # Test 2 Spec: Inflow hydrograph along 100m line from NW corner.
-        # We model this as imposing flux q = Q(t) / Width. Width = 100m.
-        
-        # Get Time and interpolated Flow Q(t)
+        # BC: inflow flux + left wall + right/top/bottom slip walls
         t_inflow = batch['bc_inflow'][..., 2]
-        Q_target_x = bc_fn_static(t_inflow) # Returns m^3/s
+        Q_target_x = bc_fn_static(t_inflow)
         inflow_width = config["boundary_conditions"]["inflow_discharge_width"]
         flux_target_x = Q_target_x / inflow_width
-
-        loss_inflow_x=loss_boundary_dirichlet_hu(model, params, batch['bc_inflow'], flux_target_x)
-        loss_inflow_y=loss_boundary_dirichlet_hv(model, params, batch['bc_inflow'], jnp.zeros_like(flux_target_x))
-        
-        loss_bc_inflow = loss_inflow_x + loss_inflow_y
-
-        # B. Left Wall (Remaining part of Left Edge): Slip Wall
+        loss_bc_inflow = (
+            loss_boundary_dirichlet_hu(model, params, batch['bc_inflow'], flux_target_x)
+            + loss_boundary_dirichlet_hv(model, params, batch['bc_inflow'], jnp.zeros_like(flux_target_x))
+        )
         loss_bc_left_wall = loss_boundary_wall_vertical(model, params, batch['bc_left_wall'])
-        
-        # C. Right Boundary: Slip Walls (No flux x)
         loss_bc_right = loss_boundary_wall_vertical(model, params, batch['bc_right'])
-        
-        # D. Top & Bottom Boundaries: Slip Walls (No flux y)
         loss_bc_top = loss_boundary_wall_horizontal(model, params, batch['bc_top'])
         loss_bc_bottom = loss_boundary_wall_horizontal(model, params, batch['bc_bottom'])
-        
-        # Aggregate BC losses
-        total_bc = loss_bc_inflow + loss_bc_left_wall + loss_bc_right + loss_bc_top + loss_bc_bottom
+        terms['bc'] = loss_bc_inflow + loss_bc_left_wall + loss_bc_right + loss_bc_top + loss_bc_bottom
 
-        data_batch_data = batch.get('data', jnp.empty((0,6), dtype=DTYPE))
-        if not data_free and 'data' in active_loss_keys_base and data_batch_data.shape[0] > 0:
-             loss_data = compute_data_loss(model, params, data_batch_data, config)
-        else:
-             loss_data = 0.0
+        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+        if not data_free and data_batch_data.shape[0] > 0:
+            terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
-        terms = {
-            'pde': loss_pde,
-            'neg_h': loss_neg_h,
-            'ic': loss_ic,
-            'bc': total_bc, 
-            'data': loss_data if not data_free and 'data' in active_loss_keys_base and data_batch_data.shape[0] > 0 else 0.0
-        }
+        return terms
 
-        # --- 4. Weighted Sum ---
-        terms_with_defaults = {k: terms.get(k, 0.0) for k in weights_dict.keys()}
-        total = total_loss(terms_with_defaults, weights_dict)
-        
-        return total, terms
-
-    # Calculate Gradients
-    (loss_val, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
-    
-    # Update Parameters
-    updates, new_opt_state = optimiser.update(grads, opt_state, params, value=loss_val)
-    new_params = optax.apply_updates(params, updates)
-    
-    return new_params, new_opt_state, metrics, loss_val
-
-# JIT Compile
-train_step_jitted = jax.jit(train_step, static_argnames=['model', 'optimiser', 'config', 'bc_fn_static', 'weights_dict', 'data_free'])
+    return compute_losses
 
 def main(config_path: str):
     """
@@ -286,9 +220,10 @@ def main(config_path: str):
 
     generate_epoch_data_jitted = jax.jit(generate_epoch_data)
 
+    compute_losses_fn = make_compute_losses(bc_fn_static)
     scan_body = make_scan_body(
         train_step_jitted, model, optimiser, current_weights_dict,
-        cfg, data_free, extra_static_args=(bc_fn_static,),
+        cfg, data_free, compute_losses_fn=compute_losses_fn,
     )
 
     loop_result = run_training_loop(

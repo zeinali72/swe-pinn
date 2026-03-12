@@ -25,53 +25,32 @@ def make_scan_body(
     config: Any,
     data_free: bool,
     *,
-    extra_static_args: tuple = (),
+    compute_losses_fn: Callable,
 ) -> Callable:
     """Return a ``scan_body(carry, batch_data)`` closure ready for ``lax.scan``.
-
-    The returned function passes *batch_data* directly to *train_step_fn*,
-    so ``generate_epoch_data`` must produce a **flat** dict whose keys match
-    what *train_step_fn* expects (e.g. ``'bc_left'`` not ``{'bc': {'left': ...}}``).
 
     Parameters
     ----------
     train_step_fn : callable
-        The **JIT-compiled** training step.  Its positional signature must be
-        one of the two patterns used in the codebase:
+        The **JIT-compiled** generic training step.  Its positional signature
+        must be::
 
-        *   ``(model, params, opt_state, all_batches, weights_dict, optimiser, config, data_free)``
-            — used by experiments 1 & 2.
-        *   ``(model, optimiser, params, opt_state, batch, config, data_free, *extra_static_args, weights_dict)``
-            — used by experiments 3–8 (includes ``bc_fn_static`` etc.).
+            (model, optimiser, params, opt_state, batch, config,
+             data_free, compute_losses_fn, weights_dict)
 
-        Because different experiments have different positional signatures,
-        pass the correct *extra_static_args* tuple and the factory will
-        build the right lambda.
-    extra_static_args : tuple
-        Additional static arguments inserted between ``data_free`` and
-        ``weights_dict`` (e.g. ``(bc_fn_static,)`` for experiments 3–8).
+    compute_losses_fn : callable
+        Experiment-specific loss computation function with signature::
+
+            (model, params, batch, config, data_free) -> dict[str, scalar]
     """
 
-    if extra_static_args:
-        # Experiments 3-8 signature:
-        # train_step(model, optimiser, params, opt_state, batch, config, data_free, *extra, weights_dict)
-        def scan_body(carry, batch_data):
-            curr_params, curr_opt_state = carry
-            new_params, new_opt_state, terms, total = train_step_fn(
-                model, optimiser, curr_params, curr_opt_state,
-                batch_data, config, data_free, *extra_static_args, weights_dict,
-            )
-            return (new_params, new_opt_state), (terms, total)
-    else:
-        # Experiments 1-2 signature:
-        # train_step(model, params, opt_state, all_batches, weights_dict, optimiser, config, data_free)
-        def scan_body(carry, batch_data):
-            curr_params, curr_opt_state = carry
-            new_params, new_opt_state, terms, total = train_step_fn(
-                model, curr_params, curr_opt_state,
-                batch_data, weights_dict, optimiser, config, data_free,
-            )
-            return (new_params, new_opt_state), (terms, total)
+    def scan_body(carry, batch_data):
+        curr_params, curr_opt_state = carry
+        new_params, new_opt_state, terms, total = train_step_fn(
+            model, optimiser, curr_params, curr_opt_state,
+            batch_data, config, data_free, compute_losses_fn, weights_dict,
+        )
+        return (new_params, new_opt_state), (terms, total)
 
     return scan_body
 
