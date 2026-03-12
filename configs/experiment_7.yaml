@@ -1,6 +1,23 @@
+experiment:
+  name: experiment_7
+
 scenario: experiment_7
+data:
+  root_dir: data
+  training_file: training_dataset_sample.npy
+  validation_file: validation_gauges_ground_truth.npy
+
+sampling_defaults:
+  n_points_pde: 1000
+  n_points_ic: 100
+  n_points_bc_domain: 100
+  n_points_bc_inflow: 100
+
 domain:
   t_final: 108000.0         # 30 hours
+boundary_conditions:
+  inflow_discharge_width: 100.0
+
 physics:
   g: 1.0
   inflow: null
@@ -31,6 +48,7 @@ model:
   bias_init: 0.0
   width: 256
   depth: 5
+  output_scales: [6.0, 2.0, 2.0]
   
 # --- CRITICAL FIX: Increased Sample Counts ---
 sampling:

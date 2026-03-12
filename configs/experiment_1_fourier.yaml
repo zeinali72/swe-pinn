@@ -1,5 +1,13 @@
 # Configuration and Constants
+experiment:
+  name: experiment_1
+
 data_free: true
+sampling_defaults:
+  n_points_pde: 1000
+  n_points_ic: 100
+  n_points_bc_domain: 100
+
 training:
   learning_rate: 0.0007891912931084699 # Learning rate for the optimizer
   epochs: 20_000                   # Number of training epochs

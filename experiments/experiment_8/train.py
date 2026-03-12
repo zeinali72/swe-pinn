@@ -60,12 +60,21 @@ from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_dia
 from src.metrics.accuracy import compute_validation_metrics
 from src.checkpointing import CheckpointManager
 from src.training import (
+    apply_irregular_domain_bounds,
+    apply_output_scales,
+    calculate_num_batches,
     create_optimizer,
     create_output_dirs,
     extract_loss_weights,
+    get_data_filename,
+    get_experiment_name,
+    get_sampling_count_from_config,
     init_model_from_config,
     load_training_data,
+    load_validation_from_file,
     post_training_save,
+    resolve_configured_asset_path,
+    resolve_experiment_paths,
     resolve_data_mode,
     run_training_loop,
 )
@@ -102,8 +111,8 @@ def train_step(
             t_inflow = batch['bc_upstream'][..., 2]
             Q_target = bc_fn_static(t_inflow) # m^3/s
             
-            # Assuming 100m width for Experiment 8 upstream boundary
-            flux_target_x = Q_target / 372.92  # m^2/s 
+            upstream_width = config["boundary_conditions"]["upstream_discharge_width"]
+            flux_target_x = Q_target / upstream_width
             
             loss_inflow_x = loss_boundary_dirichlet_hu(model, params, batch['bc_upstream'], flux_target_x)
             loss_inflow_y = loss_boundary_dirichlet_hv(model, params, batch['bc_upstream'], jnp.zeros_like(flux_target_x))
@@ -154,16 +163,18 @@ def main(config_path: str):
     """
     #--- 1. LOAD CONFIGURATION (MUTABLE) ---
     cfg_dict = load_config(config_path)
+    experiment_name = get_experiment_name(cfg_dict, "experiment_8")
     
     print("Info: Running Experiment 8 training...")
 
     # --- 2. SETUP DATA & COMPUTE DOMAIN EXTENT ---
-    scenario_name = cfg_dict.get('scenario', 'experiment_8')
-    base_data_path = os.path.join("data", scenario_name)
+    experiment_paths = resolve_experiment_paths(cfg_dict, experiment_name)
+    scenario_name = experiment_paths["scenario_name"]
+    base_data_path = experiment_paths["base_data_path"]
 
     # A. Init Irregular Domain Sampler
     try:
-        artifacts_path = resolve_scenario_asset_path(base_data_path, scenario_name, "domain_artifacts")
+        artifacts_path = resolve_configured_asset_path(cfg_dict, base_data_path, scenario_name, "domain_artifacts")
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
@@ -171,46 +182,19 @@ def main(config_path: str):
     print(f"Loading domain geometry from: {artifacts_path}")
     domain_sampler = IrregularDomainSampler(artifacts_path)
 
-    # --- CALCULATE DOMAIN EXTENT ---
-    # tri_coords shape: (N_tri, 3, 2)
-    all_coords = domain_sampler.tri_coords.reshape(-1, 2)
-    min_vals = jnp.min(all_coords, axis=0)
-    max_vals = jnp.max(all_coords, axis=0)
-    
-    x_min, y_min = float(min_vals[0]), float(min_vals[1])
-    x_max, y_max = float(max_vals[0]), float(max_vals[1])
-    
-    calc_lx = x_max - x_min
-    calc_ly = y_max - y_min
+    domain_extent = apply_irregular_domain_bounds(cfg_dict, domain_sampler)
     
     print(f"Computed Domain Extent:")
-    print(f"  X Range: [{x_min:.4f}, {x_max:.4f}]")
-    print(f"  Y Range: [{y_min:.4f}, {y_max:.4f}]")
-    print(f"  Calculated Dimensions: lx = {calc_lx:.4f}, ly = {calc_ly:.4f}")
-    
-    # Update Config with calculated values
-    if 'domain' not in cfg_dict: cfg_dict['domain'] = {}
-    cfg_dict['domain']['lx'] = calc_lx
-    cfg_dict['domain']['ly'] = calc_ly
-    cfg_dict['domain']['x_min'] = x_min
-    cfg_dict['domain']['x_max'] = x_max
-    cfg_dict['domain']['y_min'] = y_min
-    cfg_dict['domain']['y_max'] = y_max
-
-    # Standard scaling for this experiment
-    h_scale = 1.0  
-    hu_scale = 1.0 
-    hv_scale = 1.0
-
-    if 'model' not in cfg_dict: cfg_dict['model'] = {}
-    cfg_dict['model']['output_scales'] = (h_scale, hu_scale, hv_scale)
-    
-    print(f"Active Output Scaling: {cfg_dict['model']['output_scales']}")
+    print(f"  X Range: [{domain_extent['x_min']:.4f}, {domain_extent['x_max']:.4f}]")
+    print(f"  Y Range: [{domain_extent['y_min']:.4f}, {domain_extent['y_max']:.4f}]")
+    print(f"  Calculated Dimensions: lx = {domain_extent['lx']:.4f}, ly = {domain_extent['ly']:.4f}")
+    output_scales = apply_output_scales(cfg_dict, (1.0, 1.0, 1.0))
+    print(f"Active Output Scaling: {output_scales}")
 
     # --- 3. FINALIZE CONFIG & INIT MODEL ---
     cfg = FrozenDict(cfg_dict)
     model, params, train_key, val_key = init_model_from_config(cfg)
-    trial_name, results_dir, model_dir = create_output_dirs(cfg, "experiment_8")
+    trial_name, results_dir, model_dir = create_output_dirs(cfg, experiment_name)
 
     # --- 5. Prepare Loss Weights ---
     static_weights_dict, current_weights_dict = extract_loss_weights(cfg)
@@ -219,7 +203,7 @@ def main(config_path: str):
 
     # B. Load Bathymetry (REQUIRED)
     try:
-        dem_path = resolve_scenario_asset_path(base_data_path, scenario_name, "dem")
+        dem_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "dem")
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
@@ -228,7 +212,7 @@ def main(config_path: str):
     
     # C. Load Boundary Condition Function
     try:
-        bc_csv_path = resolve_scenario_asset_path(base_data_path, scenario_name, "boundary_condition")
+        bc_csv_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "boundary_condition")
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
@@ -243,57 +227,46 @@ def main(config_path: str):
         base_data_path,
         has_data_loss,
         static_weights_dict,
+        filename=get_data_filename(cfg, "training_file", "training_dataset_sample.npy"),
     )
 
     # E. Load Validation Data (Ground Truth)
-    validation_data_file = os.path.join(base_data_path, "validation_gauges_ground_truth.npy")
-    validation_data_loaded = False
-    
-    # Validation arrays
-    val_pts_batch = None
-    val_h_true = None
+    validation = load_validation_from_file(
+        base_data_path,
+        get_data_filename(cfg, "validation_file", "validation_gauges_ground_truth.npy"),
+    )
+    validation_data_loaded = validation["loaded"]
+    full_val_data = validation["full_val_data"]
+    val_pts_batch = validation["val_points"]
+    val_h_true = validation["h_true_val"]
     val_hu_true = None
     val_hv_true = None
-    
-    if os.path.exists(validation_data_file):
-        try:
-            print(f"Loading VALIDATION data from: {validation_data_file}")
-            _, val_pts_batch, val_targets = load_validation_data(validation_data_file, dtype=DTYPE)
-            val_h_true = val_targets[:, 0]
-            u_temp = val_targets[:, 1]
-            v_temp = val_targets[:, 2]
-            
-            val_hu_true = val_h_true * u_temp
-            val_hv_true = val_h_true * v_temp
-            
-            if val_pts_batch.shape[0] > 0:
-                validation_data_loaded = True
-                print(f"Validation loaded: {val_pts_batch.shape[0]} points. Targets: h, hu, hv prepared.")
-            else:
-                 print("Warning: Validation data file is empty.")
-        except Exception as e:
-            print(f"Error loading validation data: {e}")
-            val_pts_batch = None
-    else:
-        print(f"Warning: Validation data not found at {validation_data_file}.")
+    if validation_data_loaded and full_val_data is not None:
+        full_val_data_np = np.array(full_val_data)
+        if full_val_data_np.shape[1] >= 6:
+            val_hu_true = full_val_data_np[:, 3] * full_val_data_np[:, 4]
+            val_hv_true = full_val_data_np[:, 3] * full_val_data_np[:, 5]
+        else:
+            validation_data_loaded = False
+            print("Warning: Validation data does not contain hu/hv targets. Combined NSE validation will be skipped.")
 
     # --- 7. Data Generation Setup ---
     sampling_cfg = cfg["sampling"]
     batch_size = cfg["training"]["batch_size"]
     domain_cfg = cfg["domain"]
     
-    n_pde = get_sample_count(sampling_cfg, "n_points_pde", 1000)
-    n_ic = get_sample_count(sampling_cfg, "n_points_ic", 100)
-    # Using 'n_points_bc_inflow' for upstream sampling
-    n_bc_upstream = get_sample_count(sampling_cfg, "n_points_bc_inflow", 100) 
-    n_bc_wall = get_sample_count(sampling_cfg, "n_points_bc_domain", 100)
-    n_building = get_sample_count(sampling_cfg, "n_points_bc_building", 100)
+    n_pde = get_sampling_count_from_config(cfg, "n_points_pde")
+    n_ic = get_sampling_count_from_config(cfg, "n_points_ic")
+    n_bc_upstream = get_sampling_count_from_config(cfg, "n_points_bc_inflow")
+    n_bc_wall = get_sampling_count_from_config(cfg, "n_points_bc_domain")
+    n_building = get_sampling_count_from_config(cfg, "n_points_bc_building")
 
-    bc_counts = [n_pde//batch_size, n_ic//batch_size, n_bc_wall//batch_size, n_bc_upstream//batch_size, n_building//batch_size]
-    if not data_free and data_points_full is not None:
-        bc_counts.append(data_points_full.shape[0] // batch_size)
-
-    num_batches = max(bc_counts) if bc_counts else 0
+    num_batches = calculate_num_batches(
+        batch_size,
+        [n_pde, n_ic, n_bc_wall, n_bc_upstream, n_building],
+        data_points_full,
+        data_free=data_free,
+    )
     if num_batches == 0:
         print(f"Error: Batch size {batch_size} is too large for sample counts.")
         return -1.0
@@ -304,7 +277,7 @@ def main(config_path: str):
     opt_state = optimiser.init(params)
 
     def generate_epoch_data(key):
-        k1, k2, k3, k4, k5 = random.split(key, 5)
+        k1, k2, k3, k4, k5, k6 = random.split(key, 6)
         
         # Interior
         pde_pts = domain_sampler.sample_interior(k1, n_pde, (0., domain_cfg["t_final"]))
@@ -327,7 +300,7 @@ def main(config_path: str):
         
         # Data
         if not data_free and data_points_full is not None:
-             data_d = get_batches_tensor(k5, data_points_full, batch_size, num_batches)
+             data_d = get_batches_tensor(k6, data_points_full, batch_size, num_batches)
         else:
              data_d = jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
 
@@ -396,7 +369,7 @@ def main(config_path: str):
         generate_epoch_data_jit=generate_epoch_data_jitted,
         scan_body=scan_body,
         num_batches=num_batches,
-        experiment_name="experiment_8",
+        experiment_name=experiment_name,
         trial_name=trial_name,
         results_dir=results_dir,
         model_dir=model_dir,
@@ -412,8 +385,8 @@ def main(config_path: str):
         t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
         aim_tracker = loop_result["aim_tracker"]
         final_epoch = loop_result["epoch"]
-        output_csv_path = resolve_scenario_asset_path(
-            base_data_path, scenario_name, "output_reference", required=False
+        output_csv_path = resolve_configured_asset_path(
+            cfg, base_data_path, scenario_name, "output_reference", required=False
         )
         output_points = []
         if os.path.exists(output_csv_path):
@@ -432,7 +405,8 @@ def main(config_path: str):
                 print(f"Warning: Could not read output reference CSV: {e}")
 
         if not output_points:
-            cx, cy = (x_max + x_min) / 2, (y_max + y_min) / 2
+            cx = (cfg['domain']['x_max'] + cfg['domain']['x_min']) / 2
+            cy = (cfg['domain']['y_max'] + cfg['domain']['y_min']) / 2
             output_points = [(cx, cy, "Center_Point")]
 
         def plot_gauge(x, y, name, filename):

@@ -1,8 +1,28 @@
+experiment:
+  name: experiment_6
+
 scenario: experiment_6
+data:
+  root_dir: data
+  training_file: training_dataset_sample.npy
+  validation_file: validation_gauges_ground_truth.npy
+
+sampling_defaults:
+  n_points_pde: 1000
+  n_points_ic: 100
+  n_points_bc_domain: 100
+  n_points_bc_inflow: 100
+
 domain:
   lx: 1000.0
   ly: 2000.0
   t_final: 18000.0         # 5 hours
+boundary_conditions:
+  inflow_discharge_width: 100.0
+  left_inflow_segment:
+    y_start: 990.0
+    y_end: 1010.0
+
 physics:
   g: 9.81
   inflow: null

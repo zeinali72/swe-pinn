@@ -49,7 +49,11 @@ from src.checkpointing import CheckpointManager
 from src.predict import Predictor
 from src.training import (
     create_optimizer,
+    calculate_num_batches,
     extract_loss_weights,
+    get_active_loss_weights,
+    get_boundary_segment_count,
+    get_sampling_count_from_config,
     post_training_save,
     resolve_data_mode,
     run_training_loop,
@@ -128,9 +132,10 @@ def main(config_path: str):
     Main training function for the analytical scenario.
     """
     # --- 1. Load Config and Initialize Model ---
-    setup = setup_experiment(config_path, "experiment_1")
+    setup = setup_experiment(config_path)
     cfg_dict = setup["cfg_dict"]
     cfg = setup["cfg"]
+    experiment_name = setup["experiment_name"]
     model = setup["model"]
     params = setup["params"]
     train_key = setup["train_key"]
@@ -236,16 +241,12 @@ def main(config_path: str):
             data_free = True # Revert to data-free
     
     # --- 6. Determine Active Loss Terms ---
-    active_loss_term_keys = []
-    for k, v in static_weights_dict.items():
-        if v > 0:
-            if k == 'data' and data_free:
-                continue 
-            if k == 'building_bc': # Explicitly skip building loss
-                continue
-            active_loss_term_keys.append(k)
-    
-    current_weights_dict = {k: static_weights_dict[k] for k in active_loss_term_keys}
+    current_weights_dict = get_active_loss_weights(
+        static_weights_dict,
+        data_free=data_free,
+        excluded_keys={"building_bc"},
+    )
+    active_loss_term_keys = list(current_weights_dict.keys())
 
     # --- 7. Pre-calculate Batch Counts and Total Batches (for jax.lax.scan) ---
     sampling_cfg = cfg["sampling"]
@@ -253,24 +254,25 @@ def main(config_path: str):
     domain_cfg = cfg["domain"]
 
     # Calculate expected points
-    n_pde = get_sample_count(sampling_cfg, "n_points_pde", 1000) if ('pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys) else 0
-    n_ic = get_sample_count(sampling_cfg, "n_points_ic", 100) if 'ic' in active_loss_term_keys else 0
-    n_bc_domain = get_sample_count(sampling_cfg, "n_points_bc_domain", 100) if 'bc' in active_loss_term_keys else 0
-    n_bc_per_wall = max(5, n_bc_domain // 4) if n_bc_domain > 0 else 0
+    n_pde = get_sampling_count_from_config(cfg, "n_points_pde") if ('pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys) else 0
+    n_ic = get_sampling_count_from_config(cfg, "n_points_ic") if 'ic' in active_loss_term_keys else 0
+    n_bc_domain = get_sampling_count_from_config(cfg, "n_points_bc_domain") if 'bc' in active_loss_term_keys else 0
+    n_bc_per_wall = get_boundary_segment_count(cfg, n_bc_domain) if n_bc_domain > 0 else 0
     
     # Calculate available batches per term
-    bc_counts = [
-        n_pde // batch_size,
-        n_ic // batch_size,
-        n_bc_per_wall // batch_size, # left
-        n_bc_per_wall // batch_size, # right
-        n_bc_per_wall // batch_size, # bottom
-        n_bc_per_wall // batch_size, # top
-    ]
-    if not data_free and data_points_full is not None:
-         bc_counts.append(data_points_full.shape[0] // batch_size)
-
-    num_batches = max(bc_counts) if bc_counts else 0
+    num_batches = calculate_num_batches(
+        batch_size,
+        [
+            n_pde,
+            n_ic,
+            n_bc_per_wall,
+            n_bc_per_wall,
+            n_bc_per_wall,
+            n_bc_per_wall,
+        ],
+        data_points_full,
+        data_free=data_free,
+    )
     
     if num_batches == 0:
         print(f"Error: Batch size {batch_size} is too large for configured sample counts or data. No training will occur.")
@@ -370,7 +372,7 @@ def main(config_path: str):
         generate_epoch_data_jit=generate_epoch_data_jit,
         scan_body=scan_body,
         num_batches=num_batches,
-        experiment_name="experiment_1",
+        experiment_name=experiment_name,
         trial_name=trial_name,
         results_dir=results_dir,
         model_dir=model_dir,

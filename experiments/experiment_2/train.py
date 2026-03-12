@@ -56,9 +56,15 @@ from src.metrics.accuracy import compute_validation_metrics
 from src.checkpointing import CheckpointManager
 from src.training import (
     create_optimizer,
+    calculate_num_batches,
     extract_loss_weights,
+    get_active_loss_weights,
+    get_boundary_segment_count,
+    get_data_filename,
+    get_sampling_count_from_config,
     load_training_data,
     post_training_save,
+    resolve_experiment_paths,
     resolve_data_mode,
     run_training_loop,
     setup_experiment,
@@ -143,9 +149,10 @@ def main(config_path: str):
     Main training function for the BUILDING scenario.
     """
     # --- 1. Load Config and Initialize Model ---
-    setup = setup_experiment(config_path, "experiment_2")
+    setup = setup_experiment(config_path)
     cfg_dict = setup["cfg_dict"]
     cfg = setup["cfg"]
+    experiment_name = setup["experiment_name"]
     model = setup["model"]
     params = setup["params"]
     train_key = setup["train_key"]
@@ -175,12 +182,13 @@ def main(config_path: str):
     val_points, h_true_val = None, None
     data_points_full = None
     
-    scenario_name = cfg.get('scenario')
-    if not scenario_name:
-         print(f"Error: 'scenario' key must be set in config '{config_path}' for building mode.")
-         sys.exit(1)
-         
-    base_data_path = os.path.join("data", scenario_name)
+    try:
+        experiment_paths = resolve_experiment_paths(cfg, experiment_name, require_scenario=True)
+    except ValueError as exc:
+        print(f"Error: {exc} in config '{config_path}'.")
+        sys.exit(1)
+
+    base_data_path = experiment_paths["base_data_path"]
 
     # === START MODIFIED BLOCK ===
     # This logic now mirrors analytical.py
@@ -189,9 +197,13 @@ def main(config_path: str):
         base_data_path,
         has_data_loss,
         static_weights_dict,
+        filename=get_data_filename(cfg, "training_file", "training_dataset_sample.npy"),
     )
 
-    validation_data_file = os.path.join(base_data_path, "validation_sample.npy")
+    validation_data_file = os.path.join(
+        base_data_path,
+        get_data_filename(cfg, "validation_file", "validation_sample.npy"),
+    )
     validation_data_loaded = False
     if os.path.exists(validation_data_file):
         try:
@@ -217,14 +229,8 @@ def main(config_path: str):
         print("Validation metrics (NSE/RMSE) for building scenario will be skipped.")
 
     # --- 6. Determine Active Loss Terms for the Run ---
-    active_loss_term_keys = []
-    for k, v in static_weights_dict.items():
-        if v > 0:
-            if k == 'data' and data_free: # Use the final data_free flag
-                continue 
-            active_loss_term_keys.append(k)
-    
-    current_weights_dict = {k: static_weights_dict[k] for k in active_loss_term_keys}
+    current_weights_dict = get_active_loss_weights(static_weights_dict, data_free=data_free)
+    active_loss_term_keys = list(current_weights_dict.keys())
 
     # --- 7. Pre-calculate Batch Counts and Total Batches (for jax.lax.scan) ---
     sampling_cfg = cfg["sampling"]
@@ -232,38 +238,23 @@ def main(config_path: str):
     domain_cfg = cfg["domain"]
     
     # Calculate expected points
-    n_pde = get_sample_count(sampling_cfg, "n_points_pde", 1000) if ('pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys) else 0
-    n_ic = get_sample_count(sampling_cfg, "n_points_ic", 100) if 'ic' in active_loss_term_keys else 0
-    n_bc_domain = get_sample_count(sampling_cfg, "n_points_bc_domain", 100) if 'bc' in active_loss_term_keys else 0
-    n_bc_per_wall = max(5, n_bc_domain // 4) if n_bc_domain > 0 else 0
+    n_pde = get_sampling_count_from_config(cfg, "n_points_pde") if ('pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys) else 0
+    n_ic = get_sampling_count_from_config(cfg, "n_points_ic") if 'ic' in active_loss_term_keys else 0
+    n_bc_domain = get_sampling_count_from_config(cfg, "n_points_bc_domain") if 'bc' in active_loss_term_keys else 0
+    n_bc_per_wall = get_boundary_segment_count(cfg, n_bc_domain) if n_bc_domain > 0 else 0
     
     # Building BC points
     n_bldg_per_wall = 0
     if has_building and 'building_bc' in active_loss_term_keys:
-        n_bldg = get_sample_count(sampling_cfg, "n_points_bc_building", 100)
-        n_bldg_per_wall = max(5, n_bldg // 4)
+        n_bldg = get_sampling_count_from_config(cfg, "n_points_bc_building")
+        n_bldg_per_wall = get_boundary_segment_count(cfg, n_bldg)
 
     # Calculate available batches per term
-    bc_counts = [
-        n_pde // batch_size,
-        n_ic // batch_size,
-        n_bc_per_wall // batch_size, # left
-        n_bc_per_wall // batch_size, # right
-        n_bc_per_wall // batch_size, # bottom
-        n_bc_per_wall // batch_size, # top
-    ]
+    sample_sizes = [n_pde, n_ic, n_bc_per_wall, n_bc_per_wall, n_bc_per_wall, n_bc_per_wall]
     if has_building and 'building_bc' in active_loss_term_keys:
-        bc_counts.extend([
-            n_bldg_per_wall // batch_size, # left
-            n_bldg_per_wall // batch_size, # right
-            n_bldg_per_wall // batch_size, # bottom
-            n_bldg_per_wall // batch_size, # top
-        ])
+        sample_sizes.extend([n_bldg_per_wall, n_bldg_per_wall, n_bldg_per_wall, n_bldg_per_wall])
 
-    if not data_free and data_points_full is not None:
-         bc_counts.append(data_points_full.shape[0] // batch_size)
-
-    num_batches = max(bc_counts) if bc_counts else 0
+    num_batches = calculate_num_batches(batch_size, sample_sizes, data_points_full, data_free=data_free)
     
     if num_batches == 0:
         print(f"Error: Batch size {batch_size} is too large for configured sample counts or data. No training will occur.")
@@ -375,7 +366,7 @@ def main(config_path: str):
         generate_epoch_data_jit=generate_epoch_data_jit,
         scan_body=scan_body,
         num_batches=num_batches,
-        experiment_name="experiment_2",
+        experiment_name=experiment_name,
         trial_name=trial_name,
         results_dir=results_dir,
         model_dir=model_dir,

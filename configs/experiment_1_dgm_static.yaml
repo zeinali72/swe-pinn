@@ -1,6 +1,20 @@
+experiment:
+  name: experiment_2
+
 data_free: true
 enable_gradnorm: false
 opt_epochs: 20000
+data:
+  root_dir: data
+  training_file: training_dataset_sample.npy
+  validation_file: validation_sample.npy
+
+sampling_defaults:
+  n_points_pde: 1000
+  n_points_ic: 100
+  n_points_bc_domain: 100
+  n_points_bc_building: 100
+
 training:
   seed: 42
   epochs: 20000
