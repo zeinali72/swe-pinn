@@ -359,11 +359,18 @@ import jax
 class TestApplyMinDepth(unittest.TestCase):
     """Unit tests for the _apply_min_depth post-processing function."""
 
-    def test_no_masking_when_disabled(self):
+    def test_positive_values_preserved_when_min_depth_zero(self):
         from src.predict.predictor import _apply_min_depth
         preds = jnp.array([[0.001, 0.01, 0.02], [0.1, 0.2, 0.3]])
         result = _apply_min_depth(preds, 0.0)
         np.testing.assert_array_equal(np.array(result), np.array(preds))
+
+    def test_negative_h_clamped_when_min_depth_zero(self):
+        from src.predict.predictor import _apply_min_depth
+        preds = jnp.array([[-0.05, 0.5, 0.3], [0.1, 0.2, 0.1]])
+        result = _apply_min_depth(preds, 0.0)
+        expected = jnp.array([[0.0, 0.0, 0.0], [0.1, 0.2, 0.1]])
+        np.testing.assert_array_almost_equal(np.array(result), np.array(expected))
 
     def test_zeros_below_threshold(self):
         from src.predict.predictor import _apply_min_depth
@@ -395,11 +402,12 @@ class TestApplyMinDepth(unittest.TestCase):
         expected = jnp.zeros_like(preds)
         np.testing.assert_array_almost_equal(np.array(result), np.array(expected))
 
-    def test_negative_min_depth_is_noop(self):
+    def test_negative_min_depth_still_clamps_negative_h(self):
         from src.predict.predictor import _apply_min_depth
-        preds = jnp.array([[0.001, 0.5, 0.3]])
+        preds = jnp.array([[0.001, 0.5, 0.3], [-0.01, 0.1, 0.2]])
         result = _apply_min_depth(preds, -1.0)
-        np.testing.assert_array_equal(np.array(result), np.array(preds))
+        expected = jnp.array([[0.001, 0.5, 0.3], [0.0, 0.0, 0.0]])
+        np.testing.assert_array_almost_equal(np.array(result), np.array(expected))
 
 
 class TestPredictorMinDepth(unittest.TestCase):

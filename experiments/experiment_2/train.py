@@ -276,6 +276,7 @@ def main(config_path: str):
         if validation_data_loaded:
             try:
                 U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
+                U_pred_val = U_pred_val * jnp.where(U_pred_val[..., 0] >= 0, 1.0, 0.0)[..., None]
                 h_pred_val = U_pred_val[..., 0]
                 nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))

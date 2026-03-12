@@ -131,6 +131,7 @@ def run_training_loop(
                 if validation_data_loaded:
                     try:
                         U_val = model.apply(params, val_points_all, train=False)
+                        U_val = U_val * jnp.where(U_val[..., 0] >= 0, 1.0, 0.0)[..., None]
                         nse_val = nse(U_val[..., 0], h_true_val_all)
                         rmse_val = rmse(U_val[..., 0], h_true_val_all)
                         val_metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
