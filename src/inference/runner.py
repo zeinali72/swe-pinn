@@ -73,7 +73,7 @@ def _load_validation(cfg_dict, paths_info, meta, experiment_name):
 
 def _generate_analytical_validation(cfg_dict):
     """Generate validation grid + analytical reference for Experiment 1."""
-    from src.physics import h_exact
+    from src.physics import h_exact, hu_exact, hv_exact
 
     domain = cfg_dict["domain"]
     physics = cfg_dict["physics"]
@@ -94,11 +94,11 @@ def _generate_analytical_validation(cfg_dict):
     xx, yy, tt = jnp.meshgrid(xs, ys, ts, indexing="ij")
     coords = jnp.stack([xx.ravel(), yy.ravel(), tt.ravel()], axis=-1)
 
-    h_ref = h_exact(coords[:, 0], coords[:, 2],
-                    physics["n_manning"], physics["u_const"])
-    # hu = h * u_const, hv = 0  for the 1-D dam-break
-    hu_ref = h_ref * physics["u_const"]
-    hv_ref = jnp.zeros_like(h_ref)
+    n_manning = physics["n_manning"]
+    u_const = physics["u_const"]
+    h_ref = h_exact(coords[:, 0], coords[:, 2], n_manning, u_const)
+    hu_ref = hu_exact(coords[:, 0], coords[:, 2], n_manning, u_const)
+    hv_ref = hv_exact(coords[:, 0], coords[:, 2], n_manning, u_const)
     targets = jnp.stack([h_ref, hu_ref, hv_ref], axis=-1)
 
     return coords, targets
