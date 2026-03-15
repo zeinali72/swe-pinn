@@ -398,8 +398,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                         f"Time={epoch_time:.2f}s, Current Best NSE={best_nse_trial:.6f}")
 
 
-        # Update train_key for next epoch's sampling
-        train_key = key
+        # train_key is already advanced by random.split on line 356
 
 
     # --- 5. Return Final Objective Value ---
