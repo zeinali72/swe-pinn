@@ -27,6 +27,7 @@ if project_root not in sys.path:
     print(f"Added project root to path: {project_root}")
 
 from src.config import DTYPE
+from src.predict.predictor import _apply_min_depth
 from src.data import sample_domain, get_batches_tensor, load_validation_data
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss,
@@ -274,7 +275,8 @@ def main(config_path: str):
         if validation_data_loaded:
             try:
                 U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
-                U_pred_val = U_pred_val * jnp.where(U_pred_val[..., 0] >= 0, 1.0, 0.0)[..., None]
+                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
+                U_pred_val = _apply_min_depth(U_pred_val, min_depth_val)
                 h_pred_val = U_pred_val[..., 0]
                 nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))

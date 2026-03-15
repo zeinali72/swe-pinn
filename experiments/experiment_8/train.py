@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 
 # Local application imports
 from src.config import load_config, DTYPE
+from src.predict.predictor import _apply_min_depth
 from src.data import (
     get_batches_tensor,
     load_boundary_condition,
@@ -263,7 +264,8 @@ def main(config_path: str):
         if validation_data_loaded:
             try:
                 U_pred = model.apply(params, val_pts_batch, train=False)
-                U_pred = U_pred * jnp.where(U_pred[..., 0] >= 0, 1.0, 0.0)[..., None]
+                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
+                U_pred = _apply_min_depth(U_pred, min_depth_val)
                 h_pred = U_pred[..., 0]
                 hu_pred = U_pred[..., 1]
                 hv_pred = U_pred[..., 2]
