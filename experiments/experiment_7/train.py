@@ -13,6 +13,7 @@ import pandas as pd
 import jax
 import jax.numpy as jnp
 from jax import random
+from flax.core import FrozenDict
 import numpy as np
 import matplotlib.pyplot as plt
 
