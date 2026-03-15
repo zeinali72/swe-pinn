@@ -20,6 +20,7 @@ import numpy as np
 
 # Local application imports
 from src.config import DTYPE
+from src.predict.predictor import _apply_min_depth
 from src.data import sample_domain, get_batches_tensor
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss,
@@ -99,10 +100,6 @@ def main(config_path: str):
 
     print("Info: Running in analytical (no-building) mode.")
 
-    # --- 3. Setup Optimizer ---
-    optimiser = create_optimizer(cfg)
-    opt_state = optimiser.init(params)
-
     # --- 4. Prepare Loss Weights ---
     static_weights_dict, _ = extract_loss_weights(cfg)
     
@@ -149,13 +146,39 @@ def main(config_path: str):
             domain_cfg = cfg["domain"]
             print(f"Creating analytical training dataset from 'train_grid' config...")
             
-            # 1. Sample points (x, y, t)
-            data_points_coords = sample_domain(
+            # 1. Sample gauge locations (x, y) and expand to full time series
+            n_gauges = train_grid_cfg["n_gauges"]
+            dt_data = train_grid_cfg["dt_data"]
+            t_final = domain_cfg["t_final"]
+
+            if n_gauges <= 0 or dt_data <= 0:
+                raise ValueError(
+                    f"Gauge-based sampling requires n_gauges > 0 and dt_data > 0, "
+                    f"got n_gauges={n_gauges}, dt_data={dt_data}. "
+                    f"Set data_free: true to skip data sampling."
+                )
+
+            # Create time array at specified resolution
+            t_steps = jnp.arange(0., t_final + dt_data * 0.5, dt_data, dtype=DTYPE)
+            n_timesteps = t_steps.shape[0]
+
+            # Sample n_gauges random spatial locations
+            gauge_xy = sample_domain(
                 train_key,
-                train_grid_cfg["n_points_train"],
-                (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
-            )
-            
+                n_gauges,
+                (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.)
+            )[:, :2]  # shape (n_gauges, 2) — keep only x, y
+
+            # Expand: each gauge gets the full time series
+            # gauge_xy_rep: (n_gauges * n_timesteps, 2)
+            gauge_xy_rep = jnp.repeat(gauge_xy, n_timesteps, axis=0)
+            # t_rep: (n_gauges * n_timesteps, 1)
+            t_rep = jnp.tile(t_steps, n_gauges).reshape(-1, 1)
+            # data_points_coords: (n_gauges * n_timesteps, 3) — [x, y, t]
+            data_points_coords = jnp.hstack([gauge_xy_rep, t_rep])
+
+            print(f"Gauge-based sampling: {n_gauges} gauges x {n_timesteps} timesteps (dt={dt_data}s) = {data_points_coords.shape[0]} data points")
+
             # 2. Calculate true values (h, u, v)
             h_true_train = h_exact(
                 data_points_coords[:, 0], # x
@@ -230,6 +253,10 @@ def main(config_path: str):
         print(f"Error: Batch size {batch_size} is too large for configured sample counts or data. No training will occur.")
         return -1.0
 
+    # --- 3. Setup Optimizer (after num_batches is known for accumulation_factor) ---
+    optimiser = create_optimizer(cfg, num_batches=num_batches)
+    opt_state = optimiser.init(params)
+
     # --- Define JIT Data Generator ---
     def generate_epoch_data(key):
         key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
@@ -270,6 +297,8 @@ def main(config_path: str):
         if validation_data_loaded:
             try:
                 U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
+                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
+                U_pred_val = _apply_min_depth(U_pred_val, min_depth_val)
                 h_pred_val = U_pred_val[..., 0]
                 nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))
@@ -310,7 +339,7 @@ def main(config_path: str):
         aim_tracker = loop_result["aim_tracker"]
         final_epoch = loop_result["epoch"]
         plot_cfg = cfg.get("plotting", {})
-        eps_plot = cfg.get("numerics", {}).get("eps", 1e-6)
+        min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
         t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
         nx_val_plot = plot_cfg.get("nx_val", 101)
         y_const_plot = plot_cfg.get("y_const_plot", 0.0)
@@ -321,7 +350,8 @@ def main(config_path: str):
             jnp.full_like(x_val_plot, t_const_val_plot, dtype=DTYPE),
         ], axis=1)
         U_plot_pred_1d = model.apply({'params': final_params['params']}, plot_points_1d, train=False)
-        h_plot_pred_1d = jnp.where(U_plot_pred_1d[..., 0] < eps_plot, 0.0, U_plot_pred_1d[..., 0])
+        U_plot_pred_1d = _apply_min_depth(U_plot_pred_1d, min_depth_plot)
+        h_plot_pred_1d = U_plot_pred_1d[..., 0]
         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
         plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d)
         aim_tracker.log_image(plot_path_1d, 'validation_plot_1D', final_epoch)

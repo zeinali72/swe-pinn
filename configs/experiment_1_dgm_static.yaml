@@ -69,4 +69,5 @@ device:
   early_stop_patience: 30000
 numerics:
   eps: 1.0e-06
+  min_depth: 0.005
 CONFIG_PATH: optimisation/configs/hpo_DGM_datafree_static.yaml

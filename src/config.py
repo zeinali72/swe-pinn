@@ -31,7 +31,7 @@ def load_config(config_path: str):
     global DTYPE, EPS
     DTYPE = getattr(jnp, config["device"]["dtype"])
     EPS = config["numerics"]["eps"]
-    
+
     return config
 
 # These will be set by load_config

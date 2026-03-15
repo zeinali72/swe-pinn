@@ -282,7 +282,8 @@ def run_inference(
     val_coords, val_targets = _load_validation(cfg_dict, paths_info, meta, experiment_name)
 
     # 6. Predict
-    predictor = Predictor(model, batch_size=batch_size)
+    min_depth = cfg_dict.get("numerics", {}).get("min_depth", 0.0)
+    predictor = Predictor(model, batch_size=batch_size, min_depth=min_depth)
     predictions, elapsed = predictor.predict_timed(params, val_coords)
     print(f"  Prediction: {val_coords.shape[0]:,} points in {elapsed:.3f}s")
 

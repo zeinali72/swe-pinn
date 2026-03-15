@@ -10,17 +10,32 @@ import jax
 import jax.numpy as jnp
 
 
+def _apply_min_depth(predictions: jnp.ndarray, min_depth: float) -> jnp.ndarray:
+    """Zero out predictions where water depth h falls below min_depth.
+
+    Negative depths are always clamped to zero (physical constraint).
+    When min_depth > 0, cells with h below that threshold are also zeroed.
+    """
+    threshold = max(min_depth, 0.0)
+    h = predictions[..., 0]
+    mask = jnp.where(h >= threshold, 1.0, 0.0)
+    return predictions * mask[..., None]
+
+
 class Predictor:
     """JIT-compiled forward pass for PINN models.
 
     Args:
         model: A Flax ``nn.Module`` instance.
         batch_size: Maximum number of points to evaluate in one JIT call.
+        min_depth: Minimum water depth threshold. Predictions with h below
+            this value are zeroed out (dry-cell masking). Default 0.0 (no masking).
     """
 
-    def __init__(self, model, batch_size: int = 50_000):
+    def __init__(self, model, batch_size: int = 50_000, min_depth: float = 0.0):
         self.model = model
         self.batch_size = batch_size
+        self.min_depth = min_depth
 
         @jax.jit
         def _predict(params, coords):
@@ -36,7 +51,7 @@ class Predictor:
             coords_flat: (N, 3) array of (x, y, t) coordinates.
 
         Returns:
-            (N, 3) predictions [h, hu, hv].
+            (N, 3) predictions [h, hu, hv] with dry-cell masking applied.
         """
         flax_params = {'params': params['params']}
         predictions = []
@@ -44,7 +59,8 @@ class Predictor:
             batch = coords_flat[i:i + self.batch_size]
             pred = self._predict(flax_params, batch)
             predictions.append(pred)
-        return jnp.concatenate(predictions, axis=0)
+        result = jnp.concatenate(predictions, axis=0)
+        return _apply_min_depth(result, self.min_depth)
 
     def predict_timed(self, params: dict, coords_flat: jnp.ndarray):
         """Forward pass with wall-clock timing.
