@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 
 # Local application imports
 from src.config import load_config, DTYPE
+from src.predict.predictor import _apply_min_depth
 from src.data import (
     get_batches_tensor,
     load_boundary_condition,
@@ -263,6 +264,8 @@ def main(config_path: str):
         if validation_data_loaded:
             try:
                 U_pred = model.apply(params, val_pts_batch, train=False)
+                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
+                U_pred = _apply_min_depth(U_pred, min_depth_val)
                 h_pred = U_pred[..., 0]
                 hu_pred = U_pred[..., 1]
                 hv_pred = U_pred[..., 2]
@@ -341,7 +344,8 @@ def main(config_path: str):
         def plot_gauge(x, y, name, filename):
             pts = jnp.stack([jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot], axis=-1)
             U = model.apply(final_params, pts, train=False)
-            h_pred = U[..., 0]
+            min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
+            h_pred = jnp.where(U[..., 0] < min_depth_plot, 0.0, U[..., 0])
             plt.figure(figsize=(10, 6))
             plt.plot(np.array(t_plot), np.array(h_pred), label=f'Predicted h @ ({x:.1f},{y:.1f})')
             plt.xlabel('Time (s)')
