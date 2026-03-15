@@ -10,6 +10,7 @@ from jax import lax
 from src.utils import nse, rmse, save_model, ask_for_confirmation
 from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
+from src.predict.predictor import _apply_min_depth
 
 
 def extract_lr(opt_state, base_lr, epoch):
@@ -131,7 +132,8 @@ def run_training_loop(
                 if validation_data_loaded:
                     try:
                         U_val = model.apply(params, val_points_all, train=False)
-                        U_val = U_val * jnp.where(U_val[..., 0] >= 0, 1.0, 0.0)[..., None]
+                        min_depth = cfg.get("numerics", {}).get("min_depth", 0.0)
+                        U_val = _apply_min_depth(U_val, min_depth)
                         nse_val = nse(U_val[..., 0], h_true_val_all)
                         rmse_val = rmse(U_val[..., 0], h_true_val_all)
                         val_metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}

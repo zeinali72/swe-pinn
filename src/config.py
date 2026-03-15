@@ -28,14 +28,12 @@ def load_config(config_path: str):
     config = _convert_str_floats(config)
     config['CONFIG_PATH'] = config_path
 
-    global DTYPE, EPS, MIN_DEPTH
+    global DTYPE, EPS
     DTYPE = getattr(jnp, config["device"]["dtype"])
     EPS = config["numerics"]["eps"]
-    MIN_DEPTH = config["numerics"].get("min_depth", 0.0)
 
     return config
 
 # These will be set by load_config
 DTYPE = None
 EPS = None
-MIN_DEPTH = 0.0

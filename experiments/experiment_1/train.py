@@ -20,6 +20,7 @@ import numpy as np
 
 # Local application imports
 from src.config import DTYPE
+from src.predict.predictor import _apply_min_depth
 from src.data import sample_domain, get_batches_tensor
 from src.losses import (
     compute_pde_loss, compute_ic_loss, compute_bc_loss,
@@ -149,6 +150,13 @@ def main(config_path: str):
             n_gauges = train_grid_cfg["n_gauges"]
             dt_data = train_grid_cfg["dt_data"]
             t_final = domain_cfg["t_final"]
+
+            if n_gauges <= 0 or dt_data <= 0:
+                raise ValueError(
+                    f"Gauge-based sampling requires n_gauges > 0 and dt_data > 0, "
+                    f"got n_gauges={n_gauges}, dt_data={dt_data}. "
+                    f"Set data_free: true to skip data sampling."
+                )
 
             # Create time array at specified resolution
             t_steps = jnp.arange(0., t_final + dt_data * 0.5, dt_data, dtype=DTYPE)
@@ -289,7 +297,8 @@ def main(config_path: str):
         if validation_data_loaded:
             try:
                 U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
-                U_pred_val = U_pred_val * jnp.where(U_pred_val[..., 0] >= 0, 1.0, 0.0)[..., None]
+                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
+                U_pred_val = _apply_min_depth(U_pred_val, min_depth_val)
                 h_pred_val = U_pred_val[..., 0]
                 nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))
@@ -341,7 +350,8 @@ def main(config_path: str):
             jnp.full_like(x_val_plot, t_const_val_plot, dtype=DTYPE),
         ], axis=1)
         U_plot_pred_1d = model.apply({'params': final_params['params']}, plot_points_1d, train=False)
-        h_plot_pred_1d = jnp.where(U_plot_pred_1d[..., 0] < min_depth_plot, 0.0, U_plot_pred_1d[..., 0])
+        U_plot_pred_1d = _apply_min_depth(U_plot_pred_1d, min_depth_plot)
+        h_plot_pred_1d = U_plot_pred_1d[..., 0]
         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
         plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d)
         aim_tracker.log_image(plot_path_1d, 'validation_plot_1D', final_epoch)
