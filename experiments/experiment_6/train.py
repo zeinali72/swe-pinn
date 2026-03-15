@@ -186,10 +186,13 @@ def main(config_path: str):
         y_inflow_start = inflow_segment["y_start"]
         y_inflow_end = inflow_segment["y_end"]
 
-        l_in_key, l_wall_key, r_key, b_key, t_key = random.split(bc_keys, 5)
+        l_in_key, l_wall_bot_key, l_wall_top_key, r_key, b_key, t_key = random.split(bc_keys, 6)
         bc_inflow = sample_and_batch(l_in_key, sample_lhs, n_bc_inflow, batch_size, num_batches, (0., 0.), (y_inflow_start, y_inflow_end), t_range)
-        bc_left_wall_bottom = sample_and_batch(l_wall_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, (0., 0.), (0., y_inflow_start), t_range)
-        bc_left_wall_above = sample_and_batch(l_wall_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, (0., 0.), (y_inflow_end, domain_cfg["ly"]), t_range)
+        # Sample each left-wall sub-segment with half the batch size so the
+        # concatenated result has batch_size rows, matching the other walls.
+        n_bc_left_half = max(batch_size // 2, n_bc_per_wall // 2)
+        bc_left_wall_bottom = sample_and_batch(l_wall_bot_key, sample_lhs, n_bc_left_half, batch_size // 2, num_batches, (0., 0.), (0., y_inflow_start), t_range)
+        bc_left_wall_above = sample_and_batch(l_wall_top_key, sample_lhs, n_bc_left_half, batch_size // 2, num_batches, (0., 0.), (y_inflow_end, domain_cfg["ly"]), t_range)
         bc_left_wall = jnp.concatenate([bc_left_wall_bottom, bc_left_wall_above], axis=1)
         bc_right = sample_and_batch(r_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range)
         bc_bot = sample_and_batch(b_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range)
