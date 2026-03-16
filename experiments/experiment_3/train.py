@@ -103,7 +103,6 @@ def main(config_path: str):
     model = setup["model"]
     params = setup["params"]
     train_key = setup["train_key"]
-    val_key = setup["val_key"]
     trial_name = setup["trial_name"]
     results_dir = setup["results_dir"]
     model_dir = setup["model_dir"]
