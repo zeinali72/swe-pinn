@@ -43,6 +43,7 @@ def run_training_loop(
     validation_fn=None,
     selection_metric_key="nse_h",
     source_script_path=None,
+    compute_all_losses_fn=None,
 ):
     """Execute the full epoch loop with logging, checkpointing, and early stopping.
 
@@ -57,6 +58,12 @@ def run_training_loop(
     pde_key_for_diag : str
         Key in the scan_inputs pytree where PDE points live (for negative-depth
         diagnostics).  Typically ``"pde"``.
+    compute_all_losses_fn : callable, optional
+        ``(model, params) -> dict[str, float]`` — evaluates **all** physics
+        loss terms (PDE, IC, BC, neg_h, etc.) regardless of whether their
+        training weights were zero.  Called once at the end of training on the
+        best-NSE parameters so that physics compliance is always recorded in
+        the final checkpoint metadata and summary.
 
     Returns
     -------
@@ -230,8 +237,28 @@ def run_training_loop(
 
     finally:
         total_time = time.time() - start_time
+
+        # Evaluate all physics losses on best-NSE params (even zero-weight terms)
+        all_physics_losses = {}
+        if compute_all_losses_fn is not None:
+            eval_params = best_params_nse if best_params_nse is not None else params
+            try:
+                all_physics_losses = compute_all_losses_fn(model, eval_params)
+                all_physics_losses = {k: float(v) for k, v in all_physics_losses.items()}
+                print(f"\nAll physics losses (best-NSE params):")
+                for k, v in all_physics_losses.items():
+                    print(f"  {k}: {v:.6e}")
+            except Exception as e:
+                print(f"Warning: Failed to evaluate all physics losses: {e}")
+
+        # Merge all_physics_losses into final losses for the checkpoint
+        final_losses_for_ckpt = dict(avg_losses_unweighted)
+        for k, v in all_physics_losses.items():
+            if k not in final_losses_for_ckpt:
+                final_losses_for_ckpt[k] = v
+
         ckpt_mgr.save_final(epoch, params, opt_state, val_metrics,
-                            avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth)
+                            final_losses_for_ckpt, avg_total_weighted_loss, cfg_dict, neg_depth)
         best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
         best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
 
@@ -240,7 +267,7 @@ def run_training_loop(
             final_epoch=epoch,
             best_nse_stats=best_nse_ckpt,
             best_loss_stats=best_loss_ckpt,
-            final_losses=avg_losses_unweighted,
+            final_losses=final_losses_for_ckpt,
             final_val_metrics=val_metrics,
             neg_depth_final=neg_depth,
             neg_depth_best_nse={},
@@ -259,6 +286,8 @@ def run_training_loop(
                         'total_steps_run': global_step,
                     }
                 }
+                if all_physics_losses:
+                    summary_metrics['all_physics_losses'] = all_physics_losses
                 aim_tracker.log_summary(summary_metrics)
                 print("Summary metrics logged to Aim.")
             except Exception as e:
