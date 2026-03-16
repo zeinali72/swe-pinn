@@ -49,15 +49,11 @@ def main():
 
     # --- Get HPO Settings from Config ---
     hpo_settings = base_config_dict.get("hpo_settings", {})
-    opt_epochs = hpo_settings.get("opt_epochs", 5000)
+    opt_epochs = base_config_dict.get("training", {}).get("epochs", 5000)
 
     print(f"Mode: DATA-FREE (Physics Only)")
     print(f"GradNorm: Disabled")
     print(f"Optimization trials will run for {opt_epochs} epochs each.")
-
-    # --- Update base config dict with explicit opt_epochs ---
-    if "training" not in base_config_dict: base_config_dict["training"] = {}
-    base_config_dict["training"]["epochs"] = opt_epochs
 
     # --- Setup Optuna Study ---
     storage_url = setup_study_storage(args.storage, project_root)

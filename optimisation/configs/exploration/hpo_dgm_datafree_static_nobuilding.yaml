@@ -3,9 +3,9 @@
 hpo_settings:
   data_free: true
   enable_gradnorm: false
-  opt_epochs: 2000
 
 training:
+  epochs: 2000
   seed: 42
 
 model:

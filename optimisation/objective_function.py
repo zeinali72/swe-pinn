@@ -74,12 +74,6 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
     trial_params["batch_size"] = suggest("batch_size", hpo_cfg,
         lambda: trial.suggest_categorical("batch_size", [256, 512, 1024]))
 
-    # LR Boundaries (Calculated based on epochs)
-    opt_epochs = base_config_dict.get("training", {}).get("epochs", 2000)
-    boundary1 = int(opt_epochs * 0.6)
-    boundary2 = int(opt_epochs * 0.8)
-    trial_params["lr_boundaries"] = {str(boundary1): 0.1, str(boundary2): 0.1}
-
     # === Model ===
     trial_params["model_width"] = suggest("model_width", hpo_cfg,
         lambda: trial.suggest_categorical("model_width", [128, 256, 512, 1024]))
@@ -121,7 +115,14 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
         trial_params["loss_weights"][w] = suggest(w, weights_cfg,
             lambda w=w, min_w=min_w, max_w=max_w: trial.suggest_float(w, min_w, max_w, log=True))
 
-    trial_params["loss_weights"]["data_weight"] = 0.0
+    # Data weight: include in search space when data-driven, else 0.0
+    hpo_settings = base_config_dict.get("hpo_settings", {})
+    data_free = hpo_settings.get("data_free", True)
+    if not data_free:
+        trial_params["loss_weights"]["data_weight"] = suggest("data_weight", weights_cfg,
+            lambda: trial.suggest_float("data_weight", 1e-2, 1e4, log=True))
+    else:
+        trial_params["loss_weights"]["data_weight"] = 0.0
 
     # === Construct Configuration ===
     trial_config_dict = copy.deepcopy(base_config_dict)
@@ -129,7 +130,6 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
     # Update Training
     trial_config_dict["training"]["learning_rate"] = trial_params["learning_rate"]
     trial_config_dict["training"]["batch_size"] = trial_params["batch_size"]
-    trial_config_dict["training"]["lr_boundaries"] = trial_params["lr_boundaries"]
 
     # Update Model
     trial_config_dict["model"]["width"] = trial_params["model_width"]
@@ -142,15 +142,12 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
     trial_config_dict["sampling"] = trial_params["sampling"]
     trial_config_dict["loss_weights"] = trial_params["loss_weights"]
     
-    # Cleanup
-    for k in ["grid", "ic_bc_grid"]: trial_config_dict.pop(k, None)
-    if has_building and "building" in trial_config_dict:
-        for k in ["nx", "ny", "nt"]: trial_config_dict["building"].pop(k, None)
-
-    # Ensure flags
-    if "gradnorm" not in trial_config_dict: trial_config_dict["gradnorm"] = {}
-    trial_config_dict["gradnorm"]["enable"] = False
-    trial_config_dict["data_free"] = True
+    # Flags from config (hpo_settings is the source of truth)
+    hpo_settings = base_config_dict.get("hpo_settings", {})
+    trial_config_dict["data_free"] = hpo_settings.get("data_free", True)
+    if "gradnorm" not in trial_config_dict:
+        trial_config_dict["gradnorm"] = {}
+    trial_config_dict["gradnorm"]["enable"] = hpo_settings.get("enable_gradnorm", False)
 
     # Store
     config_to_store = unfreeze(trial_config_dict)
