@@ -57,7 +57,7 @@ def make_compute_losses(bc_fn_static):
         terms['neg_h'] = compute_neg_h_loss(model, params, batch['pde'])
 
         # IC: dry bed
-        U_ic = model.apply(params, batch['ic'], train=True)
+        U_ic = model.apply(params, batch['ic'], train=False)
         terms['ic'] = jnp.mean(U_ic[..., 0] ** 2) + jnp.mean(U_ic[..., 1] ** 2 + U_ic[..., 2] ** 2)
 
         # BC: inflow flux (hu + hv) + left wall + right/top/bottom slip walls
@@ -188,11 +188,14 @@ def main(config_path: str):
 
         l_in_key, l_wall_bot_key, l_wall_top_key, r_key, b_key, t_key = random.split(bc_keys, 6)
         bc_inflow = sample_and_batch(l_in_key, sample_lhs, n_bc_inflow, batch_size, num_batches, (0., 0.), (y_inflow_start, y_inflow_end), t_range)
-        # Sample each left-wall sub-segment with half the batch size so the
-        # concatenated result has batch_size rows, matching the other walls.
-        n_bc_left_half = max(batch_size // 2, n_bc_per_wall // 2)
-        bc_left_wall_bottom = sample_and_batch(l_wall_bot_key, sample_lhs, n_bc_left_half, batch_size // 2, num_batches, (0., 0.), (0., y_inflow_start), t_range)
-        bc_left_wall_above = sample_and_batch(l_wall_top_key, sample_lhs, n_bc_left_half, batch_size // 2, num_batches, (0., 0.), (y_inflow_end, domain_cfg["ly"]), t_range)
+        # Sample each left-wall sub-segment so the concatenated result has
+        # exactly batch_size rows, matching the other walls.
+        bot_bs = batch_size // 2
+        top_bs = batch_size - bot_bs
+        n_bc_left_bot = max(bot_bs, 1)
+        n_bc_left_top = max(top_bs, 1)
+        bc_left_wall_bottom = sample_and_batch(l_wall_bot_key, sample_lhs, n_bc_left_bot, bot_bs, num_batches, (0., 0.), (0., y_inflow_start), t_range)
+        bc_left_wall_above = sample_and_batch(l_wall_top_key, sample_lhs, n_bc_left_top, top_bs, num_batches, (0., 0.), (y_inflow_end, domain_cfg["ly"]), t_range)
         bc_left_wall = jnp.concatenate([bc_left_wall_bottom, bc_left_wall_above], axis=1)
         bc_right = sample_and_batch(r_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range)
         bc_bot = sample_and_batch(b_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range)

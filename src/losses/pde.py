@@ -18,13 +18,14 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     if pde_mask is None:
         pde_mask = jnp.ones((pde_batch.shape[0],), dtype=bool)
 
-    U_pred = model.apply({'params': params['params']}, pde_batch, train=True)
-
     def U_fn(pts):
         return model.apply({'params': params['params']}, pts, train=False)
 
     jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
     dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
+
+    # Use the same function (and train flag) for predictions fed to SWEPhysics
+    U_pred = U_fn(pde_batch)
 
     # 1. Unpack coordinates
     x_batch = pde_batch[..., 0]
