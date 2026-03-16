@@ -12,7 +12,7 @@ def loss_boundary_dirichlet_h(model: nn.Module, params: Dict[str, Any],
     U_pred = model.apply({'params': params['params']}, batch, train=False)
     h_pred = U_pred[..., 0]
     if h_target.ndim != h_pred.ndim:
-        h_target = h_target.squeeze()
+        h_target = h_target.reshape(h_pred.shape)
     return jnp.mean((h_pred - h_target)**2)
 
 
@@ -23,7 +23,7 @@ def loss_boundary_dirichlet_hu(model: nn.Module, params: Dict[str, Any],
     U_pred = model.apply({'params': params['params']}, batch, train=False)
     hu_pred = U_pred[..., 1]
     if hu_target.ndim != hu_pred.ndim:
-        hu_target = hu_target.squeeze()
+        hu_target = hu_target.reshape(hu_pred.shape)
     return jnp.mean((hu_pred - hu_target)**2)
 
 
@@ -34,7 +34,7 @@ def loss_boundary_dirichlet_hv(model: nn.Module, params: Dict[str, Any],
     U_pred = model.apply({'params': params['params']}, batch, train=False)
     hv_pred = U_pred[..., 2]
     if hv_target.ndim != hv_pred.ndim:
-        hv_target = hv_target.squeeze()
+        hv_target = hv_target.reshape(hv_pred.shape)
     return jnp.mean((hv_pred - hv_target)**2)
 
 
