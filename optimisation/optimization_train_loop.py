@@ -143,12 +143,19 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     # 8. Training loop with Optuna pruning
     epochs = trial_cfg["training"]["epochs"]
     validation_freq = trial_cfg.get("training", {}).get("validation_freq", 1)
+    log_freq = validation_freq * 200
     best_nse = -jnp.inf
 
     for epoch in range(epochs):
         train_key, epoch_key = random.split(train_key)
         scan_inputs = generate_epoch_data_jit(epoch_key)
-        (params, opt_state), _ = lax.scan(scan_body, (params, opt_state), scan_inputs)
+        (params, opt_state), (batch_terms, batch_totals) = lax.scan(
+            scan_body, (params, opt_state), scan_inputs,
+        )
+
+        # Aggregate per-epoch loss terms (mean across batches)
+        avg_total = float(jnp.mean(batch_totals))
+        avg_terms = {k: float(jnp.mean(v)) for k, v in batch_terms.items()}
 
         if (epoch + 1) % validation_freq == 0:
             metrics = validation_fn(model, params)
@@ -164,9 +171,14 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                 print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
                 raise optuna.exceptions.TrialPruned()
 
-            if (epoch + 1) % (validation_freq * 200) == 0:
+            if (epoch + 1) % log_freq == 0:
+                terms_str = " ".join(
+                    f"{k}={v:.3e}" for k, v in sorted(avg_terms.items())
+                )
                 print(f"  Trial {trial.number}, Epoch {epoch+1}/{epochs}: "
+                      f"loss={avg_total:.3e} [{terms_str}] "
                       f"NSE={current_nse:.6f}, Best={best_nse:.6f}")
+                trial.set_user_attr(f"losses_epoch_{epoch+1}", avg_terms)
 
     if best_nse <= -jnp.inf:
         print(f"Trial {trial.number}: No valid NSE achieved.")
