@@ -56,6 +56,7 @@ from src.training import (
     run_training_loop,
 )
 
+
 def make_compute_losses(bc_fn_static):
     """Return a compute_losses closure for Experiment 7 (irregular boundaries)."""
 
@@ -88,22 +89,31 @@ def make_compute_losses(bc_fn_static):
 
     return compute_losses
 
-def main(config_path: str):
+
+def setup_trial(cfg_dict: dict) -> dict:
+    """Set up all training components for Experiment 7 from a config dict.
+
+    Domain setup (IrregularDomainSampler, apply_irregular_domain_bounds) happens
+    BEFORE FrozenDict creation and model init, as it mutates cfg_dict with domain
+    extents derived from the mesh geometry.
+
+    Args:
+        cfg_dict: Mutable configuration dictionary (not a file path). This is the
+            interface used by HPO to pass trial-specific configs directly.
+
+    Returns:
+        Dictionary containing all objects needed to call run_training_loop, plus
+        production metadata fields (experiment_name, validation_data_loaded, etc.).
     """
-    Main training loop for Experiment 7.
-    """
-    #--- 1. LOAD CONFIGURATION (MUTABLE) ---
-    cfg_dict = load_config(config_path)
     experiment_name = get_experiment_name(cfg_dict, "experiment_7")
-    
+
     print("Info: Running Experiment 7 model training...")
 
-    # --- 2. SETUP DATA & COMPUTE DOMAIN EXTENT ---
+    # --- Setup Data & Compute Domain Extent (must happen before FrozenDict) ---
     try:
         experiment_paths = resolve_experiment_paths(cfg_dict, experiment_name, require_scenario=True)
     except ValueError as exc:
-        print(f"Error: {exc} in config '{config_path}'.")
-        sys.exit(1)
+        raise ValueError(f"Experiment path resolution failed: {exc}") from exc
 
     scenario_name = experiment_paths["scenario_name"]
     base_data_path = experiment_paths["base_data_path"]
@@ -112,14 +122,13 @@ def main(config_path: str):
     try:
         artifacts_path = resolve_configured_asset_path(cfg_dict, base_data_path, scenario_name, "domain_artifacts")
     except FileNotFoundError as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
-    
+        raise FileNotFoundError(f"Domain artifacts not found: {exc}") from exc
+
     print(f"Loading domain geometry from: {artifacts_path}")
     domain_sampler = IrregularDomainSampler(artifacts_path)
 
     domain_extent = apply_irregular_domain_bounds(cfg_dict, domain_sampler)
-    
+
     print(f"Computed Domain Extent:")
     print(f"  X Range: [{domain_extent['x_min']:.4f}, {domain_extent['x_max']:.4f}]")
     print(f"  Y Range: [{domain_extent['y_min']:.4f}, {domain_extent['y_max']:.4f}]")
@@ -134,31 +143,28 @@ def main(config_path: str):
         bc_cfg["inflow_discharge_width"] = computed_width
         print(f"Inflow discharge width derived from shapefile: {computed_width:.4f} m")
 
-    # --- 3. FINALIZE CONFIG & INIT MODEL ---
+    # --- Finalize Config & Init Model (after domain bounds are set) ---
     cfg = FrozenDict(cfg_dict)
     model, params, train_key, val_key = init_model_from_config(cfg)
-    trial_name, results_dir, model_dir = create_output_dirs(cfg, experiment_name)
 
-    # --- 5. Prepare Loss Weights ---
+    # --- Prepare Loss Weights ---
     static_weights_dict, current_weights_dict = extract_loss_weights(cfg)
 
-    # --- 6. Load Remaining Assets ---
+    # --- Load Remaining Assets ---
 
     # B. Load Bathymetry (REQUIRED)
     try:
         dem_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "dem")
     except FileNotFoundError as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
+        raise FileNotFoundError(f"DEM asset not found: {exc}") from exc
     print(f"Loading Bathymetry from {dem_path}...")
     load_bathymetry(dem_path)
-    
+
     # C. Load Boundary Condition Function
     try:
         bc_csv_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "boundary_condition")
     except FileNotFoundError as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
+        raise FileNotFoundError(f"Boundary condition asset not found: {exc}") from exc
     bc_fn_static = load_boundary_condition(bc_csv_path)
 
     # D. Load Validation and Training Data
@@ -182,11 +188,10 @@ def main(config_path: str):
     h_true_val_all = validation["h_true_val"]
     val_targets_all = validation["val_targets"]
 
-    # --- 7. Data Generation Setup ---
-    sampling_cfg = cfg["sampling"]
+    # --- Data Generation Setup ---
     batch_size = cfg["training"]["batch_size"]
     domain_cfg = cfg["domain"]
-    
+
     n_pde = get_sampling_count_from_config(cfg, "n_points_pde")
     n_ic = get_sampling_count_from_config(cfg, "n_points_ic")
     n_bc_inflow = get_sampling_count_from_config(cfg, "n_points_bc_inflow")
@@ -200,7 +205,7 @@ def main(config_path: str):
     )
     if num_batches == 0:
         print(f"Error: Batch size {batch_size} is too large for sample counts.")
-        return -1.0
+        return {"num_batches": 0}
     print(f"Batches per epoch: {num_batches}")
 
     # --- Optimizer ---
@@ -228,8 +233,8 @@ def main(config_path: str):
             'bc_inflow': bc_inflow, 'bc_wall': bc_wall,
             'data': maybe_batch_data(k5, data_points_full, batch_size, num_batches, data_free),
         }
-    
-    generate_epoch_data_jitted = jax.jit(generate_epoch_data)
+
+    generate_epoch_data_jit = jax.jit(generate_epoch_data)
 
     compute_losses_fn = make_compute_losses(bc_fn_static)
     scan_body = make_scan_body(
@@ -237,8 +242,21 @@ def main(config_path: str):
         cfg, data_free, compute_losses_fn=compute_losses_fn,
     )
 
-    # --- Evaluate All Physics Losses (including zero-weight terms) ---
+    # --- Validation Function ---
+    def validation_fn(model, params):
+        metrics = {}
+        if validation_data_loaded and val_points_all is not None:
+            U_pred = model.apply(params, val_points_all, train=False)
+            h_pred = U_pred[..., 0]
+            metrics['nse_h'] = float(nse(h_pred, h_true_val_all))
+            metrics['rmse_h'] = float(rmse(h_pred, h_true_val_all))
+        if not metrics:
+            metrics = {'nse_h': float(-jnp.inf), 'rmse_h': float(jnp.inf)}
+        return metrics
+
+    # --- Evaluate All Physics Losses ---
     n_eval = 200
+
     def compute_all_losses_fn(model, params):
         eval_key = random.PRNGKey(0)
         keys = random.split(eval_key, 5)
@@ -252,28 +270,73 @@ def main(config_path: str):
         }
         return compute_losses_fn(model, params, batch, cfg, data_free=True)
 
+    return {
+        "cfg": cfg,
+        "cfg_dict": cfg_dict,
+        "model": model,
+        "params": params,
+        "train_key": train_key,
+        "optimiser": optimiser,
+        "opt_state": opt_state,
+        "generate_epoch_data_jit": generate_epoch_data_jit,
+        "scan_body": scan_body,
+        "num_batches": num_batches,
+        "validation_fn": validation_fn,
+        "data_free": data_free,
+        "compute_all_losses_fn": compute_all_losses_fn,
+        # Production extras
+        "experiment_name": experiment_name,
+        "validation_data_loaded": validation_data_loaded,
+        "val_points_all": val_points_all,
+        "h_true_val_all": h_true_val_all,
+        "val_targets_all": val_targets_all,
+        # For plot_fn in main()
+        "full_val_data": full_val_data,
+        "base_data_path": base_data_path,
+        "scenario_name": scenario_name,
+        "domain_sampler": domain_sampler,
+    }
+
+
+def main(config_path: str):
+    """Main training loop for Experiment 7."""
+    cfg_dict = load_config(config_path)
+    ctx = setup_trial(cfg_dict)
+
+    if ctx.get("num_batches", 0) == 0:
+        return -1.0
+
+    experiment_name = ctx["experiment_name"]
+    trial_name, results_dir, model_dir = create_output_dirs(ctx["cfg"], experiment_name)
+
+    model = ctx["model"]
+    cfg = ctx["cfg"]
+    full_val_data = ctx["full_val_data"]
+    base_data_path = ctx["base_data_path"]
+    scenario_name = ctx["scenario_name"]
+
     loop_result = run_training_loop(
         cfg=cfg,
-        cfg_dict=cfg_dict,
+        cfg_dict=ctx["cfg_dict"],
         model=model,
-        params=params,
-        opt_state=opt_state,
-        train_key=train_key,
-        optimiser=optimiser,
-        generate_epoch_data_jit=generate_epoch_data_jitted,
-        scan_body=scan_body,
-        num_batches=num_batches,
+        params=ctx["params"],
+        opt_state=ctx["opt_state"],
+        train_key=ctx["train_key"],
+        optimiser=ctx["optimiser"],
+        generate_epoch_data_jit=ctx["generate_epoch_data_jit"],
+        scan_body=ctx["scan_body"],
+        num_batches=ctx["num_batches"],
         experiment_name=experiment_name,
         trial_name=trial_name,
         results_dir=results_dir,
         model_dir=model_dir,
         config_path=config_path,
-        validation_data_loaded=validation_data_loaded,
-        val_points_all=val_points_all,
-        h_true_val_all=h_true_val_all,
-        val_targets_all=val_targets_all,
+        validation_data_loaded=ctx.get("validation_data_loaded", False),
+        val_points_all=ctx.get("val_points_all"),
+        h_true_val_all=ctx.get("h_true_val_all"),
+        val_targets_all=ctx.get("val_targets_all"),
         source_script_path=__file__,
-        compute_all_losses_fn=compute_all_losses_fn,
+        compute_all_losses_fn=ctx["compute_all_losses_fn"],
     )
 
     def plot_fn(final_params):
@@ -347,12 +410,14 @@ def main(config_path: str):
 
     return loop_result["best_nse_stats"]["nse"]
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Unified PINN training script for SWE (Experiment 7 - Irregular).")
     parser.add_argument("--config", type=str, required=True)
     args = parser.parse_args()
 
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    if project_root not in sys.path: sys.path.insert(0, project_root)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
 
     main(args.config)

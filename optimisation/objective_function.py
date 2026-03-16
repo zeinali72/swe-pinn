@@ -138,9 +138,9 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
         trial_config_dict["model"]["ff_dims"] = trial_params["ff_dims"]
         trial_config_dict["model"]["fourier_scale"] = trial_params["fourier_scale"]
 
-    # Update Sampling & Weights
-    trial_config_dict["sampling"] = trial_params["sampling"]
-    trial_config_dict["loss_weights"] = trial_params["loss_weights"]
+    # Update Sampling & Weights — merge so experiment-specific keys are preserved
+    trial_config_dict.setdefault("sampling", {}).update(trial_params["sampling"])
+    trial_config_dict.setdefault("loss_weights", {}).update(trial_params["loss_weights"])
     
     # Cleanup
     for k in ["grid", "ic_bc_grid"]: trial_config_dict.pop(k, None)
