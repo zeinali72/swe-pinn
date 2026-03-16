@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from jax import lax
 
 from src.utils import nse, rmse, save_model, ask_for_confirmation
+from src.utils.profiling import EpochTimer, log_memory_usage
 from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.predict.predictor import _apply_min_depth
@@ -107,16 +108,32 @@ def run_training_loop(
     best_params_loss = None
     epoch = 0
 
+    enable_profiling = cfg_dict.get("debug", {}).get("profile_timing", False)
+    epoch_timer = EpochTimer() if enable_profiling else None
+
     try:
         for epoch in range(cfg["training"]["epochs"]):
             epoch_start_time = time.time()
 
             train_key, epoch_key = random.split(train_key)
-            scan_inputs = generate_epoch_data_jit(epoch_key)
 
-            (params, opt_state), (batch_losses_stacked, batch_total_stacked) = lax.scan(
-                scan_body, (params, opt_state), scan_inputs
-            )
+            if enable_profiling:
+                with epoch_timer.time("data_generation"):
+                    scan_inputs = generate_epoch_data_jit(epoch_key)
+                    jax.block_until_ready(scan_inputs)
+            else:
+                scan_inputs = generate_epoch_data_jit(epoch_key)
+
+            if enable_profiling:
+                with epoch_timer.time("scan_step"):
+                    (params, opt_state), (batch_losses_stacked, batch_total_stacked) = lax.scan(
+                        scan_body, (params, opt_state), scan_inputs
+                    )
+                    jax.block_until_ready(batch_total_stacked)
+            else:
+                (params, opt_state), (batch_losses_stacked, batch_total_stacked) = lax.scan(
+                    scan_body, (params, opt_state), scan_inputs
+                )
             global_step += num_batches
 
             # Aggregate losses
@@ -237,6 +254,10 @@ def run_training_loop(
 
     finally:
         total_time = time.time() - start_time
+
+        if enable_profiling and epoch_timer is not None:
+            epoch_timer.print_summary()
+            log_memory_usage("end_of_training")
 
         # Evaluate all physics losses on best-NSE params (even zero-weight terms)
         all_physics_losses = {}
