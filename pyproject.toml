@@ -19,5 +19,11 @@ dependencies = [
     "seaborn"
 ]
 
+[project.optional-dependencies]
+profile = [
+    "tensorboard>=2.14",
+    "tensorboard-plugin-profile>=2.14",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
