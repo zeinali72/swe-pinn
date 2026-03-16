@@ -57,12 +57,17 @@ def _make_jac_fn(model, params):
     return jax.jit(jax.vmap(jax.jacfwd(U_fn)))
 
 
-def _make_grad_fn(model, batch):
-    """Create a JIT-compiled grad-through-Jacobian function."""
+def _make_grad_fn(model):
+    """Create a JIT-compiled grad-through-Jacobian function.
+
+    The batch is passed as an argument rather than closed over so the
+    function only needs to be compiled once per model, regardless of
+    batch size.
+    """
     return jax.jit(jax.grad(
-        lambda p: jnp.mean(jax.vmap(jax.jacfwd(
+        lambda p, b: jnp.mean(jax.vmap(jax.jacfwd(
             lambda pts: model.apply({'params': p['params']}, pts, train=False)
-        ))(batch) ** 2)
+        ))(b) ** 2)
     ))
 
 
@@ -159,11 +164,11 @@ def benchmark_scale_grid(cfg_dict, key, dtype):
                 _ = jac_fn(jnp.ones((1, 3), dtype=dtype))
                 jax.block_until_ready(_)
 
-                # Compile grad_fn once per (width, depth) config
-                max_bs = max(batch_sizes)
-                grad_batch = random.uniform(key, (max_bs, 3), dtype=dtype)
-                grad_fn = _make_grad_fn(model, grad_batch)
-                _ = grad_fn(params)
+                # Build grad_fn once per (width, depth), outside the batch_sizes
+                # loop.  The batch is passed as an argument so it can vary
+                # without recompilation.
+                grad_fn = _make_grad_fn(model)
+                _ = grad_fn(params, jnp.ones((1, 3), dtype=dtype))
                 jax.block_until_ready(_)
 
                 for bs in batch_sizes:
@@ -173,8 +178,7 @@ def benchmark_scale_grid(cfg_dict, key, dtype):
                         jax.block_until_ready(result)
 
                         # Measure grad (backward through Jacobian)
-                        grad_fn_bs = _make_grad_fn(model, batch)
-                        _ = grad_fn_bs(params)
+                        _ = grad_fn(params, batch)
                         jax.block_until_ready(_)
 
                         mem = _get_memory_bytes()
