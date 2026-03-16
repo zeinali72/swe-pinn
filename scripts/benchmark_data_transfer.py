@@ -14,8 +14,8 @@ Profiles:
 import argparse
 import json
 import os
+import tempfile
 import time
-import timeit
 
 import jax
 import jax.numpy as jnp
@@ -23,42 +23,50 @@ import numpy as np
 from jax import random
 from flax.core import FrozenDict
 
-from src.config import load_config, get_dtype, DTYPE
+from src.config import load_config, get_dtype
 from src.models.pinn import MLP, FourierPINN, DGMNetwork
 from src.models.factory import init_model
 from src.metrics.accuracy import nse, rmse
 
 
 def benchmark_data_loading(dtype, sizes=None):
-    """Benchmark numpy -> JAX array transfer at various sizes."""
+    """Benchmark file I/O + host-to-device transfer at various sizes."""
     if sizes is None:
         sizes = [1000, 5000, 10000, 42000, 100000]
 
-    print("\n=== Data Loading: NumPy -> JAX Transfer ===")
+    print("\n=== Data Loading: File I/O + Host->Device Transfer ===")
     results = {}
 
     for n in sizes:
         # Simulate a validation dataset: (n, 6) for [x, y, t, h, hu, hv]
         data_np = np.random.randn(n, 6).astype(np.float32 if dtype == jnp.float32 else np.float64)
-
-        # Benchmark numpy creation (simulates file read)
-        t0 = time.perf_counter()
-        _ = np.array(data_np)
-        t1 = time.perf_counter()
-
-        # Benchmark host -> device transfer
-        data_jax = jnp.array(data_np, dtype=dtype)
-        jax.block_until_ready(data_jax)
-        t2 = time.perf_counter()
-
-        load_ms = (t1 - t0) * 1000
-        transfer_ms = (t2 - t1) * 1000
         size_mb = data_np.nbytes / 1e6
 
-        print(f"  n={n:>6} ({size_mb:.1f} MB): copy={load_ms:.1f}ms, transfer={transfer_ms:.1f}ms")
+        # Write to temp file
+        with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as f:
+            tmp_path = f.name
+            np.save(tmp_path, data_np)
+
+        try:
+            # Benchmark file read
+            t0 = time.perf_counter()
+            loaded = np.load(tmp_path)
+            t1 = time.perf_counter()
+
+            # Benchmark host -> device transfer
+            data_jax = jnp.array(loaded, dtype=dtype)
+            jax.block_until_ready(data_jax)
+            t2 = time.perf_counter()
+
+            load_ms = (t1 - t0) * 1000
+            transfer_ms = (t2 - t1) * 1000
+        finally:
+            os.unlink(tmp_path)
+
+        print(f"  n={n:>6} ({size_mb:.1f} MB): load={load_ms:.1f}ms, transfer={transfer_ms:.1f}ms")
         results[n] = {
             "size_mb": size_mb,
-            "copy_ms": load_ms,
+            "load_ms": load_ms,
             "transfer_ms": transfer_ms,
         }
 
@@ -108,7 +116,11 @@ def benchmark_validation_overhead(model, params, dtype, val_sizes=None):
 
 
 def benchmark_epoch_structure(model, params, dtype, cfg_dict, n_epochs=5):
-    """Break down a single epoch into its timing components."""
+    """Break down a single epoch into its timing components.
+
+    Note: The mock scan body uses forward-pass only (no Jacobians/gradients),
+    so timing underestimates real training epochs.
+    """
     key = random.PRNGKey(42)
 
     batch_size = cfg_dict["training"].get("batch_size", 512)
@@ -116,6 +128,7 @@ def benchmark_epoch_structure(model, params, dtype, cfg_dict, n_epochs=5):
     num_batches = max(1, n_pde // batch_size)
 
     print(f"\n=== Epoch Structure Timing ({n_epochs} epochs, {num_batches} batches) ===")
+    print("  NOTE: mock scan uses forward-pass only (no Jacobians/gradients); real epochs will be slower.")
 
     timings = {
         "key_split": [],
@@ -240,6 +253,7 @@ def benchmark_async_overlap(model, params, dtype, cfg_dict):
         _, losses = jax.lax.scan(mock_scan_body, params, data)
         data = next_data
     jax.block_until_ready(losses)
+    jax.block_until_ready(data)  # Also wait for last data gen
     t_pipelined = (time.perf_counter() - t0) * 1000
 
     speedup = t_sequential / max(t_pipelined, 0.001)
