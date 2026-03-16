@@ -18,7 +18,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Local application imports
-from src.config import load_config, DTYPE
+from src.config import load_config, get_dtype
 from src.data import (
     get_batches_tensor,
     load_boundary_condition,
@@ -80,7 +80,7 @@ def make_compute_losses(bc_fn_static):
         loss_bc_wall = loss_slip_wall_generalized(model, params, batch['bc_wall'])
         terms['bc'] = loss_bc_inflow + loss_bc_wall
 
-        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=get_dtype()))
         if not data_free and data_batch_data.shape[0] > 0:
             terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
@@ -248,7 +248,7 @@ def main(config_path: str):
             'ic': domain_sampler.sample_interior(keys[1], n_eval, (0., 0.)),
             'bc_inflow': domain_sampler.sample_boundary(keys[2], n_eval, t_range, 'inflow'),
             'bc_wall': domain_sampler.sample_boundary(keys[3], n_eval, t_range, 'wall'),
-            'data': jnp.empty((0, 6), dtype=DTYPE),
+            'data': jnp.empty((0, 6), dtype=get_dtype()),
         }
         return compute_losses_fn(model, params, batch, cfg, data_free=True)
 
@@ -278,7 +278,7 @@ def main(config_path: str):
 
     def plot_fn(final_params):
         print("Generating Experiment 7 plots...")
-        t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
+        t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
         aim_tracker = loop_result["aim_tracker"]
         final_epoch = loop_result["epoch"]
         output_csv_path = resolve_configured_asset_path(

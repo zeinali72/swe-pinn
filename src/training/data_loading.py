@@ -4,7 +4,7 @@ import sys
 
 import jax.numpy as jnp
 
-from src.config import DTYPE
+from src.config import get_dtype
 from src.data import load_validation_data
 
 
@@ -47,7 +47,7 @@ def load_training_data(base_data_path, has_data_loss, static_weights_dict,
         if os.path.exists(training_data_file):
             try:
                 print(f"Loading TRAINING data from: {training_data_file}")
-                data_points_full = jnp.load(training_data_file).astype(DTYPE)
+                data_points_full = jnp.load(training_data_file).astype(get_dtype())
                 if data_points_full.shape[0] == 0:
                     print("Warning: Training data file is empty. Disabling data loss.")
                     data_points_full = None
@@ -91,7 +91,7 @@ def load_validation_from_file(base_data_path, filename="validation_gauges.npy"):
 
     try:
         print(f"Loading VALIDATION data from: {validation_data_file}")
-        full_val_data, val_points, val_targets = load_validation_data(validation_data_file, dtype=DTYPE)
+        full_val_data, val_points, val_targets = load_validation_data(validation_data_file, dtype=get_dtype())
         h_true_val = val_targets[:, 0]
         if val_points.shape[0] > 0:
             result.update({
