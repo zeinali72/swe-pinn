@@ -119,7 +119,7 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
         
         min_w, max_w = (1.0, 1e6) if w == "pde_weight" else (1e-2, 1e3)
         trial_params["loss_weights"][w] = suggest(w, weights_cfg,
-            lambda: trial.suggest_float(w, min_w, max_w, log=True))
+            lambda w=w, min_w=min_w, max_w=max_w: trial.suggest_float(w, min_w, max_w, log=True))
 
     trial_params["loss_weights"]["data_weight"] = 0.0
 
