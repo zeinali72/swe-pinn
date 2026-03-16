@@ -19,7 +19,7 @@ from flax.core import FrozenDict
 import numpy as np
 
 # Local application imports
-from src.config import get_dtype
+from src.config import load_config, get_dtype
 from src.predict.predictor import _apply_min_depth
 from src.data import sample_domain, get_batches_tensor
 from src.losses import (
@@ -27,7 +27,7 @@ from src.losses import (
     loss_boundary_dirichlet, loss_boundary_neumann_outflow_x,
     loss_boundary_wall_horizontal,
 )
-from src.utils import nse, rmse, relative_l2, plot_h_vs_x
+from src.utils import nse, rmse, plot_h_vs_x
 from src.physics import h_exact, hu_exact, hv_exact
 from src.training import (
     create_optimizer,
@@ -35,7 +35,9 @@ from src.training import (
     extract_loss_weights,
     get_active_loss_weights,
     get_boundary_segment_count,
+    get_experiment_name,
     get_sampling_count_from_config,
+    init_model_from_config,
     train_step_jitted,
     make_scan_body,
     sample_and_batch,
@@ -44,105 +46,11 @@ from src.training import (
     post_training_save,
     resolve_data_mode,
     run_training_loop,
-    setup_experiment,
+    create_output_dirs,
 )
 
 # To enable 64-bit precision, uncomment the following line:
 # jax.config.update('jax_enable_x64', True)
-
-
-def make_generate_epoch_data(cfg, n_pde, n_ic, n_bc_per_wall,
-                              batch_size, num_batches, data_free,
-                              data_points_full=None):
-    """Returns a JIT-compiled epoch data generator for Experiment 1."""
-    domain_cfg = cfg["domain"]
-
-    def generate_epoch_data(key):
-        key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
-        x_range = (0., domain_cfg["lx"])
-        y_range = (0., domain_cfg["ly"])
-        t_range = (0., domain_cfg["t_final"])
-
-        pde_data = sample_and_batch(pde_key, sample_domain, n_pde, batch_size, num_batches, x_range, y_range, t_range)
-        ic_data = sample_and_batch(ic_key, sample_domain, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
-
-        l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
-        bc_data = {
-            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (0., 0.), y_range, t_range),
-            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
-            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range),
-            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
-        }
-
-        return {
-            'pde': pde_data,
-            'ic': ic_data,
-            'bc': bc_data,
-            'data': maybe_batch_data(data_key, data_points_full, batch_size, num_batches, data_free),
-            'building_bc': {},
-        }
-
-    return jax.jit(generate_epoch_data)
-
-
-def make_validation_fn(cfg, validation_data_loaded, val_points, h_true_val,
-                        hu_true_val=None, hv_true_val=None):
-    """Returns a validation callback for Experiment 1."""
-    def validation_fn(model, params):
-        nse_val, rmse_val = -jnp.inf, jnp.inf
-        metrics = {}
-        if validation_data_loaded:
-            try:
-                U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
-                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
-                U_pred_val = _apply_min_depth(U_pred_val, min_depth_val)
-                h_pred_val = U_pred_val[..., 0]
-                nse_val = float(nse(h_pred_val, h_true_val))
-                rmse_val = float(rmse(h_pred_val, h_true_val))
-                metrics = {
-                    'nse_h': nse_val,
-                    'rmse_h': rmse_val,
-                    'rel_l2_h': float(relative_l2(h_pred_val, h_true_val)),
-                }
-                if hu_true_val is not None and hv_true_val is not None:
-                    metrics['nse_hu'] = float(nse(U_pred_val[..., 1], hu_true_val))
-                    metrics['rmse_hu'] = float(rmse(U_pred_val[..., 1], hu_true_val))
-                    metrics['rel_l2_hu'] = float(relative_l2(U_pred_val[..., 1], hu_true_val))
-                    metrics['nse_hv'] = float(nse(U_pred_val[..., 2], hv_true_val))
-                    metrics['rmse_hv'] = float(rmse(U_pred_val[..., 2], hv_true_val))
-                    metrics['rel_l2_hv'] = float(relative_l2(U_pred_val[..., 2], hv_true_val))
-            except Exception as exc:
-                print(f"Warning: Validation calculation failed: {exc}")
-        if not metrics:
-            metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
-        return metrics
-    return validation_fn
-
-
-def make_compute_all_losses_fn(cfg, compute_losses_fn, n_eval=200):
-    """Returns a callback that evaluates all physics losses (even zero-weight)."""
-    domain_cfg = cfg["domain"]
-
-    def compute_all_losses_fn(model, params):
-        eval_key = random.PRNGKey(0)
-        keys = random.split(eval_key, 5)
-        x_range = (0., domain_cfg["lx"])
-        y_range = (0., domain_cfg["ly"])
-        t_range = (0., domain_cfg["t_final"])
-        batch = {
-            'pde': sample_domain(keys[0], n_eval, x_range, y_range, t_range),
-            'ic': sample_domain(keys[1], n_eval, x_range, y_range, (0., 0.)),
-            'bc': {
-                'left': sample_domain(keys[2], n_eval, (0., 0.), y_range, t_range),
-                'right': sample_domain(keys[2], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
-                'bottom': sample_domain(keys[3], n_eval, x_range, (0., 0.), t_range),
-                'top': sample_domain(keys[3], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
-            },
-            'data': jnp.empty((0, 6), dtype=get_dtype()),
-            'building_bc': {},
-        }
-        return compute_losses_fn(model, params, batch, cfg, data_free=True)
-    return compute_all_losses_fn
 
 
 def compute_losses(model, params, batch, config, data_free):
@@ -187,31 +95,28 @@ def compute_losses(model, params, batch, config, data_free):
     return terms
 
 
-def main(config_path: str):
+def setup_trial(cfg_dict: dict) -> dict:
+    """Set up all training components for Experiment 1 from a config dict.
+
+    Args:
+        cfg_dict: Mutable configuration dictionary (not a file path). This is the
+            interface used by HPO to pass trial-specific configs directly.
+
+    Returns:
+        Dictionary containing all objects needed to call run_training_loop, plus
+        production metadata fields (experiment_name, validation_data_loaded, etc.).
     """
-    Main training function for the analytical scenario.
-    """
-    # --- 1. Load Config and Initialize Model ---
-    setup = setup_experiment(config_path)
-    cfg_dict = setup["cfg_dict"]
-    cfg = setup["cfg"]
-    experiment_name = setup["experiment_name"]
-    model = setup["model"]
-    params = setup["params"]
-    train_key = setup["train_key"]
-    val_key = setup["val_key"]
-    trial_name = setup["trial_name"]
-    results_dir = setup["results_dir"]
-    model_dir = setup["model_dir"]
+    cfg = FrozenDict(cfg_dict)
+    experiment_name = get_experiment_name(cfg_dict, "experiment_1")
+
+    model, params, train_key, val_key = init_model_from_config(cfg)
 
     print("Info: Running in analytical (no-building) mode.")
 
-    # --- 4. Prepare Loss Weights ---
+    # --- Prepare Loss Weights ---
     static_weights_dict, _ = extract_loss_weights(cfg)
-    
-    # --- 5. Create Validation and Training Data (Analytical) ---
-    
-    # Create Analytical Validation Data
+
+    # --- Create Validation Data (Analytical) ---
     val_points, h_true_val, hu_true_val, hv_true_val = None, None, None, None
     validation_data_loaded = False
     try:
@@ -240,7 +145,7 @@ def main(config_path: str):
         print("Warning: 'validation_grid' not found in config. Skipping NSE/RMSE calculation.")
     except Exception as e:
         print(f"Warning: Error creating analytical validation set: {e}. Skipping NSE/RMSE.")
-        
+
     # Determine Data-Free Mode
     data_points_full = None
     data_free, has_data_loss = resolve_data_mode(cfg)
@@ -251,8 +156,7 @@ def main(config_path: str):
             train_grid_cfg = cfg["train_grid"]
             domain_cfg = cfg["domain"]
             print(f"Creating analytical training dataset from 'train_grid' config...")
-            
-            # 1. Sample gauge locations (x, y) and expand to full time series
+
             n_gauges = train_grid_cfg["n_gauges"]
             dt_data = train_grid_cfg["dt_data"]
             t_final = domain_cfg["t_final"]
@@ -264,64 +168,56 @@ def main(config_path: str):
                     f"Set data_free: true to skip data sampling."
                 )
 
-            # Create time array at specified resolution
             t_steps = jnp.arange(0., t_final + dt_data * 0.5, dt_data, dtype=get_dtype())
             n_timesteps = t_steps.shape[0]
 
-            # Sample n_gauges random spatial locations
             gauge_xy = sample_domain(
                 train_key,
                 n_gauges,
                 (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.)
-            )[:, :2]  # shape (n_gauges, 2) — keep only x, y
+            )[:, :2]
 
-            # Expand: each gauge gets the full time series
-            # gauge_xy_rep: (n_gauges * n_timesteps, 2)
             gauge_xy_rep = jnp.repeat(gauge_xy, n_timesteps, axis=0)
-            # t_rep: (n_gauges * n_timesteps, 1)
             t_rep = jnp.tile(t_steps, n_gauges).reshape(-1, 1)
-            # data_points_coords: (n_gauges * n_timesteps, 3) — [x, y, t]
             data_points_coords = jnp.hstack([gauge_xy_rep, t_rep])
 
             print(f"Gauge-based sampling: {n_gauges} gauges x {n_timesteps} timesteps (dt={dt_data}s) = {data_points_coords.shape[0]} data points")
 
-            # 2. Calculate true values (h, u, v)
             h_true_train = h_exact(
-                data_points_coords[:, 0], # x
-                data_points_coords[:, 2], # t
+                data_points_coords[:, 0],
+                data_points_coords[:, 2],
                 cfg["physics"]["n_manning"],
                 cfg["physics"]["u_const"]
             )
             u_true_train = jnp.full_like(h_true_train, cfg["physics"]["u_const"])
             v_true_train = jnp.zeros_like(h_true_train)
-            
-            # 3. Stack into (N, 6) format: [t, x, y, h, u, v]
+
             data_points_full = jnp.stack([
-                data_points_coords[:, 2], # t
-                data_points_coords[:, 0], # x
-                data_points_coords[:, 1], # y
+                data_points_coords[:, 2],
+                data_points_coords[:, 0],
+                data_points_coords[:, 1],
                 h_true_train,
                 u_true_train,
                 v_true_train
             ], axis=1).astype(get_dtype())
 
             if data_points_full.shape[0] == 0:
-                 print("Warning: Analytical training data is empty. Disabling data loss.")
-                 data_points_full = None
-                 has_data_loss = False
+                print("Warning: Analytical training data is empty. Disabling data loss.")
+                data_points_full = None
+                has_data_loss = False
             else:
-                 print(f"Created {data_points_full.shape[0]} points for data loss term (weight={static_weights_dict.get('data', 0.0):.2e}).")
+                print(f"Created {data_points_full.shape[0]} points for data loss term (weight={static_weights_dict.get('data', 0.0):.2e}).")
 
         except KeyError:
             print("Error: 'data_free: false' but 'train_grid' not found in config. Disabling data loss.")
             has_data_loss = False
-            data_free = True # Revert to data-free
+            data_free = True
         except Exception as e:
             print(f"Error creating analytical training data: {e}. Disabling data loss.")
             has_data_loss = False
-            data_free = True # Revert to data-free
-    
-    # --- 6. Determine Active Loss Terms ---
+            data_free = True
+
+    # --- Determine Active Loss Terms ---
     current_weights_dict = get_active_loss_weights(
         static_weights_dict,
         data_free=data_free,
@@ -329,18 +225,15 @@ def main(config_path: str):
     )
     active_loss_term_keys = list(current_weights_dict.keys())
 
-    # --- 7. Pre-calculate Batch Counts and Total Batches (for jax.lax.scan) ---
-    sampling_cfg = cfg["sampling"]
+    # --- Pre-calculate Batch Counts ---
     batch_size = cfg["training"]["batch_size"]
     domain_cfg = cfg["domain"]
 
-    # Calculate expected points
     n_pde = get_sampling_count_from_config(cfg, "n_points_pde") if ('pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys) else 0
     n_ic = get_sampling_count_from_config(cfg, "n_points_ic") if 'ic' in active_loss_term_keys else 0
     n_bc_domain = get_sampling_count_from_config(cfg, "n_points_bc_domain") if 'bc' in active_loss_term_keys else 0
     n_bc_per_wall = get_boundary_segment_count(cfg, n_bc_domain) if n_bc_domain > 0 else 0
-    
-    # Calculate available batches per term
+
     num_batches = calculate_num_batches(
         batch_size,
         [
@@ -354,20 +247,42 @@ def main(config_path: str):
         data_points_full,
         data_free=data_free,
     )
-    
+
     if num_batches == 0:
         print(f"Error: Batch size {batch_size} is too large for configured sample counts or data. No training will occur.")
-        return -1.0
+        return {"num_batches": 0}
 
-    # --- 3. Setup Optimizer (after num_batches is known for accumulation_factor) ---
+    # --- Setup Optimizer ---
     optimiser = create_optimizer(cfg, num_batches=num_batches)
     opt_state = optimiser.init(params)
 
     # --- Define JIT Data Generator ---
-    generate_epoch_data_jit = make_generate_epoch_data(
-        cfg, n_pde, n_ic, n_bc_per_wall,
-        batch_size, num_batches, data_free, data_points_full,
-    )
+    def generate_epoch_data(key):
+        key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
+
+        pde_data = sample_and_batch(pde_key, sample_domain, n_pde, batch_size, num_batches, x_range, y_range, t_range)
+        ic_data = sample_and_batch(ic_key, sample_domain, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
+
+        l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
+        bc_data = {
+            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (0., 0.), y_range, t_range),
+            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range),
+            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+        }
+
+        return {
+            'pde': pde_data,
+            'ic': ic_data,
+            'bc': bc_data,
+            'data': maybe_batch_data(data_key, data_points_full, batch_size, num_batches, data_free),
+            'building_bc': {},
+        }
+
+    generate_epoch_data_jit = jax.jit(generate_epoch_data)
 
     # --- Define Scan Body Function ---
     scan_body = make_scan_body(
@@ -375,32 +290,109 @@ def main(config_path: str):
         compute_losses_fn=compute_losses,
     )
 
-    validation_fn = make_validation_fn(
-        cfg, validation_data_loaded, val_points, h_true_val,
-        hu_true_val, hv_true_val,
-    )
+    # --- Validation Function ---
+    def validation_fn(model, params):
+        nse_val, rmse_val = -jnp.inf, jnp.inf
+        metrics = {}
+        if validation_data_loaded:
+            try:
+                U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
+                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
+                U_pred_val = _apply_min_depth(U_pred_val, min_depth_val)
+                h_pred_val = U_pred_val[..., 0]
+                nse_val = float(nse(h_pred_val, h_true_val))
+                rmse_val = float(rmse(h_pred_val, h_true_val))
+                metrics = {'nse_h': nse_val, 'rmse_h': rmse_val}
+                if hu_true_val is not None and hv_true_val is not None:
+                    metrics['nse_hu'] = float(nse(U_pred_val[..., 1], hu_true_val))
+                    metrics['rmse_hu'] = float(rmse(U_pred_val[..., 1], hu_true_val))
+                    metrics['nse_hv'] = float(nse(U_pred_val[..., 2], hv_true_val))
+                    metrics['rmse_hv'] = float(rmse(U_pred_val[..., 2], hv_true_val))
+            except Exception as exc:
+                print(f"Warning: Validation calculation failed: {exc}")
+        if not metrics:
+            metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+        return metrics
 
-    compute_all_losses_fn = make_compute_all_losses_fn(cfg, compute_losses)
+    # --- Evaluate All Physics Losses ---
+    n_eval = 200
+
+    def compute_all_losses_fn(model, params):
+        eval_key = random.PRNGKey(0)
+        keys = random.split(eval_key, 5)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
+        batch = {
+            'pde': sample_domain(keys[0], n_eval, x_range, y_range, t_range),
+            'ic': sample_domain(keys[1], n_eval, x_range, y_range, (0., 0.)),
+            'bc': {
+                'left': sample_domain(keys[2], n_eval, (0., 0.), y_range, t_range),
+                'right': sample_domain(keys[2], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+                'bottom': sample_domain(keys[3], n_eval, x_range, (0., 0.), t_range),
+                'top': sample_domain(keys[3], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+            },
+            'data': jnp.empty((0, 6), dtype=get_dtype()),
+            'building_bc': {},
+        }
+        return compute_losses(model, params, batch, cfg, data_free=True)
+
+    return {
+        "cfg": cfg,
+        "cfg_dict": cfg_dict,
+        "model": model,
+        "params": params,
+        "train_key": train_key,
+        "optimiser": optimiser,
+        "opt_state": opt_state,
+        "generate_epoch_data_jit": generate_epoch_data_jit,
+        "scan_body": scan_body,
+        "num_batches": num_batches,
+        "validation_fn": validation_fn,
+        "data_free": data_free,
+        "compute_all_losses_fn": compute_all_losses_fn,
+        # Production extras
+        "experiment_name": experiment_name,
+        "validation_data_loaded": validation_data_loaded,
+        "val_points_all": val_points,
+        "h_true_val_all": h_true_val,
+        "val_targets_all": None,
+    }
+
+
+def main(config_path: str):
+    """Main training function for the analytical scenario."""
+    cfg_dict = load_config(config_path)
+    ctx = setup_trial(cfg_dict)
+
+    if ctx.get("num_batches", 0) == 0:
+        return -1.0
+
+    experiment_name = ctx["experiment_name"]
+    trial_name, results_dir, model_dir = create_output_dirs(ctx["cfg"], experiment_name)
+
+    model = ctx["model"]
+    cfg = ctx["cfg"]
 
     loop_result = run_training_loop(
         cfg=cfg,
-        cfg_dict=cfg_dict,
+        cfg_dict=ctx["cfg_dict"],
         model=model,
-        params=params,
-        opt_state=opt_state,
-        train_key=train_key,
-        optimiser=optimiser,
-        generate_epoch_data_jit=generate_epoch_data_jit,
-        scan_body=scan_body,
-        num_batches=num_batches,
+        params=ctx["params"],
+        opt_state=ctx["opt_state"],
+        train_key=ctx["train_key"],
+        optimiser=ctx["optimiser"],
+        generate_epoch_data_jit=ctx["generate_epoch_data_jit"],
+        scan_body=ctx["scan_body"],
+        num_batches=ctx["num_batches"],
         experiment_name=experiment_name,
         trial_name=trial_name,
         results_dir=results_dir,
         model_dir=model_dir,
         config_path=config_path,
-        validation_fn=validation_fn,
+        validation_fn=ctx["validation_fn"],
         source_script_path=__file__,
-        compute_all_losses_fn=compute_all_losses_fn,
+        compute_all_losses_fn=ctx["compute_all_losses_fn"],
     )
 
     def plot_fn(final_params):
@@ -422,7 +414,7 @@ def main(config_path: str):
         U_plot_pred_1d = _apply_min_depth(U_plot_pred_1d, min_depth_plot)
         h_plot_pred_1d = U_plot_pred_1d[..., 0]
         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
-        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, cfg_dict, plot_path_1d)
+        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, ctx["cfg_dict"], plot_path_1d)
         aim_tracker.log_image(plot_path_1d, 'validation_plot_1D', final_epoch)
         print(f"Model and plot saved in {model_dir} and {results_dir} (and logged to Aim)")
 
@@ -443,8 +435,6 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, required=True, help="Path to the configuration file (e.g., experiments/fourier_pinn_config.yaml)")
     args = parser.parse_args()
 
-    # This allows the script to be run directly, assuming it's in src/scenarios/
-    # and the CWD is the project root.
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -459,9 +449,9 @@ if __name__ == "__main__":
             print(f"Final best NSE value invalid or not achieved: {final_nse}")
         print(f"-----------------------")
     except FileNotFoundError as e:
-         print(f"Error: {e}. Please check the config file path.")
+        print(f"Error: {e}. Please check the config file path.")
     except ValueError as e:
-         print(f"Configuration or Model Error: {e}")
+        print(f"Configuration or Model Error: {e}")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         import traceback
