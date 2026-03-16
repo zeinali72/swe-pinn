@@ -22,7 +22,13 @@ have been replaced by the configs in `../configs/exploration/` and
 ## Archived Databases (Not in Git)
 
 These databases are stored locally and are NOT tracked in git (see `../.gitignore`).
-Move local archive databases here for organisation.
+To organise local archives, create the subdirectories first:
+
+```bash
+mkdir -p optimisation/legacy/{databases,logs,results}
+```
+
+Then move local archive databases here.
 
 | File | Study Name | Trials | Best NSE | Notes |
 |------|-----------|--------|----------|-------|
@@ -79,3 +85,15 @@ The following databases are actively used and remain in `../database/`:
 | `hpo-exploitation-fourier-nobuilding` | 50 (35c, 15p) | 0.9406 |
 | `hpo-exploitation-mlp-building` | 100 (39c, 61p) | 0.9727 |
 | `hpo-exploitation-mlp-nobuilding` | 50 (35c, 15p) | 0.9730 |
+
+## Local Housekeeping (Not in Git)
+
+The following tasks apply to local workstation files only (databases, logs, and
+HTML plots are not tracked in git):
+
+- Move `logs/archive/*.log` to `legacy/logs/`
+- Move root-level sensitivity logs (`logs/hpo-sensitivity-*.log`) into
+  `logs/exploration/`
+- Move `results/archive/` to `legacy/results/`
+- Extract missing DGM sensitivity best configs from databases using
+  `extract_best_params.py`
