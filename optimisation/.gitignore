@@ -1,0 +1,10 @@
+# HPO artifacts that shouldn't be committed
+# Databases are large (105+ MB total) and machine-specific
+*.db
+database/
+
+# Log files from HPO runs
+logs/**/*.log
+
+# Generated HTML plots from sensitivity analysis (56+ MB)
+sensitivity_analysis_output/htmls/
