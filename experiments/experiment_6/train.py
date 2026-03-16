@@ -192,9 +192,12 @@ def main(config_path: str):
         # exactly batch_size rows, matching the other walls.
         bot_bs = batch_size // 2
         top_bs = batch_size - bot_bs
-        n_bc_left_bot = max(bot_bs, 1)
-        n_bc_left_top = max(top_bs, 1)
-        bc_left_wall_bottom = sample_and_batch(l_wall_bot_key, sample_lhs, n_bc_left_bot, bot_bs, num_batches, (0., 0.), (0., y_inflow_start), t_range)
+        n_bc_left_bot = n_bc_per_wall // 2
+        n_bc_left_top = n_bc_per_wall - n_bc_left_bot
+        if bot_bs > 0:
+            bc_left_wall_bottom = sample_and_batch(l_wall_bot_key, sample_lhs, n_bc_left_bot, bot_bs, num_batches, (0., 0.), (0., y_inflow_start), t_range)
+        else:
+            bc_left_wall_bottom = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
         bc_left_wall_above = sample_and_batch(l_wall_top_key, sample_lhs, n_bc_left_top, top_bs, num_batches, (0., 0.), (y_inflow_end, domain_cfg["ly"]), t_range)
         bc_left_wall = jnp.concatenate([bc_left_wall_bottom, bc_left_wall_above], axis=1)
         bc_right = sample_and_batch(r_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range)
