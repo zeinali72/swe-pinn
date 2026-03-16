@@ -20,13 +20,17 @@ import jax.numpy as jnp
 from jax import random
 from flax.core import FrozenDict
 
-from src.config import load_config, get_dtype, DTYPE
+from src.config import load_config, get_dtype
 from src.models.pinn import MLP, FourierPINN, DGMNetwork
 from src.models.factory import init_model
 
 
 def _get_memory_bytes():
-    """Return current and peak bytes in use on the first device, or None."""
+    """Return current and peak bytes in use on the first device, or None.
+
+    Note: peak_bytes_in_use is cumulative since process start and does not
+    reset between measurements.
+    """
     for device in jax.devices():
         stats = device.memory_stats()
         if stats:
@@ -44,6 +48,22 @@ def _bytes_to_mb(b):
 def _param_count(params):
     """Count total parameters."""
     return sum(p.size for p in jax.tree.leaves(params))
+
+
+def _make_jac_fn(model, params):
+    """Create a JIT-compiled Jacobian function with properly bound model/params."""
+    def U_fn(pts):
+        return model.apply({'params': params['params']}, pts, train=False)
+    return jax.jit(jax.vmap(jax.jacfwd(U_fn)))
+
+
+def _make_grad_fn(model, batch):
+    """Create a JIT-compiled grad-through-Jacobian function."""
+    return jax.jit(jax.grad(
+        lambda p: jnp.mean(jax.vmap(jax.jacfwd(
+            lambda pts: model.apply({'params': p['params']}, pts, train=False)
+        ))(batch) ** 2)
+    ))
 
 
 def benchmark_init_memory(model_class, key, cfg_dict):
@@ -75,10 +95,7 @@ def benchmark_jacobian_memory(model, params, key, dtype, batch_sizes=None):
     if batch_sizes is None:
         batch_sizes = [256, 512, 1024, 2048, 4096]
 
-    def U_fn(pts):
-        return model.apply({'params': params['params']}, pts, train=False)
-
-    jac_fn = jax.jit(jax.vmap(jax.jacfwd(U_fn)))
+    jac_fn = _make_jac_fn(model, params)
 
     # Warmup
     warmup = jnp.ones((1, 3), dtype=dtype)
@@ -136,13 +153,17 @@ def benchmark_scale_grid(cfg_dict, key, dtype):
                 model, params = init_model(MLP, key, FrozenDict(cfg_copy))
                 n_params = _param_count(params)
 
-                def U_fn(pts):
-                    return model.apply({'params': params['params']}, pts, train=False)
-
-                jac_fn = jax.jit(jax.vmap(jax.jacfwd(U_fn)))
+                jac_fn = _make_jac_fn(model, params)
 
                 # Warmup
                 _ = jac_fn(jnp.ones((1, 3), dtype=dtype))
+                jax.block_until_ready(_)
+
+                # Compile grad_fn once per (width, depth) config
+                max_bs = max(batch_sizes)
+                grad_batch = random.uniform(key, (max_bs, 3), dtype=dtype)
+                grad_fn = _make_grad_fn(model, grad_batch)
+                _ = grad_fn(params)
                 jax.block_until_ready(_)
 
                 for bs in batch_sizes:
@@ -151,13 +172,9 @@ def benchmark_scale_grid(cfg_dict, key, dtype):
                         result = jac_fn(batch)
                         jax.block_until_ready(result)
 
-                        # Also measure grad (backward through Jacobian)
-                        grad_fn = jax.jit(jax.grad(
-                            lambda p: jnp.mean(jax.vmap(jax.jacfwd(
-                                lambda pts: model.apply({'params': p['params']}, pts, train=False)
-                            ))(batch) ** 2)
-                        ))
-                        _ = grad_fn(params)
+                        # Measure grad (backward through Jacobian)
+                        grad_fn_bs = _make_grad_fn(model, batch)
+                        _ = grad_fn_bs(params)
                         jax.block_until_ready(_)
 
                         mem = _get_memory_bytes()
@@ -214,10 +231,7 @@ def benchmark_architectures_memory(cfg_dict, key, dtype, n_points=1000):
             model, params = init_model(model_class, key, FrozenDict(cfg_copy))
             n_params = _param_count(params)
 
-            def U_fn(pts):
-                return model.apply({'params': params['params']}, pts, train=False)
-
-            jac_fn = jax.jit(jax.vmap(jax.jacfwd(U_fn)))
+            jac_fn = _make_jac_fn(model, params)
             _ = jac_fn(batch[:1])
             jax.block_until_ready(_)
 
