@@ -145,9 +145,6 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
     # Flags from config (hpo_settings is the source of truth)
     hpo_settings = base_config_dict.get("hpo_settings", {})
     trial_config_dict["data_free"] = hpo_settings.get("data_free", True)
-    if "gradnorm" not in trial_config_dict:
-        trial_config_dict["gradnorm"] = {}
-    trial_config_dict["gradnorm"]["enable"] = hpo_settings.get("enable_gradnorm", False)
 
     # Store
     config_to_store = unfreeze(trial_config_dict)

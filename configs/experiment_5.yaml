@@ -62,8 +62,6 @@ loss_weights:
   bc_weight: 0.2411
   neg_h_weight: 0.000002411
   data_weight: 1.0
-gradnorm:
-  enable: false
 data_free: false
 
 reporting:

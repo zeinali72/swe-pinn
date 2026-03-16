@@ -2,7 +2,6 @@ experiment:
   name: experiment_2
 
 data_free: true
-enable_gradnorm: false
 opt_epochs: 20000
 data:
   root_dir: data
@@ -55,9 +54,6 @@ loss_weights:
   building_bc_weight: 1.1104102708123706
   data_weight: 0.0
   h_neg_weight: 10.0
-gradnorm:
-  learning_rate: 0.01
-  enable: false
 plotting:
   nx_val: 101
   t_const_val: 1800.0

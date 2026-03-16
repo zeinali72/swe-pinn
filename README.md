@@ -146,7 +146,6 @@ swe-pinn/
 │   ├── losses.py                   # PDE, IC, BC loss functions for SWE
 │   ├── models.py                   # Neural network architectures (FourierPINN, MLP, DGMNetwork)
 │   ├── physics.py                  # SWE physics computations and Jacobians
-│   ├── gradnorm.py                 # GradNorm adaptive loss weighting
 │   ├── softadapt.py                # SoftAdapt adaptive loss weighting
 │   ├── ntk.py                      # Neural Tangent Kernel trace computation
 │   ├── train.py                    # Unified training script (main entry point)
@@ -176,7 +175,6 @@ swe-pinn/
 │   ├── experiment_1_fourier.yaml       # Exp 1 Fourier config
 │   ├── experiment_1_ntk.yaml           # Exp 1 NTK config
 │   ├── experiment_1_dgm_static.yaml    # Exp 1 DGM static config
-│   ├── experiment_1_dgm_gradnorm.yaml  # Exp 1 DGM GradNorm config
 │   ├── experiment_3.yaml               # Exp 3 config
 │   ├── experiment_4.yaml               # Exp 4 config
 │   ├── experiment_5.yaml               # Exp 5 config
@@ -191,7 +189,6 @@ swe-pinn/
 │       └── experiment_2_dgm_final.yaml
 ├── test/                           # Unit tests
 │   ├── test_train.py
-│   ├── test_train_gradnorm.py
 │   └── test_assets/
 │       └── test_config.yaml
 ├── scripts/                        # Data processing and utility scripts

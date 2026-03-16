@@ -26,7 +26,6 @@ class ConsoleLogger:
         physics_cfg = cfg.get('physics', {})
         training_cfg = cfg.get('training', {})
         loss_w = cfg.get('loss_weights', {})
-        gradnorm_cfg = cfg.get('gradnorm', {})
 
         scenario = cfg.get('scenario', 'unknown')
         arch = model_cfg.get('name', 'unknown')
@@ -80,9 +79,8 @@ class ConsoleLogger:
         lr = training_cfg.get('learning_rate', '?')
         epochs = training_cfg.get('epochs', '?')
         clip = training_cfg.get('clip_norm', 1.0)
-        gn = "GradNorm" if gradnorm_cfg.get('enable', False) else "static"
         print(f"LR: {lr} | Max epochs: {epochs} | Grad clip: {clip}")
-        print(f"Weighting: {gn}")
+        print(f"Weighting: static")
         print("Checkpoints: best_nse + best_loss + final")
         print("=" * 72)
 

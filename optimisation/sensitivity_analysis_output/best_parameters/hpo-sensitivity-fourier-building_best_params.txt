@@ -36,12 +36,8 @@ domain:
   lx: 1200.0
   ly: 100.0
   t_final: 3600.0
-gradnorm:
-  enable: false
-  learning_rate: 0.01
 hpo_settings:
   data_free: true
-  enable_gradnorm: false
   opt_epochs: 2000
 loss_weights:
   bc_weight: 39.241897584845354

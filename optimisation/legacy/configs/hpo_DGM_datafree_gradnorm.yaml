@@ -3,7 +3,6 @@
 
 hpo_settings:
   data_free: true
-  enable_gradnorm: true
   opt_epochs: 2000
 
 training: # <<<--- Add seed here
@@ -66,12 +65,6 @@ loss_weights:
   bc_weight: 1.0
   building_bc_weight: 1.0
   data_weight: 0.0 # Set by objective based on data_free flag
-
-# --- Optimized GradNorm Params (if enable_gradnorm=true) ---
-gradnorm:
-  learning_rate: 0.01
-  alpha: 1.5
-  update_freq: 100
 
 plotting: # Fixed
   nx_val: 101

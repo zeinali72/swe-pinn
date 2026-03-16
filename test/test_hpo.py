@@ -14,7 +14,7 @@ from optimisation.objective_function import get_hpo_value
 
 # Minimal config for a tiny HPO trial (2 epochs, tiny model)
 MINIMAL_HPO_CONFIG = {
-    "hpo_settings": {"data_free": True, "enable_gradnorm": False},
+    "hpo_settings": {"data_free": True},
     "training": {
         "epochs": 2, "learning_rate": 1e-3, "batch_size": 32,
         "seed": 42, "clip_norm": 1.0,
@@ -29,7 +29,6 @@ MINIMAL_HPO_CONFIG = {
         "pde_weight": 1.0, "ic_weight": 1.0, "bc_weight": 1.0,
         "neg_h_weight": 1.0, "data_weight": 0.0,
     },
-    "gradnorm": {"enable": False, "learning_rate": 0.01},
     "device": {"dtype": "float32"},
     "numerics": {"eps": 1e-6},
     "validation_grid": {"n_points_val": 50},

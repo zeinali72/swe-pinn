@@ -35,7 +35,6 @@ swe-pinn/
 │   ├── models.py                   # Neural network architectures (FourierPINN, MLP, DGMNetwork)
 │   ├── losses.py                   # PDE, IC, BC loss functions for SWE
 │   ├── physics.py                  # SWE physics computations and Jacobians
-│   ├── gradnorm.py                 # GradNorm adaptive loss weighting
 │   ├── softadapt.py                # SoftAdapt adaptive loss weighting
 │   ├── ntk.py                      # Neural Tangent Kernel trace computation
 │   ├── data.py                     # Data sampling, batching, and validation loading
@@ -69,7 +68,6 @@ swe-pinn/
 │       └── experiment_<N>_<arch>_final.yaml
 ├── test/                           # Unit tests
 │   ├── test_train.py               # Main training script validation
-│   ├── test_train_gradnorm.py      # GradNorm mode tests
 │   └── test_assets/
 │       └── test_config.yaml        # Minimal test configuration
 ├── scripts/                        # Data processing and utility scripts
@@ -137,7 +135,6 @@ python -m unittest discover test
 
 # Run specific test files
 python -m unittest test.test_train
-python -m unittest test.test_train_gradnorm
 ```
 
 Tests force JAX to CPU (`JAX_PLATFORM_NAME=cpu`) for reproducibility, use mock data and file I/O, and clean up temporary directories in teardown.
@@ -188,7 +185,6 @@ All hyperparameters are specified in YAML config files. The config structure inc
 ### Loss Weighting Strategies
 
 - **Static**: Fixed weights from config
-- **GradNorm** (`src/gradnorm.py`): Adaptive weights that balance gradient magnitudes across loss terms
 - **SoftAdapt** (`src/softadapt.py`): Rate-of-change-based adaptive weighting
 - **NTK** (`src/ntk.py`): Weights based on Neural Tangent Kernel traces
 
@@ -223,7 +219,7 @@ All hyperparameters are specified in YAML config files. The config structure inc
 - Force CPU execution: `os.environ["JAX_PLATFORM_NAME"] = "cpu"` at top of test files
 - Use `unittest.mock` for mocking file I/O and data
 - setUp/tearDown for temporary directory management
-- Test both data-free and data-driven modes, static and GradNorm weight strategies
+- Test both data-free and data-driven modes
 - **Manual training smoke-tests**: When verifying a training code change, run with **200 epochs**.
 
 ## CI/CD
@@ -238,4 +234,3 @@ All hyperparameters are specified in YAML config files. The config structure inc
 - **JIT compilation**: First call is slow due to tracing; subsequent calls are fast. Avoid Python side effects inside JIT-compiled functions.
 - **Memory**: Large validation datasets (multi-GB) use memory-mapped numpy arrays. Use `np.load(..., mmap_mode='r')` for big files.
 - **Float precision**: Some physics computations require `float64`. Set via `config.device.dtype`.
-- **GradNorm**: Requires separate optimizer state for loss weights. See `src/gradnorm.py` for initialization patterns.

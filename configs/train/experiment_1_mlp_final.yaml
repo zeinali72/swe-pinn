@@ -51,8 +51,6 @@ loss_weights:
   bc_weight: 0.001038074
   neg_h_weight: 0.000002409
   data_weight: 0.0
-gradnorm:
-  enable: false
 data_free: true
 train_grid:
   n_gauges: 0

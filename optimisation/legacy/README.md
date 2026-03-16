@@ -15,7 +15,7 @@ have been replaced by the configs in `../configs/exploration/` and
 
 | File | Architecture | Loss Weighting | Notes |
 |------|-------------|----------------|-------|
-| `configs/hpo_DGM_datafree_gradnorm.yaml` | DGMNetwork | GradNorm | Early DGM exploration with adaptive weighting |
+| `configs/hpo_DGM_datafree_gradnorm.yaml` | DGMNetwork | Static | Early DGM exploration with adaptive weighting |
 | `configs/hpo_DGM_datafree_static.yaml` | DGMNetwork | Static | Early DGM exploration with static weights |
 | `configs/hpo_fourier_datafree_static.yaml` | FourierPINN | Static | Early Fourier exploration with static weights |
 
