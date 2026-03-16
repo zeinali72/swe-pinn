@@ -93,7 +93,6 @@ class AimTracker:
         epoch_time: float,
         elapsed_time: float,
         neg_depth: Optional[Dict[str, float]] = None,
-        gradnorm_weights: Optional[Dict[str, float]] = None,
     ):
         if not self.enabled:
             return
@@ -146,40 +145,31 @@ class AimTracker:
                         step=step, epoch=epoch, context=ctx_diag,
                     )
 
-            # GradNorm weights
-            if gradnorm_weights:
-                for key, val in gradnorm_weights.items():
-                    run.track(
-                        _safe_float(val),
-                        name=f'gradnorm/weight_{key}',
-                        step=step, epoch=epoch, context=ctx_train,
-                    )
-
         except Exception as e:
             print(f"Warning: Aim logging failed at epoch {epoch}: {e}")
 
     # ------------------------------------------------------------------
     # Best-model tracking (E.4)
     # ------------------------------------------------------------------
-    def log_best_nse(self, nse_h: float, epoch: int):
+    def log_best_nse(self, nse_h: float, epoch: int, step: int):
         if not self.enabled:
             return
         try:
             self.aim_run.track(
                 _safe_float(nse_h), name='best/nse_h_value',
-                step=epoch, epoch=epoch,
+                step=step, epoch=epoch,
             )
             self.aim_run['best_nse_h_epoch'] = epoch + 1
         except Exception:
             pass
 
-    def log_best_loss(self, loss: float, epoch: int):
+    def log_best_loss(self, loss: float, epoch: int, step: int):
         if not self.enabled:
             return
         try:
             self.aim_run.track(
                 _safe_float(loss), name='best/loss_value',
-                step=epoch, epoch=epoch,
+                step=step, epoch=epoch,
             )
             self.aim_run['best_loss_epoch'] = epoch + 1
         except Exception:

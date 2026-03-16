@@ -199,10 +199,10 @@ def run_training_loop(
                 event_type, value, ep, prev_value, prev_epoch = event
                 if event_type == 'best_nse':
                     console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_nse(value, ep)
+                    aim_tracker.log_best_nse(value, ep, step=global_step)
                 elif event_type == 'best_loss':
                     console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_loss(value, ep)
+                    aim_tracker.log_best_loss(value, ep, step=global_step)
 
             if (epoch + 1) % freq == 0:
                 console.print_epoch(
