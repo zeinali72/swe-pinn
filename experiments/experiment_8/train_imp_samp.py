@@ -8,7 +8,6 @@ Builds on: Experiment 8.
 import os
 import sys
 import time
-import copy
 import argparse
 import importlib
 import itertools
@@ -639,14 +638,14 @@ def main(config_path: str):
                     'total_weighted_loss': avg_total_weighted_loss,
                     'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
                 })
-                best_params_nse = copy.deepcopy(params)
+                best_params_nse = jax.tree.map(jnp.copy, params)
                 if combined_nse_val > -jnp.inf:
                     print(f"    ---> New Best Combined NSE: {combined_nse_val:.4f}")
 
             if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
                 best_loss_stats['total_weighted_loss'] = avg_total_weighted_loss
                 best_loss_stats['epoch'] = epoch
-                best_params_loss = copy.deepcopy(params)
+                best_params_loss = jax.tree.map(jnp.copy, params)
 
             # Negative depth diagnostics and checkpoint tracking
             freq = cfg.get("reporting", {}).get("epoch_freq", 100)
