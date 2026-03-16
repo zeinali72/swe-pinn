@@ -8,13 +8,11 @@ import jax.numpy as jnp
 from jax import random, lax
 from flax.core import FrozenDict
 import numpy as np
-import time
 import optuna
 
 from src.config import get_dtype
 from src.data import sample_domain
-from src.predict.predictor import _apply_min_depth
-from src.utils import nse, mask_points_inside_building
+from src.utils import mask_points_inside_building
 from src.physics import h_exact
 from src.training import (
     init_model_from_config,
@@ -26,7 +24,6 @@ from src.training import (
     get_boundary_segment_count,
     train_step_jitted,
     make_scan_body,
-    resolve_data_mode,
 )
 
 from optimisation.experiment_registry import get_experiment_fns
@@ -82,7 +79,11 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     print(f"--- Starting Trial {trial.number} ---")
 
     # 1. Model + keys
-    model, params, train_key, val_key = init_model_from_config(trial_cfg)
+    try:
+        model, params, train_key, val_key = init_model_from_config(trial_cfg)
+    except (ImportError, AttributeError, ValueError) as e:
+        print(f"Trial {trial.number}: ERROR during model initialization: {e}")
+        return -1.0
 
     # 2. Loss weights (same logic as production)
     static_weights, _ = extract_loss_weights(trial_cfg)
@@ -120,9 +121,9 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
         cfg=trial_cfg, n_pde=n_pde, n_ic=n_ic, n_bc_per_wall=n_bc_per_wall,
         batch_size=batch_size, num_batches=num_batches, data_free=data_free,
     )
-    if scenario == "experiment_2":
+    if has_building:
         gen_kwargs.update(
-            has_building=has_building,
+            has_building=True,
             active_loss_term_keys=active_keys,
             n_bldg_per_wall=n_bldg_per_wall,
         )
@@ -153,10 +154,6 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
             scan_body, (params, opt_state), scan_inputs,
         )
 
-        # Aggregate per-epoch loss terms (mean across batches)
-        avg_total = float(jnp.mean(batch_totals))
-        avg_terms = {k: float(jnp.mean(v)) for k, v in batch_terms.items()}
-
         if (epoch + 1) % validation_freq == 0:
             metrics = validation_fn(model, params)
             current_nse = metrics.get("nse_h", -jnp.inf)
@@ -171,7 +168,10 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                 print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
                 raise optuna.exceptions.TrialPruned()
 
+            # Log loss breakdown periodically (D2H transfer only when needed)
             if (epoch + 1) % log_freq == 0:
+                avg_total = float(jnp.mean(batch_totals))
+                avg_terms = {k: float(jnp.mean(v)) for k, v in batch_terms.items()}
                 terms_str = " ".join(
                     f"{k}={v:.3e}" for k, v in sorted(avg_terms.items())
                 )
