@@ -2,43 +2,23 @@
 import os
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
-import sys
-import types
 import unittest
 
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
+from flax.core import FrozenDict
 
 import src.config as config_module
 config_module.DTYPE = jnp.float32
 
-# --- Stub out src.data to avoid the missing src.data.paths import ---
-# The PDE loss module imports ``from src.data import bathymetry_fn``.
-# ``src.data.__init__`` tries to import ``src.data.paths`` which does not
-# exist on this branch.  We inject a lightweight stub so the import chain
-# succeeds without touching the filesystem.
-_data_stub = types.ModuleType("src.data")
-_data_stub.bathymetry_fn = lambda x, y: (
-    jnp.zeros_like(x),  # bed elevation
-    jnp.zeros_like(x),  # bed_grad_x
-    jnp.zeros_like(x),  # bed_grad_y
-)
-# Only inject if not already importable
-if "src.data" not in sys.modules:
-    sys.modules["src.data"] = _data_stub
-    # Also add sub-modules referenced by __init__ so nothing breaks
-    for _sub in ("src.data.sampling", "src.data.batching", "src.data.loading",
-                 "src.data.bathymetry", "src.data.irregular", "src.data.paths"):
-        if _sub not in sys.modules:
-            sys.modules[_sub] = types.ModuleType(_sub)
-
 from src.losses.pde import compute_neg_h_loss, compute_ic_loss, compute_pde_loss
 from src.losses.boundary import (
-    loss_boundary_dirichlet_h,
-    loss_boundary_dirichlet_hu,
-    loss_boundary_dirichlet_hv,
+    loss_boundary_dirichlet,
+    loss_boundary_wall_vertical,
+    loss_boundary_wall_horizontal,
 )
+from src.losses.data_loss import compute_data_loss
 from src.losses.composite import total_loss
 
 
@@ -117,42 +97,115 @@ class TestICLoss(unittest.TestCase):
 
 
 class TestDirichletBCLoss(unittest.TestCase):
-    """Tests for Dirichlet boundary loss functions."""
+    """Tests for the consolidated loss_boundary_dirichlet function."""
 
     def test_dirichlet_h_zero_when_matching(self):
-        """loss_boundary_dirichlet_h returns 0 when prediction matches target."""
+        """Dirichlet loss for h (var_idx=0) returns 0 when prediction matches target."""
         model = _ConstantModel(value=2.0)
         params = _init_dummy(model)
         batch = jnp.ones((5, 3))
         h_target = jnp.full((5,), 2.0)
-        loss = loss_boundary_dirichlet_h(model, params, batch, h_target)
+        loss = loss_boundary_dirichlet(model, params, batch, h_target, var_idx=0)
         self.assertAlmostEqual(float(loss), 0.0, places=8)
 
     def test_dirichlet_h_positive_when_mismatched(self):
-        """loss_boundary_dirichlet_h returns positive when target differs."""
+        """Dirichlet loss for h (var_idx=0) returns positive when target differs."""
         model = _ConstantModel(value=2.0)
         params = _init_dummy(model)
         batch = jnp.ones((5, 3))
         h_target = jnp.full((5,), 0.0)
-        loss = loss_boundary_dirichlet_h(model, params, batch, h_target)
+        loss = loss_boundary_dirichlet(model, params, batch, h_target, var_idx=0)
         self.assertGreater(float(loss), 0.0)
 
     def test_dirichlet_hu_zero_when_matching(self):
-        """loss_boundary_dirichlet_hu returns 0 when prediction matches target."""
+        """Dirichlet loss for hu (var_idx=1) returns 0 when prediction matches target."""
         model = _ConstantModel(value=3.0)
         params = _init_dummy(model)
         batch = jnp.ones((5, 3))
         hu_target = jnp.full((5,), 3.0)
-        loss = loss_boundary_dirichlet_hu(model, params, batch, hu_target)
+        loss = loss_boundary_dirichlet(model, params, batch, hu_target, var_idx=1)
         self.assertAlmostEqual(float(loss), 0.0, places=8)
 
     def test_dirichlet_hv_zero_when_matching(self):
-        """loss_boundary_dirichlet_hv returns 0 when prediction matches target."""
+        """Dirichlet loss for hv (var_idx=2) returns 0 when prediction matches target."""
         model = _ConstantModel(value=4.0)
         params = _init_dummy(model)
         batch = jnp.ones((5, 3))
         hv_target = jnp.full((5,), 4.0)
-        loss = loss_boundary_dirichlet_hv(model, params, batch, hv_target)
+        loss = loss_boundary_dirichlet(model, params, batch, hv_target, var_idx=2)
+        self.assertAlmostEqual(float(loss), 0.0, places=8)
+
+
+class TestWallBCLoss(unittest.TestCase):
+    """Tests for wall boundary condition losses."""
+
+    def test_wall_vertical_zero_when_hu_zero(self):
+        """loss_boundary_wall_vertical returns 0 when hu=0."""
+        model = _DummyModel()  # returns zeros for all outputs
+        params = _init_dummy(model)
+        batch = jnp.ones((5, 3))
+        loss = loss_boundary_wall_vertical(model, params, batch)
+        self.assertAlmostEqual(float(loss), 0.0, places=8)
+
+    def test_wall_vertical_positive_when_hu_nonzero(self):
+        """loss_boundary_wall_vertical returns positive loss when hu != 0."""
+        model = _ConstantModel(value=1.0)  # hu = 1.0
+        params = _init_dummy(model)
+        batch = jnp.ones((5, 3))
+        loss = loss_boundary_wall_vertical(model, params, batch)
+        self.assertGreater(float(loss), 0.0)
+
+    def test_wall_horizontal_zero_when_hv_zero(self):
+        """loss_boundary_wall_horizontal returns 0 when hv=0."""
+        model = _DummyModel()  # returns zeros for all outputs
+        params = _init_dummy(model)
+        batch = jnp.ones((5, 3))
+        loss = loss_boundary_wall_horizontal(model, params, batch)
+        self.assertAlmostEqual(float(loss), 0.0, places=8)
+
+    def test_wall_horizontal_positive_when_hv_nonzero(self):
+        """loss_boundary_wall_horizontal returns positive loss when hv != 0."""
+        model = _ConstantModel(value=1.0)  # hv = 1.0
+        params = _init_dummy(model)
+        batch = jnp.ones((5, 3))
+        loss = loss_boundary_wall_horizontal(model, params, batch)
+        self.assertGreater(float(loss), 0.0)
+
+
+class TestDataLoss(unittest.TestCase):
+    """Tests for compute_data_loss."""
+
+    def _make_config(self):
+        """Build a minimal config dict for data loss."""
+        return FrozenDict({
+            'numerics': {'eps': 1e-6},
+        })
+
+    def test_data_loss_finite(self):
+        """compute_data_loss returns a finite scalar for a simple model."""
+        model = _ConstantModel(value=0.5)
+        params = _init_dummy(model)
+        config = self._make_config()
+        # data_batch columns: [t, x, y, h, u, v]
+        data_batch = jnp.ones((5, 6))
+        loss = compute_data_loss(model, params, data_batch, config)
+        self.assertTrue(jnp.isfinite(loss), f"Data loss is not finite: {loss}")
+
+    def test_data_loss_zero_when_predictions_match(self):
+        """compute_data_loss is 0 when predictions match data exactly."""
+        # _DummyModel returns [0, 0, 0] for all inputs.
+        # For the loss to be zero we need h_true=0, hu_true=0, hv_true=0.
+        # hu_true = max(h_true, eps) * u_true, hv_true = max(h_true, eps) * v_true
+        # So we need h_true=0, u_true=0, v_true=0.
+        # But h_pred=0, h_true=0 => (0-0)^2=0 (h term)
+        # hu_pred=0, hu_true=max(0,eps)*0=0 => (0-0)^2=0 (hu term)
+        # hv_pred=0, hv_true=max(0,eps)*0=0 => (0-0)^2=0 (hv term)
+        model = _DummyModel()
+        params = _init_dummy(model)
+        config = self._make_config()
+        # data_batch columns: [t, x, y, h, u, v] -- all zeros
+        data_batch = jnp.zeros((5, 6))
+        loss = compute_data_loss(model, params, data_batch, config)
         self.assertAlmostEqual(float(loss), 0.0, places=8)
 
 
