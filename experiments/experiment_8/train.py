@@ -34,7 +34,7 @@ from src.losses import (
     compute_neg_h_loss,
     compute_data_loss,
 )
-from src.utils import nse, rmse
+from src.utils import nse, rmse, relative_l2
 from src.utils.plotting import plot_gauge_timeseries
 from src.training import (
     apply_irregular_domain_bounds,
@@ -261,6 +261,7 @@ def main(config_path: str):
         combined_nse_val = -float('inf')
         nse_h_val, nse_hu_val, nse_hv_val = -float('inf'), -float('inf'), -float('inf')
         rmse_h_val, rmse_hu_val, rmse_hv_val = float('inf'), float('inf'), float('inf')
+        rel_l2_h_val, rel_l2_hu_val, rel_l2_hv_val = float('nan'), float('nan'), float('nan')
         if validation_data_loaded:
             try:
                 U_pred = model.apply(params, val_pts_batch, train=False)
@@ -276,6 +277,9 @@ def main(config_path: str):
                 rmse_h_val = float(rmse(h_pred, val_h_true))
                 rmse_hu_val = float(rmse(hu_pred, val_hu_true))
                 rmse_hv_val = float(rmse(hv_pred, val_hv_true))
+                rel_l2_h_val = float(relative_l2(h_pred, val_h_true))
+                rel_l2_hu_val = float(relative_l2(hu_pred, val_hu_true))
+                rel_l2_hv_val = float(relative_l2(hv_pred, val_hv_true))
             except Exception as exc:
                 print(f"Validation Error: {exc}")
 
@@ -288,6 +292,9 @@ def main(config_path: str):
             'rmse_h': float(rmse_h_val),
             'rmse_hu': float(rmse_hu_val),
             'rmse_hv': float(rmse_hv_val),
+            'rel_l2_h': float(rel_l2_h_val),
+            'rel_l2_hu': float(rel_l2_hu_val),
+            'rel_l2_hv': float(rel_l2_hv_val),
         }
 
     # --- Evaluate All Physics Losses (including zero-weight terms) ---

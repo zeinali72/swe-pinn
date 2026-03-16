@@ -1,426 +1,330 @@
-# SWE-PINN: Physics-Informed Neural Networks for Shallow Water Equations
+# SWE-PINN: Physics-Informed Neural Networks for 2D Shallow Water Equations
 
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![JAX](https://img.shields.io/badge/JAX-0.4.13-orange.svg)](https://github.com/google/jax)
 [![Flax](https://img.shields.io/badge/Flax-0.7.2-lightgrey.svg)](https://github.com/google/flax)
 
-A high-performance implementation of Physics-Informed Neural Networks (PINNs) for solving the 2D Shallow Water Equations using JAX and Flax. This project leverages Fourier feature mapping, advanced optimization techniques, and comprehensive experiment tracking to deliver accurate and efficient PDE solutions.
+SWE-PINN is a Physics-Informed Neural Network framework for urban flood modeling and surrogate simulation. The model takes spatiotemporal coordinates $(x,y,t)$ as input and predicts free-surface state variables:
+
+$$
+\mathbf{U}(x,y,t)=\begin{bmatrix}h \\ hu \\ hv\end{bmatrix}
+$$
+
+where $h$ is water depth and $hu, hv$ are specific discharges.
+
+Training combines physics residuals from the 2D Shallow Water Equations (SWE), initial and boundary conditions, and optional data loss from numerical simulations.
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Key Features](#key-features)
-- [Research Phases](#research-phases)
+- [Physics Formulation](#physics-formulation)
+- [Repository Structure](#repository-structure)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Project Structure](#project-structure)
+- [Training Entry Points](#training-entry-points)
+- [Inference](#inference)
 - [Configuration](#configuration)
-- [Usage](#usage)
-- [Physics Background](#physics-background)
-- [Results and Validation](#results-and-validation)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
-- [Citation](#citation)
-- [Acknowledgments](#acknowledgments)
+- [Testing](#testing)
+- [Hyperparameter Optimization](#hyperparameter-optimization)
 
 ## Overview
 
-The Shallow Water Equations (SWE) describe the flow of water in channels, rivers, and coastal areas. Traditional numerical methods for solving these PDEs can be computationally expensive and require careful mesh design. Physics-Informed Neural Networks offer an alternative approach by embedding the physical laws directly into the neural network training process.
+### Architectures
 
-This implementation provides:
-- **Accurate PDE Solutions**: High-fidelity solutions to 2D SWE with complex boundary conditions
-- **Efficient Training**: JAX-based automatic differentiation and GPU acceleration
-- **Advanced Features**: Fourier features, hyperparameter optimization, and experiment tracking
-- **Modular Design**: Clean architecture for easy extension and customization
+The codebase supports multiple neural architectures:
 
-## Key Features
+- **MLP**: baseline fully-connected PINN.
+- **FourierPINN**: Fourier feature encoding for improved high-frequency representation.
+- **DGMNetwork**: Deep Galerkin-style architecture.
+- **DeepONet**: operator-learning variant for selected workflows.
 
-- **Physics-Informed Training**: Incorporates SWE physics directly into the loss function
-- **Complete SWE Implementation**: Handles 2D shallow water flow with source terms
-- **Fourier Feature Mapping**: Enhanced capability for learning high-frequency solutions
-- **High Performance**: JAX/Flax backend with GPU acceleration
-- **Experiment Tracking**: Integrated Aim logging and visualization
-- **Hyperparameter Optimization**: Automated tuning with Optuna
-- **Comprehensive Metrics**: NSE, RMSE, and physics-based validation
-- **Modular Architecture**: Clean separation of physics, models, and training components
+### Loss Composition
 
-## Research Phases
+The total objective is a weighted sum:
 
-The project is organized into three research phases spanning eight experiments:
+$$
+\mathcal{L}=\lambda_{\mathrm{pde}}\mathcal{L}_{\mathrm{pde}}+\lambda_{\mathrm{ic}}\mathcal{L}_{\mathrm{ic}}+\lambda_{\mathrm{bc}}\mathcal{L}_{\mathrm{bc}}+\lambda_{\mathrm{data}}\mathcal{L}_{\mathrm{data}}+\lambda_{\mathrm{neg}}\mathcal{L}_{\mathrm{neg}}
+$$
 
-### Phase 1 — Baseline Verification and Architecture Selection
-- **Experiment 1**: Verifies the framework against an analytical dam-break solution on a flat domain.
-- **Experiment 2**: Introduces a building obstacle; motivates Fourier-MLP and DGM adoption. Two-stage HPO (100 Sobol + 50 TPE Bayesian trials) is run across all three architectures on both scenarios.
+with $\mathcal{L}_{\mathrm{data}}$ enabled when training data are present.
 
-### Phase 2 — Topographic Complexity on Synthetic Domains
-- **Experiment 3**: Introduces terrain slope in the x-direction via bi-linear interpolation; establishes a data sampling ratio methodology.
-- **Experiment 4**: Extends slope to both x and y directions.
-- **Experiment 5**: Further synthetic complexity to validate robustness.
+## Physics Formulation
 
-### Phase 3 — Domain Generalisation and Real-World Application
-- **Experiment 7**: Irregular (non-rectangular) boundaries using triangulated mesh-based sampling, automated boundary detection, and wall normals for slip boundary conditions.
-- **Experiment 8**: Real urban subcatchment in Eastbourne, UK (Blue Heart Project). Buildings are excluded from the mesh and treated as wall boundaries.
+The 2D SWE in conservative form are:
+
+$$
+\frac{\partial \mathbf{U}}{\partial t}+\frac{\partial \mathbf{F}(\mathbf{U})}{\partial x}+\frac{\partial \mathbf{G}(\mathbf{U})}{\partial y}=\mathbf{S}(\mathbf{U})
+$$
+
+with
+
+$$
+\mathbf{U}=\begin{bmatrix}h \\ hu \\ hv\end{bmatrix},\quad
+\mathbf{F}=\begin{bmatrix}
+hu \\
+\dfrac{(hu)^2}{h}+\dfrac{1}{2}gh^2 \\
+\dfrac{(hu)(hv)}{h}
+\end{bmatrix},\quad
+\mathbf{G}=\begin{bmatrix}
+hv \\
+\dfrac{(hu)(hv)}{h} \\
+\dfrac{(hv)^2}{h}+\dfrac{1}{2}gh^2
+\end{bmatrix}
+$$
+
+The source term includes rainfall/inflow, bed slope, and friction effects:
+
+$$
+\mathbf{S}=\begin{bmatrix}
+R \\
+-g h (S_{0x}+S_{fx}) \\
+-g h (S_{0y}+S_{fy})
+\end{bmatrix}
+$$
+
+where $g$ is gravity, $R$ is external source (if provided), and Manning-type friction is used for $S_{fx}, S_{fy}$.
+
+## Repository Structure
+
+Current structure on this branch:
+
+```text
+swe-pinn/
+├── CLAUDE.md
+├── README.md
+├── WORKSPACE_STRUCTURE.md
+├── analysis.md
+├── pyproject.toml
+├── configs/
+│   ├── experiment_1.yaml
+│   ├── experiment_1_dgm_static.yaml
+│   ├── experiment_1_fourier.yaml
+│   ├── experiment_3.yaml
+│   ├── experiment_4.yaml
+│   ├── experiment_5.yaml
+│   ├── experiment_6.yaml
+│   ├── experiment_7.yaml
+│   ├── experiment_8.yaml
+│   └── train/
+│       ├── experiment_1_dgm_final.yaml
+│       ├── experiment_1_fourier_final.yaml
+│       ├── experiment_1_mlp_final.yaml
+│       ├── experiment_2_dgm_final.yaml
+│       └── experiment_2_fourier_final.yaml
+├── experiments/
+│   ├── experiment_1/train.py
+│   ├── experiment_2/train.py
+│   ├── experiment_3/train.py
+│   ├── experiment_4/train.py
+│   ├── experiment_5/train.py
+│   ├── experiment_6/train.py
+│   ├── experiment_7/train.py
+│   └── experiment_8/
+│       ├── train.py
+│       └── train_imp_samp.py
+├── optimisation/
+│   ├── objective_function.py
+│   ├── optimization_train_loop.py
+│   ├── run_optimization.py
+│   ├── run_sensitivity_analysis.py
+│   ├── extract_best_params.py
+│   └── utils.py
+├── scripts/
+│   ├── infer.py
+│   ├── render_video.py
+│   ├── generate_training_data.py
+│   ├── preprocess_irregular.py
+│   ├── binary_to_numpy.py
+│   ├── process_gauge_csvs.py
+│   ├── filter_by_time.py
+│   ├── extract_gauge_timeseries.py
+│   ├── lidar_download.py
+│   ├── benchmark_*.py
+│   ├── jobs/
+│   └── cpp/
+├── src/
+│   ├── config.py
+│   ├── checkpointing/
+│   │   ├── loader.py
+│   │   └── saver.py
+│   ├── data/
+│   │   ├── batching.py
+│   │   ├── bathymetry.py
+│   │   ├── irregular.py
+│   │   ├── loading.py
+│   │   ├── paths.py
+│   │   └── sampling.py
+│   ├── inference/
+│   │   ├── context.py
+│   │   ├── experiment_registry.py
+│   │   ├── reporting.py
+│   │   └── runner.py
+│   ├── losses/
+│   │   ├── boundary.py
+│   │   ├── composite.py
+│   │   ├── data_loss.py
+│   │   └── pde.py
+│   ├── metrics/
+│   │   ├── accuracy.py
+│   │   ├── boundary.py
+│   │   ├── conservation.py
+│   │   ├── decomposition.py
+│   │   ├── flood_extent.py
+│   │   ├── negative_depth.py
+│   │   └── peak.py
+│   ├── models/
+│   │   ├── deeponet.py
+│   │   ├── factory.py
+│   │   ├── layers.py
+│   │   ├── ntk.py
+│   │   └── pinn.py
+│   ├── monitoring/
+│   │   ├── aim_tracker.py
+│   │   ├── console_logger.py
+│   │   └── diagnostics.py
+│   ├── physics/
+│   │   ├── analytical.py
+│   │   └── swe.py
+│   ├── predict/
+│   │   └── predictor.py
+│   ├── training/
+│   │   ├── data_loading.py
+│   │   ├── epoch.py
+│   │   ├── loop.py
+│   │   ├── optimizer.py
+│   │   ├── setup.py
+│   │   └── step.py
+│   └── utils/
+│       ├── domain.py
+│       ├── io.py
+│       ├── naming.py
+│       ├── plotting.py
+│       ├── profiling.py
+│       └── ui.py
+├── test/
+│   ├── test_batching.py
+│   ├── test_checkpointing.py
+│   ├── test_data_paths.py
+│   ├── test_hpo.py
+│   ├── test_hpo_utils.py
+│   ├── test_inference.py
+│   ├── test_losses.py
+│   ├── test_models.py
+│   ├── test_physics.py
+│   └── test_train.py
+└── data/, models/, results/, aim_repo/, notebook/, notes/
+```
+
+Note: `data/`, `models/`, and `results/` contain large/generated artifacts and are intentionally not expanded here.
 
 ## Installation
 
-### Prerequisites
+### Option 1: Editable Install
 
-- Python 3.8 or higher
-- CUDA-compatible GPU (recommended for optimal performance)
-- Docker (for Dev Container support)
+```bash
+git clone https://github.com/zeinali72/swe-pinn.git
+cd swe-pinn
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
 
-### Dev Container Setup (Recommended)
+### Option 2: Dev Container
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/zeinali72/swe-pinn.git
-   cd swe-pinn
-   ```
-
-2. **Open in VS Code:**
-   - Launch VS Code and open the project folder
-   - When prompted, click "Reopen in Container"
-   - The Dev Container will automatically install all dependencies
-
-### Manual Installation
-
-If you prefer manual setup:
-
-1. **Clone and navigate:**
-   ```bash
-   git clone https://github.com/zeinali72/swe-pinn.git
-   cd swe-pinn
-   ```
-
-2. **Create virtual environment:**
-   ```bash
-   python -m venv swe_pinn_env
-   source swe_pinn_env/bin/activate  # On Windows: swe_pinn_env\Scripts\activate
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -e .
-   # Or manually install from requirements
-   pip install jax flax optax optuna aim numpy pyyaml matplotlib seaborn
-   ```
-
-4. **Verify installation:**
-   ```bash
-   python -c "import jax; print('JAX version:', jax.__version__)"
-   ```
+Open the repository in VS Code and reopen in the provided dev container.
 
 ## Quick Start
 
-1. **Configure your experiment:**
-   ```bash
-   cp configs/experiment_1_fourier.yaml configs/my_experiment.yaml
-   # Edit my_experiment.yaml with your parameters
-   ```
+Example: train Experiment 1 using the Fourier configuration.
 
-2. **Run training:**
-   ```bash
-   python -m src.scenarios.experiment_1.experiment_1 configs/my_experiment.yaml
-   ```
-
-3. **Monitor results:**
-   ```bash
-   aim up
-   # Open http://localhost:43800 in your browser
-   ```
-
-4. **Visualize results:**
-   ```bash
-   python scripts/render_video.py --model_dir models/your_model --config configs/my_experiment.yaml --output results/video.mp4
-   ```
-
-## Project Structure
-
+```bash
+python -m experiments.experiment_1.train --config configs/experiment_1_fourier.yaml
 ```
-swe-pinn/
-├── src/                            # Core source code
-│   ├── config.py                   # YAML configuration loading
-│   ├── data.py                     # Data sampling, batching, and validation loading
-│   ├── losses.py                   # PDE, IC, BC loss functions for SWE
-│   ├── models.py                   # Neural network architectures (FourierPINN, MLP, DGMNetwork)
-│   ├── physics.py                  # SWE physics computations and Jacobians
-│   ├── softadapt.py                # SoftAdapt adaptive loss weighting
-│   ├── ntk.py                      # Neural Tangent Kernel trace computation
-│   ├── train.py                    # Unified training script (main entry point)
-│   ├── utils.py                    # Metrics (NSE, RMSE), plotting, model saving
-│   ├── reporting.py                # Training stats logging and Aim integration
-│   └── scenarios/                  # Per-experiment training scripts
-│       ├── experiment_1/           # Phase 1: analytical dam-break, flat domain
-│       │   ├── experiment_1.py
-│       │   ├── analytical_ntk.py
-│       │   └── experiment_1_lbfgs_finetune.py
-│       ├── experiment_2/           # Phase 1: building obstacle
-│       │   └── experiment_2.py
-│       ├── experiment_3/           # Phase 2: x-direction terrain slope
-│       │   └── experiment_3.py
-│       ├── experiment_4/           # Phase 2: x+y terrain slope
-│       │   └── experiment_4.py
-│       ├── experiment_5/           # Phase 2: synthetic complexity
-│       │   └── experiment_5.py
-│       ├── experiment_6/           # Phase 2: synthetic complexity stage 2
-│       │   └── experiment_6.py
-│       ├── experiment_7/           # Phase 3: irregular boundaries
-│       │   └── experiment_7.py
-│       └── experiment_8/           # Phase 3: real urban domain (Eastbourne)
-│           ├── experiment_8.py
-│           └── experiment_8_imp_samp.py
-├── configs/                        # Experiment configuration YAML files
-│   ├── experiment_1_fourier.yaml       # Exp 1 Fourier config
-│   ├── experiment_1_ntk.yaml           # Exp 1 NTK config
-│   ├── experiment_1_dgm_static.yaml    # Exp 1 DGM static config
-│   ├── experiment_3.yaml               # Exp 3 config
-│   ├── experiment_4.yaml               # Exp 4 config
-│   ├── experiment_5.yaml               # Exp 5 config
-│   ├── experiment_6.yaml               # Exp 6 config
-│   ├── experiment_7.yaml               # Exp 7 config
-│   ├── experiment_8.yaml               # Exp 8 config
-│   └── train/                          # Final HPO-optimized production configs
-│       ├── experiment_1_mlp_final.yaml
-│       ├── experiment_1_fourier_final.yaml
-│       ├── experiment_1_dgm_final.yaml
-│       ├── experiment_2_fourier_final.yaml
-│       └── experiment_2_dgm_final.yaml
-├── test/                           # Unit tests
-│   ├── test_train.py
-│   └── test_assets/
-│       └── test_config.yaml
-├── scripts/                        # Data processing and utility scripts
-│   ├── run_preprocess.sh           # Stage 1: Build & run C++ CSV→binary converter
-│   ├── binary_to_numpy.py          # Stage 2: Binary→.npy conversion
-│   ├── generate_training_data.py   # Stage 3: .npy→training/validation/plotting datasets
-│   ├── process_gauge_csvs.py       # Gauge CSV processing (depth/angle/speed→.npy)
-│   ├── extract_gauge_timeseries.py # Extract gauge time series from tensor
-│   ├── filter_by_time.py           # Filter .npy by maximum time
-│   ├── preprocess_irregular.py     # Mesh preprocessing for irregular domains (Exp 7/8)
-│   ├── render_video.py             # Render solution animations (CLI-driven)
-│   ├── infer.py                    # Post-training inference CLI wrapper
-│   ├── lidar_download.py           # Download LIDAR elevation data from UK gov WCS
-│   └── cpp/                        # C++ CSV→binary converter
-│       └── preprocess.cpp
-├── optimisation/                   # Hyperparameter optimisation (Optuna)
-│   ├── run_optimization.py         # Main HPO entry point
-│   ├── run_sensitivity_analysis.py
-│   ├── extract_best_params.py
-│   ├── objective_function.py       # Optuna objective
-│   ├── optimization_train_loop.py
-│   ├── configs/
-│   │   ├── exploration/            # Sobol exploration configs (per arch x scenario)
-│   │   └── exploitation/           # TPE exploitation configs (per arch x scenario)
-│   └── sensitivity_analysis_output/  # Importance reports + best params
-├── data/                           # Reference simulation data (InfoWorks ICM output)
-├── notebook/                       # Jupyter notebooks for analysis
-├── .devcontainer/                  # Docker dev container setup (NVIDIA JAX + CUDA)
-├── .github/workflows/              # CI/CD: Docker image build/publish to GHCR
-├── pyproject.toml                  # Package metadata and dependencies
-└── README.md
+
+Example: train Experiment 3.
+
+```bash
+python -m experiments.experiment_3.train --config configs/experiment_3.yaml
+```
+
+## Training Entry Points
+
+Each experiment has a module entry point:
+
+```bash
+python -m experiments.experiment_1.train --config <config>
+python -m experiments.experiment_2.train --config <config>
+python -m experiments.experiment_3.train --config <config>
+python -m experiments.experiment_4.train --config <config>
+python -m experiments.experiment_5.train --config <config>
+python -m experiments.experiment_6.train --config <config>
+python -m experiments.experiment_7.train --config <config>
+python -m experiments.experiment_8.train --config <config>
+python -m experiments.experiment_8.train_imp_samp --config <config>
+```
+
+## Inference
+
+Use the inference wrapper script:
+
+```bash
+python scripts/infer.py \
+  --config configs/experiment_3.yaml \
+  --checkpoint models/experiment_3/<trial>/checkpoints/best_nse \
+  --checkpoints best_nse
+```
+
+To evaluate all standard checkpoints in a trial:
+
+```bash
+python scripts/infer.py \
+  --config configs/experiment_3.yaml \
+  --checkpoint models/experiment_3/<trial>/checkpoints \
+  --checkpoints all
 ```
 
 ## Configuration
 
-Experiments are configured using YAML files in the `configs/` directory. Key configuration sections include:
+Main YAML blocks:
 
-### Domain Configuration
-```yaml
-domain:
-  lx: 100.0
-  ly: 20.0
-  t_final: 10.0
-```
+- `training`: optimizer, epochs, batch size, seed, clipping.
+- `model`: architecture type and dimensions.
+- `domain`: spatial and temporal bounds.
+- `grid` and `sampling`: collocation and boundary sampling sizes.
+- `physics`: $g$, Manning coefficient, inflow/source settings.
+- `loss_weights`: PDE/IC/BC/data/neg-depth balancing.
+- `device` and `numerics`: precision and numerical constants.
 
-### Model Architecture
-```yaml
-model:
-  name: "FourierPINN"  # or "MLP", "DGMNetwork"
-  width: 128
-  depth: 6
-  output_dim: 3
-```
+## Testing
 
-### Training Parameters
-```yaml
-training:
-  learning_rate: 1e-3
-  batch_size: 4096
-  epochs: 50000
-loss_weights:
-  pde_weight: 1.0
-  ic_weight: 100.0
-  bc_weight: 100.0
-```
-
-### Physics Parameters
-```yaml
-physics:
-  g: 9.81
-  n_manning: 0.012
-  inflow: 1.0
-```
-
-## Usage
-
-### Basic Training
+Run the full test suite:
 
 ```bash
-# Run experiment-specific training scripts
-python -m src.scenarios.experiment_1.experiment_1 configs/experiment_1_fourier.yaml
-python -m src.scenarios.experiment_3.experiment_3 configs/experiment_3.yaml
-python -m src.scenarios.experiment_7.experiment_7 configs/experiment_7.yaml
-python -m src.scenarios.experiment_8.experiment_8 configs/experiment_8.yaml
-
-# Unified training script (for experiments that support it)
-python src/train.py configs/experiment_1_fourier.yaml
+python -m unittest discover test
 ```
 
-### Hyperparameter Optimization
+Run a single test file:
 
 ```bash
-# Run HPO with Optuna
-python optimisation/run_optimization.py --config optimisation/configs/exploitation/hpo_exploitation_fourier_nobuilding.yaml --n_trials 100
+python -m unittest test.test_train
+```
 
-# Sensitivity analysis (Sobol exploration)
+## Hyperparameter Optimization
+
+Run HPO with Optuna:
+
+```bash
+python optimisation/run_optimization.py --config optimisation/configs/<file>.yaml --n_trials 100
+```
+
+Run sensitivity analysis and extract best parameters:
+
+```bash
 python optimisation/run_sensitivity_analysis.py
-
-# Extract best parameters
 python optimisation/extract_best_params.py
 ```
 
-### Experiment Tracking
-
-```bash
-# Start Aim dashboard
-aim up
-# Open http://localhost:43800 in your browser
-```
-
-### Visualization
-
-```bash
-# Render solution video
-python scripts/render_video.py --model_dir models/trained_model --config configs/experiment_1_fourier.yaml --output results/video.mp4
-```
-
-## Physics Background
-
-The 2D Shallow Water Equations describe conservation of mass and momentum for water flow:
-
-### Continuity Equation (Mass Conservation)
-```
-dh/dt + d(hu)/dx + d(hv)/dy = 0
-```
-
-### Momentum Equations
-```
-d(hu)/dt + d(hu^2 + gh^2/2)/dx + d(huv)/dy = -gh * dz_b/dx - g*n^2*u*sqrt(u^2+v^2)/h^(1/3)
-d(hv)/dt + d(huv)/dx + d(hv^2 + gh^2/2)/dy = -gh * dz_b/dy - g*n^2*v*sqrt(u^2+v^2)/h^(1/3)
-```
-
-Where:
-- `h`: water depth [m]
-- `u, v`: depth-averaged velocity components [m/s]
-- `g`: gravitational acceleration [m/s^2]
-- `z_b`: bed elevation [m]
-- `n`: Manning's roughness coefficient [s/m^(1/3)]
-
-### Boundary Conditions
-
-- **Inflow**: Prescribed depth and velocity at upstream boundary
-- **Outflow**: Zero-gradient conditions at downstream boundary
-- **Walls**: No-flux (slip) conditions at lateral boundaries and building walls
-- **Initial**: Flat water surface with zero velocity at t=0
-
-## Results and Validation
-
-The implementation provides comprehensive validation metrics:
-
-### Quantitative Metrics
-- **Nash-Sutcliffe Efficiency (NSE)**: Measures model performance
-- **Root Mean Square Error (RMSE)**: Absolute error magnitude
-- **Physics Residuals**: PDE constraint satisfaction
-
-### Qualitative Validation
-- **Solution Videos**: Time-evolution of water depth and velocity
-- **Contour Plots**: Spatial distribution at specific times
-- **Validation Profiles**: Comparison with analytical/reference solutions
-
-## Troubleshooting
-
-### Common Issues
-
-**CUDA Out of Memory**
-- Reduce batch size in configuration
-- Decrease model hidden dimensions
-
-**Poor Convergence**
-- Increase Fourier features
-- Adjust loss weights (increase PDE weight)
-- Try different architecture (FourierPINN vs DGM)
-
-**NaN Losses**
-- Check boundary condition implementation
-- Verify coordinate ranges
-- Reduce learning rate
-
-**Slow Training**
-- Ensure CUDA is available: `python -c "import jax; print(jax.devices())"`
-- Use `float32` precision where possible
-
-### Getting Help
-
-- Check existing issues on GitHub
-- Review Aim logs for training diagnostics
-
-## Contributing
-
-We welcome contributions! Please follow these steps:
-
-1. **Fork the repository**
-2. **Create a feature branch:**
-   ```bash
-   git checkout -b feature/amazing-feature
-   ```
-3. **Make your changes and add tests**
-4. **Run the test suite:**
-   ```bash
-   python -m unittest discover test
-   ```
-5. **Commit your changes:**
-   ```bash
-   git commit -m 'Add amazing feature'
-   ```
-6. **Push to the branch:**
-   ```bash
-   git push origin feature/amazing-feature
-   ```
-7. **Open a Pull Request**
-
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## Citation
-
-If you use this code in your research, please cite:
-
-```bibtex
-@software{zeinali_swe_pinn_2024,
-  title={{SWE-PINN}: Physics-Informed Neural Networks for Shallow Water Equations},
-  author={Zeinali, Farzan},
-  url={https://github.com/zeinali72/swe-pinn},
-  year={2024},
-  version={0.1.0}
-}
-```
-
-## Acknowledgments
-
-- **JAX/Flax**: For providing the high-performance ML framework
-- **Aim**: For experiment tracking and visualization
-- **Optuna**: For hyperparameter optimization
-- **Scientific Community**: For advancing PINN methodologies
+This project is licensed under the MIT License.
