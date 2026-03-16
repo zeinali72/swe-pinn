@@ -41,7 +41,7 @@ training:
     rtol: 1.0e-04
     atol: 0.0
     cooldown: 1
-    accumulation_factor: 2
+    accumulation_size: 2
     min_scale: 1.0e-04
 model:
   name: DGMNetwork
@@ -69,6 +69,4 @@ data_free: true
 
 reporting:
   epoch_freq: 2
-# --- REQUIRED: Needed for folder naming ---
-CONFIG_PATH: configs/train/test5_dgm_final.yaml
 

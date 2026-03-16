@@ -43,7 +43,6 @@ model:
   depth: 5
   ff_dims: 256
   fourier_scale: 6.138224643110013
-CONFIG_PATH: optimisation/configs/exploitation/hpo_exploitation_fourier_nobuilding.yaml
 sampling:
   n_points_pde: 81997
   n_points_ic: 3832

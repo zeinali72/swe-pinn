@@ -450,7 +450,7 @@ def main(config_path: str):
             rtol=float(reduce_on_plateau_cfg.get("rtol", 1e-4)),
             atol=float(reduce_on_plateau_cfg.get("atol", 0.0)),
             cooldown=int(reduce_on_plateau_cfg.get("cooldown", 1)),
-            accumulation_size=num_batches*int(reduce_on_plateau_cfg.get("accumulation_factor", 1)),
+            accumulation_size=int(reduce_on_plateau_cfg.get("accumulation_size", num_batches)),
             min_scale=float(reduce_on_plateau_cfg.get("min_scale", 1e-6)),
         ),
     )

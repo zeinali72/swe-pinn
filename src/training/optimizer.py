@@ -1,4 +1,6 @@
 """Optimizer creation — shared across all experiments."""
+import warnings
+
 import optax
 
 
@@ -10,9 +12,9 @@ def create_optimizer(cfg, num_batches=None):
     cfg : FrozenDict
         Full experiment config.
     num_batches : int, optional
-        Batches per epoch.  Used for ``accumulation_size`` when
-        ``accumulation_factor`` is present in config instead of a fixed
-        ``accumulation_size``.
+        Batches per epoch.  Only used as a fallback multiplier when the
+        deprecated ``accumulation_factor`` key is present instead of the
+        canonical ``accumulation_size``.
 
     Returns
     -------
@@ -20,13 +22,20 @@ def create_optimizer(cfg, num_batches=None):
     """
     rop_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
 
-    # Resolve accumulation_size: either explicit or num_batches * factor
+    # Resolve accumulation_size — canonical key takes priority.
     if "accumulation_size" in rop_cfg:
         accum = int(rop_cfg["accumulation_size"])
-    elif num_batches is not None:
-        accum = num_batches * int(rop_cfg.get("accumulation_factor", 1))
+    elif "accumulation_factor" in rop_cfg:
+        warnings.warn(
+            "Config key 'accumulation_factor' is deprecated; "
+            "use 'accumulation_size' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        factor = int(rop_cfg["accumulation_factor"])
+        accum = num_batches * factor if num_batches is not None else factor
     else:
-        accum = int(rop_cfg.get("accumulation_factor", 1))
+        accum = 1
 
     return optax.chain(
         optax.clip_by_global_norm(cfg.get("training", {}).get("clip_norm", 1.0)),

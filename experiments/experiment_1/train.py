@@ -253,7 +253,7 @@ def main(config_path: str):
         print(f"Error: Batch size {batch_size} is too large for configured sample counts or data. No training will occur.")
         return -1.0
 
-    # --- 3. Setup Optimizer (after num_batches is known for accumulation_factor) ---
+    # --- 3. Setup Optimizer (after num_batches is known for accumulation_size) ---
     optimiser = create_optimizer(cfg, num_batches=num_batches)
     opt_state = optimiser.init(params)
 
