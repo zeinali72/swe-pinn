@@ -20,7 +20,7 @@ if project_root not in sys.path:
 
 try:
     from optimisation.objective_function import objective
-    from optimisation.utils import sanitize_for_yaml, setup_study_storage
+    from optimisation.utils import sanitize_for_yaml, setup_study_storage, create_storage
     from src.config import load_config
 except ImportError as e:
     print("Error: Could not import necessary modules.")
@@ -55,14 +55,15 @@ def main():
     print(f"Sensitivity trials will run for {opt_epochs} epochs each.")
 
     # --- Setup Optuna Study ---
-    storage_path = setup_study_storage(args.storage, project_root)
+    storage_url = setup_study_storage(args.storage, project_root)
+    storage = create_storage(storage_url)
 
     print("Using QMCSampler for uniform exploration (Sensitivity Analysis).")
     sampler = optuna.samplers.QMCSampler()
 
     study = optuna.create_study(
         study_name=args.study_name,
-        storage=storage_path,
+        storage=storage,
         direction="maximize",
         sampler=sampler,
         load_if_exists=True,
@@ -75,7 +76,7 @@ def main():
     # --- Run Optimization ---
     print(f"\n--- Starting Optuna SENSITIVITY ANALYSIS ---")
     print(f"Study Name    : {args.study_name}")
-    print(f"Storage       : {storage_path}")
+    print(f"Storage       : {storage_url}")
     print(f"# Trials      : {args.n_trials}")
     print(f"Objective     : Maximize NSE")
     print(f"Sampler       : QMCSampler (Exploration)")

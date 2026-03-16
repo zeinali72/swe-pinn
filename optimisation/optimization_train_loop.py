@@ -158,6 +158,9 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
             scan_body, (params, opt_state), scan_inputs,
         )
 
+        # Reduce Optuna report frequency for remote storage to limit DB round-trips
+        report_interval = trial_cfg.get("training", {}).get("hpo_report_interval", 1)
+
         if (epoch + 1) % validation_freq == 0:
             metrics = validation_fn(model, params)
             current_nse = metrics.get("nse_h", -jnp.inf)
@@ -176,10 +179,12 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                       f"{hpo_patience} epochs. Early stopping at epoch {epoch+1}.")
                 break
 
-            trial.report(best_nse, epoch)
-            if trial.should_prune():
-                print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
-                raise optuna.exceptions.TrialPruned()
+            # Report every report_interval validations to reduce DB round-trips
+            if (epoch + 1) % (validation_freq * report_interval) == 0:
+                trial.report(best_nse, epoch)
+                if trial.should_prune():
+                    print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
+                    raise optuna.exceptions.TrialPruned()
 
             # Log loss breakdown periodically (D2H transfer only when needed)
             if (epoch + 1) % log_freq == 0:

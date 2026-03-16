@@ -19,7 +19,7 @@ if project_root not in sys.path:
 
 try:
     from optimisation.objective_function import objective
-    from optimisation.utils import sanitize_for_yaml, setup_study_storage
+    from optimisation.utils import sanitize_for_yaml, setup_study_storage, create_storage
     from src.config import load_config
 except ImportError as e:
     print("Error: Could not import necessary modules.")
@@ -56,11 +56,12 @@ def main():
     print(f"Optimization trials will run for {opt_epochs} epochs each.")
 
     # --- Setup Optuna Study ---
-    storage_path = setup_study_storage(args.storage, project_root)
+    storage_url = setup_study_storage(args.storage, project_root)
+    storage = create_storage(storage_url)
 
     study = optuna.create_study(
         study_name=args.study_name,
-        storage=storage_path,
+        storage=storage,
         direction="maximize",
         load_if_exists=True,
         pruner=optuna.pruners.MedianPruner(n_startup_trials=20, n_warmup_steps=200, interval_steps=50)
@@ -72,7 +73,7 @@ def main():
     # --- Run Optimization ---
     print(f"\n--- Starting Optuna Optimization ---")
     print(f"Study Name    : {args.study_name}")
-    print(f"Storage       : {storage_path}")
+    print(f"Storage       : {storage_url}")
     print(f"# Trials      : {args.n_trials}")
     print(f"Objective     : Maximize NSE")
     print(f"Trial Epochs  : {opt_epochs}")
