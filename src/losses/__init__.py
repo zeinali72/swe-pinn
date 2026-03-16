@@ -8,4 +8,4 @@ from src.losses.boundary import (
     loss_boundary_neumann_outflow_x,
 )
 from src.losses.data_loss import compute_data_loss
-from src.losses.composite import compute_bc_loss, compute_building_bc_loss, total_loss
+from src.losses.composite import total_loss
