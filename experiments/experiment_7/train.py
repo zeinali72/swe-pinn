@@ -15,7 +15,6 @@ import jax.numpy as jnp
 from jax import random
 from flax.core import FrozenDict
 import numpy as np
-import matplotlib.pyplot as plt
 
 # Local application imports
 from src.config import load_config, get_dtype
@@ -50,7 +49,6 @@ from src.training import (
     make_scan_body,
     maybe_batch_data,
     post_training_save,
-    resolve_configured_asset_path,
     resolve_experiment_paths,
     resolve_data_mode,
     run_training_loop,
@@ -143,23 +141,8 @@ def main(config_path: str):
     static_weights_dict, current_weights_dict = extract_loss_weights(cfg)
 
     # --- 6. Load Remaining Assets ---
-
-    # B. Load Bathymetry (REQUIRED)
-    try:
-        dem_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "dem")
-    except FileNotFoundError as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
-    print(f"Loading Bathymetry from {dem_path}...")
-    load_bathymetry(dem_path)
-    
-    # C. Load Boundary Condition Function
-    try:
-        bc_csv_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "boundary_condition")
-    except FileNotFoundError as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
-    bc_fn_static = load_boundary_condition(bc_csv_path)
+    terrain = load_terrain_assets(cfg, base_data_path, scenario_name)
+    bc_fn_static = terrain["bc_fn"]
 
     # D. Load Validation and Training Data
     data_points_full = None
@@ -305,33 +288,13 @@ def main(config_path: str):
             cy = (cfg['domain']['y_max'] + cfg['domain']['y_min']) / 2
             output_points = [(cx, cy, "Center_Point")]
 
-        def plot_gauge(x, y, name, filename):
-            pts = jnp.stack([jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot], axis=-1)
-            U = model.apply(final_params, pts, train=False)
-            min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
-            h_pred = jnp.where(U[..., 0] < min_depth_plot, 0.0, U[..., 0])
-            plt.figure(figsize=(10, 6))
-            if full_val_data is not None:
-                val_np = np.array(full_val_data)
-                mask = np.isclose(val_np[:, 1], x) & np.isclose(val_np[:, 2], y)
-                gauge_data = val_np[mask]
-                if gauge_data.shape[0] > 0:
-                    gauge_data = gauge_data[gauge_data[:, 0].argsort()]
-                    plt.plot(gauge_data[:, 0], gauge_data[:, 3], 'k--', linewidth=1.5, alpha=0.7, label=f'Baseline {name}')
-
-            plt.plot(t_plot, h_pred, label=f'Predicted h @ ({x:.1f},{y:.1f})')
-            plt.xlabel('Time (s)')
-            plt.ylabel('Water Level h (m)')
-            plt.title(f'{name} - Water Level vs Time')
-            plt.legend()
-            plt.grid(True)
-            path = os.path.join(results_dir, filename)
-            plt.savefig(path)
-            plt.close()
-            aim_tracker.log_image(path, filename, final_epoch)
-
+        gauge_kwargs = dict(
+            model=model, params=final_params, t_plot=t_plot, cfg=cfg,
+            results_dir=results_dir, aim_tracker=aim_tracker, epoch=final_epoch,
+            full_val_data=full_val_data,
+        )
         for px, py, pname in output_points:
-            plot_gauge(px, py, pname, f"{pname}_timeseries.png")
+            plot_gauge_timeseries(px, py, pname, f"{pname}_timeseries.png", **gauge_kwargs)
 
         print(f"Plots saved to {results_dir}")
 

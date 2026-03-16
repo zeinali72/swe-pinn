@@ -17,7 +17,6 @@ from flax.core import FrozenDict
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # Local application imports
 from src.config import load_config, get_dtype
@@ -36,6 +35,7 @@ from src.losses import (
     compute_data_loss,
 )
 from src.utils import nse, rmse
+from src.utils.plotting import plot_gauge_timeseries
 from src.training import (
     apply_irregular_domain_bounds,
     apply_output_scales,
@@ -358,25 +358,12 @@ def main(config_path: str):
             cy = (cfg['domain']['y_max'] + cfg['domain']['y_min']) / 2
             output_points = [(cx, cy, "Center_Point")]
 
-        def plot_gauge(x, y, name, filename):
-            pts = jnp.stack([jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot], axis=-1)
-            U = model.apply(final_params, pts, train=False)
-            min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
-            h_pred = jnp.where(U[..., 0] < min_depth_plot, 0.0, U[..., 0])
-            plt.figure(figsize=(10, 6))
-            plt.plot(np.array(t_plot), np.array(h_pred), label=f'Predicted h @ ({x:.1f},{y:.1f})')
-            plt.xlabel('Time (s)')
-            plt.ylabel('Water Level h (m)')
-            plt.title(f'{name} - Water Level vs Time')
-            plt.legend()
-            plt.grid(True)
-            path = os.path.join(results_dir, filename)
-            plt.savefig(path)
-            plt.close()
-            aim_tracker.log_image(path, filename, final_epoch)
-
+        gauge_kwargs = dict(
+            model=model, params=final_params, t_plot=t_plot, cfg=cfg,
+            results_dir=results_dir, aim_tracker=aim_tracker, epoch=final_epoch,
+        )
         for px, py, pname in output_points:
-            plot_gauge(px, py, pname, f"{pname}_timeseries.png")
+            plot_gauge_timeseries(px, py, pname, f"{pname}_timeseries.png", **gauge_kwargs)
 
         print(f"Plots saved to {results_dir}")
 
