@@ -22,8 +22,9 @@ from src.config import DTYPE
 from src.data import sample_domain, get_batches_tensor, get_sample_count
 from src.models import init_model
 from src.losses import (
-    compute_neg_h_loss, compute_pde_loss, compute_ic_loss, compute_bc_loss, total_loss,
-    compute_building_bc_loss
+    compute_neg_h_loss, compute_pde_loss, compute_ic_loss, total_loss,
+    loss_boundary_dirichlet, loss_boundary_neumann_outflow_x,
+    loss_boundary_wall_horizontal, loss_boundary_wall_vertical,
 )
 # Note: get_initial_losses is specifically for GradNorm setup
 from src.utils import nse, rmse, mask_points_inside_building
@@ -69,25 +70,35 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
             terms['ic'] = compute_ic_loss(model, p, ic_batch_data)
 
         bc_batches = all_batches.get('bc', {})
-        bc_left_batch = bc_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
-        bc_right_batch = bc_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
-        bc_bottom_batch = bc_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
-        bc_top_batch = bc_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
+        bc_left = bc_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
+        bc_right = bc_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
+        bc_bottom = bc_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
+        bc_top = bc_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
         if 'bc' in active_loss_keys_base and any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
-             terms['bc'] = compute_bc_loss(
-                 model, p, bc_left_batch, bc_right_batch, bc_bottom_batch, bc_top_batch, config
-             )
+            # Left: Dirichlet h + hu from analytical dam-break solution
+            u_const = config["physics"]["u_const"]
+            n_manning = config["physics"]["n_manning"]
+            t_left = bc_left[..., 2]
+            h_true = h_exact(0.0, t_left, n_manning, u_const)
+            hu_true = h_true * u_const
+            loss_left = (loss_boundary_dirichlet(model, p, bc_left, h_true, var_idx=0) +
+                         loss_boundary_dirichlet(model, p, bc_left, hu_true, var_idx=1))
+            loss_right = loss_boundary_neumann_outflow_x(model, p, bc_right)
+            loss_bottom = loss_boundary_wall_horizontal(model, p, bc_bottom)
+            loss_top = loss_boundary_wall_horizontal(model, p, bc_top)
+            terms['bc'] = loss_left + loss_right + loss_bottom + loss_top
 
         if has_building and 'building_bc' in active_loss_keys_base:
             bldg_batches = all_batches.get('building_bc', {})
-            bldg_left_batch = bldg_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
-            bldg_right_batch = bldg_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
-            bldg_bottom_batch = bldg_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
-            bldg_top_batch = bldg_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
+            bl = bldg_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
+            br = bldg_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
+            bb = bldg_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
+            bt = bldg_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
             if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
-                terms['building_bc'] = compute_building_bc_loss(
-                    model, p, bldg_left_batch, bldg_right_batch, bldg_bottom_batch, bldg_top_batch
-                )
+                terms['building_bc'] = (loss_boundary_wall_vertical(model, p, bl) +
+                                        loss_boundary_wall_vertical(model, p, br) +
+                                        loss_boundary_wall_horizontal(model, p, bb) +
+                                        loss_boundary_wall_horizontal(model, p, bt))
 
         # Calculate weighted total loss
         # Use only weights for terms that were actually computed in this step

@@ -23,8 +23,9 @@ from src.config import DTYPE
 from src.predict.predictor import _apply_min_depth
 from src.data import sample_domain, get_batches_tensor
 from src.losses import (
-    compute_pde_loss, compute_ic_loss, compute_bc_loss,
-    compute_data_loss, compute_neg_h_loss
+    compute_pde_loss, compute_ic_loss, compute_data_loss, compute_neg_h_loss,
+    loss_boundary_dirichlet, loss_boundary_neumann_outflow_x,
+    loss_boundary_wall_horizontal,
 )
 from src.utils import nse, rmse, plot_h_vs_x
 from src.physics import h_exact, hu_exact, hv_exact
@@ -65,14 +66,25 @@ def compute_losses(model, params, batch, config, data_free):
 
     bc_batches = batch.get('bc', {})
     if any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape')):
-        terms['bc'] = compute_bc_loss(
-            model, params,
-            bc_batches.get('left', jnp.empty((0, 3), dtype=DTYPE)),
-            bc_batches.get('right', jnp.empty((0, 3), dtype=DTYPE)),
-            bc_batches.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
-            bc_batches.get('top', jnp.empty((0, 3), dtype=DTYPE)),
-            config,
-        )
+        left = bc_batches.get('left', jnp.empty((0, 3), dtype=DTYPE))
+        right = bc_batches.get('right', jnp.empty((0, 3), dtype=DTYPE))
+        bottom = bc_batches.get('bottom', jnp.empty((0, 3), dtype=DTYPE))
+        top = bc_batches.get('top', jnp.empty((0, 3), dtype=DTYPE))
+
+        # Left: Dirichlet h + hu from analytical dam-break solution
+        u_const = config["physics"]["u_const"]
+        n_manning = config["physics"]["n_manning"]
+        t_left = left[..., 2]
+        h_true = h_exact(0.0, t_left, n_manning, u_const)
+        hu_true = h_true * u_const
+        loss_left = (loss_boundary_dirichlet(model, params, left, h_true, var_idx=0) +
+                     loss_boundary_dirichlet(model, params, left, hu_true, var_idx=1))
+        # Right: Neumann outflow
+        loss_right = loss_boundary_neumann_outflow_x(model, params, right)
+        # Top/Bottom: horizontal walls
+        loss_bottom = loss_boundary_wall_horizontal(model, params, bottom)
+        loss_top = loss_boundary_wall_horizontal(model, params, top)
+        terms['bc'] = loss_left + loss_right + loss_bottom + loss_top
 
     data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
     if not data_free and data_batch_data.shape[0] > 0:
