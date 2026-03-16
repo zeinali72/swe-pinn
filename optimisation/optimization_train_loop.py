@@ -140,11 +140,13 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
         trial_cfg, val_loaded, val_points, h_true_val,
     )
 
-    # 8. Training loop with Optuna pruning
+    # 8. Training loop with Optuna pruning + intra-trial patience
     epochs = trial_cfg["training"]["epochs"]
     validation_freq = trial_cfg.get("training", {}).get("validation_freq", 1)
+    hpo_patience = trial_cfg.get("training", {}).get("hpo_patience", 300)
     log_freq = validation_freq * 200
     best_nse = -jnp.inf
+    last_improvement_epoch = 0
 
     for epoch in range(epochs):
         train_key, epoch_key = random.split(train_key)
@@ -165,7 +167,16 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                 print(f"Trial {trial.number}, Epoch {epoch+1}: NaN NSE. Pruning.")
                 raise optuna.exceptions.TrialPruned()
 
-            best_nse = max(best_nse, current_nse if current_nse > -jnp.inf else -1.0)
+            if current_nse > best_nse:
+                best_nse = current_nse
+                last_improvement_epoch = epoch
+
+            # Intra-trial patience-based early stopping
+            if epoch - last_improvement_epoch > hpo_patience:
+                print(f"Trial {trial.number}: No NSE improvement for "
+                      f"{hpo_patience} epochs. Early stopping at epoch {epoch+1}.")
+                break
+
             trial.report(best_nse, epoch)
             if trial.should_prune():
                 print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
