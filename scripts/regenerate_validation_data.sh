@@ -14,12 +14,39 @@
 # This script is a convenience wrapper. See individual scripts for options.
 #
 # Depends on: #38 (scripts cleanup) for gauge processing pipeline.
+#
+# Usage:
+#   ./regenerate_validation_data.sh [--val-samples N] [--train-samples N]
+#                                   [--max-time T] [--seed S]
 set -euo pipefail
+
+# --- Configurable defaults (override via CLI flags) ---
+VAL_SAMPLES=65536
+TRAIN_SAMPLES=2000
+MAX_TIME=21600
+SEED=42
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --val-samples)  VAL_SAMPLES="$2"; shift 2 ;;
+        --train-samples) TRAIN_SAMPLES="$2"; shift 2 ;;
+        --max-time)     MAX_TIME="$2"; shift 2 ;;
+        --seed)         SEED="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: $0 [--val-samples N] [--train-samples N] [--max-time T] [--seed S]"
+            echo ""
+            echo "Defaults: --val-samples $VAL_SAMPLES --train-samples $TRAIN_SAMPLES"
+            echo "          --max-time $MAX_TIME --seed $SEED"
+            exit 0 ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 echo "=== Regenerating validation data with hu/hv columns ==="
+echo "  val_samples=$VAL_SAMPLES  train_samples=$TRAIN_SAMPLES  max_time=$MAX_TIME  seed=$SEED"
 echo ""
 
 # --- Experiment 2: Building obstacle ---
@@ -29,12 +56,12 @@ if [ -f "$EXP2_TENSOR" ]; then
     echo "[Experiment 2] Regenerating from validation_tensor.npy..."
     python "$SCRIPT_DIR/generate_training_data.py" \
         --scenario experiment_2 \
-        --val_samples 65536 \
-        --train_samples 2000 \
-        --train_max_time 21600 \
-        --val_max_time 21600 \
-        --plot_time 21600 \
-        --seed 42
+        --val_samples "$VAL_SAMPLES" \
+        --train_samples "$TRAIN_SAMPLES" \
+        --train_max_time "$MAX_TIME" \
+        --val_max_time "$MAX_TIME" \
+        --plot_time "$MAX_TIME" \
+        --seed "$SEED"
     echo "[Experiment 2] Done."
 else
     echo "[Experiment 2] SKIP: $EXP2_TENSOR not found."
@@ -50,13 +77,18 @@ for exp_num in 3 4 5 6 7; do
     META_FILE="$EXP_DIR/gauge_metadata.csv"
 
     if [ -f "$META_FILE" ]; then
-        # Check for gauge CSV files (naming may vary)
-        DEPTH_FILE=$(find "$EXP_DIR" -name "*depth*" -name "*.csv" 2>/dev/null | head -1)
-        ANGLE_FILE=$(find "$EXP_DIR" -name "*angle*" -name "*.csv" 2>/dev/null | head -1)
-        SPEED_FILE=$(find "$EXP_DIR" -name "*speed*" -name "*.csv" 2>/dev/null | head -1)
+        # Look for gauge CSVs with specific naming patterns.
+        # Only match files directly named *_depth.csv, *_angle.csv, *_speed.csv
+        # to avoid false positives on backup or config files.
+        DEPTH_FILE=$(find "$EXP_DIR" -maxdepth 1 -name "*_depth.csv" -o -name "depth_*.csv" 2>/dev/null | head -1)
+        ANGLE_FILE=$(find "$EXP_DIR" -maxdepth 1 -name "*_angle.csv" -o -name "angle_*.csv" 2>/dev/null | head -1)
+        SPEED_FILE=$(find "$EXP_DIR" -maxdepth 1 -name "*_speed.csv" -o -name "speed_*.csv" 2>/dev/null | head -1)
 
         if [ -n "$DEPTH_FILE" ] && [ -n "$ANGLE_FILE" ] && [ -n "$SPEED_FILE" ]; then
             echo "[Experiment $exp_num] Regenerating from gauge CSVs..."
+            echo "  depth: $(basename "$DEPTH_FILE")"
+            echo "  angle: $(basename "$ANGLE_FILE")"
+            echo "  speed: $(basename "$SPEED_FILE")"
             python "$SCRIPT_DIR/process_gauge_csvs.py" \
                 --meta "$META_FILE" \
                 --depth "$DEPTH_FILE" \
@@ -68,15 +100,15 @@ for exp_num in 3 4 5 6 7; do
             echo "[Experiment $exp_num] Done."
         else
             echo "[Experiment $exp_num] SKIP: Missing gauge CSV files in $EXP_DIR."
-            echo "  Need: depth, angle, and speed CSVs."
+            echo "  Need: *_depth.csv, *_angle.csv, and *_speed.csv."
         fi
     elif [ -f "$EXP_DIR/validation_tensor.npy" ]; then
         echo "[Experiment $exp_num] Regenerating from validation_tensor.npy..."
         python "$SCRIPT_DIR/generate_training_data.py" \
             --scenario "experiment_${exp_num}" \
-            --val_samples 65536 \
-            --train_samples 2000 \
-            --seed 42
+            --val_samples "$VAL_SAMPLES" \
+            --train_samples "$TRAIN_SAMPLES" \
+            --seed "$SEED"
         echo "[Experiment $exp_num] Done."
     else
         echo "[Experiment $exp_num] SKIP: No source data found in $EXP_DIR."

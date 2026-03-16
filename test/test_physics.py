@@ -148,12 +148,31 @@ class TestAnalyticalSolutions(unittest.TestCase):
         self.assertAlmostEqual(float(hu[0]), 0.0, places=10)
 
     def test_hv_exact_always_zero(self):
-        """hv = 0 everywhere (1D problem, no y-velocity)."""
+        """hv = 0 everywhere (1D problem, no y-velocity).
+
+        This is a regression guard: hv_exact returns zeros_like(x) by
+        definition for the 1D dam-break. The test ensures it isn't
+        accidentally changed to return non-zero values.
+        """
         x = jnp.array([0.0, 10.0, 100.0])
         t = jnp.array([100.0, 100.0, 100.0])
         hv = hv_exact(x, t, self.n_manning, self.u_const)
         self.assertTrue(jnp.allclose(hv, 0.0),
                         f"hv should be zero everywhere: {hv}")
+
+    def test_initial_condition_t_zero(self):
+        """At t=0, h=0 and hu=0 for all x > 0 (dry domain before dam-break)."""
+        x = jnp.array([1.0, 10.0, 100.0, 500.0])
+        t = jnp.zeros_like(x)
+        h = h_exact(x, t, self.n_manning, self.u_const)
+        hu = hu_exact(x, t, self.n_manning, self.u_const)
+        hv = hv_exact(x, t, self.n_manning, self.u_const)
+        self.assertTrue(jnp.allclose(h, 0.0, atol=1e-12),
+                        f"h should be 0 at t=0 for x>0: {h}")
+        self.assertTrue(jnp.allclose(hu, 0.0, atol=1e-12),
+                        f"hu should be 0 at t=0 for x>0: {hu}")
+        self.assertTrue(jnp.allclose(hv, 0.0, atol=1e-12),
+                        f"hv should be 0 at t=0: {hv}")
 
     def test_h_exact_at_origin(self):
         """h at x=0 grows with time (dam-break spreading)."""
