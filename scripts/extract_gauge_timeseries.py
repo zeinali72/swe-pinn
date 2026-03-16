@@ -48,7 +48,7 @@ def extract_gauges_fast(
 
     # 1. Load Data
     try:
-        data = np.load(input_path)
+        data = np.load(input_path, mmap_mode='r')
         print(f"Data loaded. Shape: {data.shape} ({data.nbytes / 1e9:.2f} GB)")
     except Exception as e:
         print(f"Failed to load data: {e}")
