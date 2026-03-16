@@ -11,22 +11,21 @@ Produces:
     └── memory_snapshot.json    # Peak memory per device
 """
 import argparse
+import importlib
 import json
 import os
-import sys
 import time
 
 import jax
 import jax.numpy as jnp
+import optax
 from jax import random
 
 from src.config import load_config, get_dtype
-from src.models import create_model
+from src.models.factory import init_model
 from src.training import (
     create_optimizer,
     calculate_num_batches,
-    extract_loss_weights,
-    get_active_loss_weights,
     get_sampling_count_from_config,
 )
 from src.utils.profiling import EpochTimer, get_memory_stats, log_memory_usage
@@ -48,12 +47,12 @@ def profile_training(config_path, n_epochs, output_dir):
     print(f"dtype: {dtype}")
 
     # Model setup
-    model = create_model(cfg)
+    models_module = importlib.import_module("src.models")
+    model_class = getattr(models_module, cfg["model"]["name"])
     key = random.PRNGKey(cfg["training"].get("seed", 42))
     key, init_key = random.split(key)
 
-    dummy_input = jnp.ones((1, 3), dtype=dtype)
-    params = model.init(init_key, dummy_input, train=False)
+    model, params = init_model(model_class, init_key, cfg)
 
     optimiser = create_optimizer(cfg)
     opt_state = optimiser.init(params)
@@ -103,7 +102,7 @@ def profile_training(config_path, n_epochs, output_dir):
         # Time optimizer step
         with timer.time("optimizer_update"):
             updates, new_opt_state = optimiser.update(grads, opt_state, params)
-            new_params = jax.tree.map(lambda p, u: p + u, params, updates)
+            new_params = optax.apply_updates(params, updates)
             jax.block_until_ready(new_params)
 
         params = new_params

@@ -116,24 +116,15 @@ def run_training_loop(
             epoch_start_time = time.time()
 
             train_key, epoch_key = random.split(train_key)
-
+            scan_inputs = generate_epoch_data_jit(epoch_key)
             if enable_profiling:
-                with epoch_timer.time("data_generation"):
-                    scan_inputs = generate_epoch_data_jit(epoch_key)
-                    jax.block_until_ready(scan_inputs)
-            else:
-                scan_inputs = generate_epoch_data_jit(epoch_key)
+                jax.block_until_ready(scan_inputs)
 
+            (params, opt_state), (batch_losses_stacked, batch_total_stacked) = lax.scan(
+                scan_body, (params, opt_state), scan_inputs
+            )
             if enable_profiling:
-                with epoch_timer.time("scan_step"):
-                    (params, opt_state), (batch_losses_stacked, batch_total_stacked) = lax.scan(
-                        scan_body, (params, opt_state), scan_inputs
-                    )
-                    jax.block_until_ready(batch_total_stacked)
-            else:
-                (params, opt_state), (batch_losses_stacked, batch_total_stacked) = lax.scan(
-                    scan_body, (params, opt_state), scan_inputs
-                )
+                jax.block_until_ready(batch_total_stacked)
             global_step += num_batches
 
             # Aggregate losses
