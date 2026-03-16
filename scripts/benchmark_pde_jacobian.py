@@ -18,7 +18,6 @@ Benchmarks:
 import argparse
 import json
 import os
-import time
 import timeit
 
 import jax
@@ -26,7 +25,7 @@ import jax.numpy as jnp
 from jax import random
 from flax.core import FrozenDict
 
-from src.config import load_config, get_dtype, DTYPE
+from src.config import load_config, get_dtype
 from src.models.pinn import MLP, FourierPINN, DGMNetwork
 from src.models.factory import init_model
 
@@ -46,8 +45,9 @@ def benchmark_jacobian_batch_sizes(model, params, key, dtype, batch_sizes=None):
     U_fn = _make_U_fn(model, params)
     jac_fn = jax.jit(jax.vmap(jax.jacfwd(U_fn)))
 
-    # Warmup (JIT compile)
-    warmup_batch = jnp.ones((1, 3), dtype=dtype)
+    # Warmup with largest batch size so JAX compiles for the right shape
+    max_batch = max(batch_sizes)
+    warmup_batch = random.uniform(key, (max_batch, 3), dtype=dtype)
     _ = jac_fn(warmup_batch)
     jax.block_until_ready(_)
 
