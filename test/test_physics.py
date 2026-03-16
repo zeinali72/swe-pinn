@@ -7,6 +7,7 @@ import unittest
 import jax.numpy as jnp
 
 from src.physics.swe import SWEPhysics
+from src.physics.analytical import h_exact, hu_exact, hv_exact
 
 
 class TestFluxJacobians(unittest.TestCase):
@@ -106,6 +107,61 @@ class TestSource(unittest.TestCase):
 
         # Mass source should equal inflow rate
         self.assertAlmostEqual(float(S[0, 0]), 0.001, places=6)
+
+
+class TestAnalyticalSolutions(unittest.TestCase):
+    """Tests for analytical dam-break solutions (h, hu, hv)."""
+
+    def setUp(self):
+        self.n_manning = 0.03
+        self.u_const = 0.29
+
+    def test_h_exact_behind_wave_front(self):
+        """h > 0 behind the wave front (u*t > x)."""
+        x = jnp.array([0.0, 10.0])
+        t = jnp.array([100.0, 100.0])
+        h = h_exact(x, t, self.n_manning, self.u_const)
+        self.assertTrue(jnp.all(h > 0), f"h should be positive behind wave front: {h}")
+
+    def test_h_exact_ahead_of_wave_front(self):
+        """h = 0 ahead of the wave front (u*t < x)."""
+        x = jnp.array([1000.0])
+        t = jnp.array([1.0])  # wave front at u*t = 0.29
+        h = h_exact(x, t, self.n_manning, self.u_const)
+        self.assertAlmostEqual(float(h[0]), 0.0, places=10)
+
+    def test_hu_exact_equals_h_times_u(self):
+        """hu = h * u_const everywhere."""
+        x = jnp.array([0.0, 5.0, 50.0, 500.0])
+        t = jnp.array([100.0, 100.0, 100.0, 100.0])
+        h = h_exact(x, t, self.n_manning, self.u_const)
+        hu = hu_exact(x, t, self.n_manning, self.u_const)
+        expected = h * self.u_const
+        self.assertTrue(jnp.allclose(hu, expected, atol=1e-10),
+                        f"hu should equal h * u_const: {hu} vs {expected}")
+
+    def test_hu_exact_zero_where_h_zero(self):
+        """hu = 0 where h = 0 (ahead of wave front)."""
+        x = jnp.array([1000.0])
+        t = jnp.array([1.0])
+        hu = hu_exact(x, t, self.n_manning, self.u_const)
+        self.assertAlmostEqual(float(hu[0]), 0.0, places=10)
+
+    def test_hv_exact_always_zero(self):
+        """hv = 0 everywhere (1D problem, no y-velocity)."""
+        x = jnp.array([0.0, 10.0, 100.0])
+        t = jnp.array([100.0, 100.0, 100.0])
+        hv = hv_exact(x, t, self.n_manning, self.u_const)
+        self.assertTrue(jnp.allclose(hv, 0.0),
+                        f"hv should be zero everywhere: {hv}")
+
+    def test_h_exact_at_origin(self):
+        """h at x=0 grows with time (dam-break spreading)."""
+        x = jnp.array([0.0, 0.0])
+        t = jnp.array([100.0, 200.0])
+        h = h_exact(x, t, self.n_manning, self.u_const)
+        self.assertGreater(float(h[1]), float(h[0]),
+                           "h at origin should increase with time")
 
 
 if __name__ == '__main__':
