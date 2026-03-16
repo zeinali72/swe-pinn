@@ -6,8 +6,7 @@ from typing import Dict, Any, Optional, Callable
 
 from src.physics import h_exact
 from src.losses.boundary import (
-    loss_boundary_dirichlet_h,
-    loss_boundary_dirichlet_hu,
+    loss_boundary_dirichlet,
     loss_boundary_neumann_outflow_x,
     loss_boundary_wall_horizontal,
     loss_boundary_wall_vertical,
@@ -24,15 +23,15 @@ def compute_bc_loss(model: nn.Module, params: Dict[str, Any],
     if bc_fn is not None:
         t_left = left_batch[..., 2]
         h_target = bc_fn(t_left)
-        loss_left = loss_boundary_dirichlet_h(model, params, left_batch, h_target)
+        loss_left = loss_boundary_dirichlet(model, params, left_batch, h_target, var_idx=0)
     else:
         u_const = config["physics"]["u_const"]
         n_manning = config["physics"]["n_manning"]
         t_left = left_batch[..., 2]
         h_true = h_exact(0.0, t_left, n_manning, u_const)
         hu_true = h_true * u_const
-        loss_left = (loss_boundary_dirichlet_h(model, params, left_batch, h_true) +
-                     loss_boundary_dirichlet_hu(model, params, left_batch, hu_true))
+        loss_left = (loss_boundary_dirichlet(model, params, left_batch, h_true, var_idx=0) +
+                     loss_boundary_dirichlet(model, params, left_batch, hu_true, var_idx=1))
 
     # Right Boundary (Neumann Outflow)
     loss_right = loss_boundary_neumann_outflow_x(model, params, right_batch)

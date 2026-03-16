@@ -24,7 +24,7 @@ from src.data import (
 )
 from src.losses import (
     compute_pde_loss,
-    loss_boundary_dirichlet_hu,
+    loss_boundary_dirichlet,
     loss_boundary_wall_horizontal,
     loss_boundary_wall_vertical,
     compute_neg_h_loss,
@@ -70,7 +70,7 @@ def make_compute_losses(bc_fn_static):
         Q_target_x = bc_fn_static(t_inflow)
         inflow_width = config["boundary_conditions"]["inflow_discharge_width"]
         flux_target_x = Q_target_x / inflow_width
-        loss_bc_left = loss_boundary_dirichlet_hu(model, params, batch['bc_left'], flux_target_x)
+        loss_bc_left = loss_boundary_dirichlet(model, params, batch['bc_left'], flux_target_x, var_idx=1)
         loss_bc_right = loss_boundary_wall_vertical(model, params, batch['bc_right'])
         loss_bc_top = loss_boundary_wall_horizontal(model, params, batch['bc_top'])
         loss_bc_bottom = loss_boundary_wall_horizontal(model, params, batch['bc_bottom'])

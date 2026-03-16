@@ -25,7 +25,7 @@ from src.data import (
 )
 from src.losses import (
     compute_pde_loss,
-    loss_boundary_dirichlet_h,
+    loss_boundary_dirichlet,
     loss_boundary_wall_horizontal,
     loss_boundary_wall_vertical,
     compute_neg_h_loss,
@@ -76,7 +76,7 @@ def make_compute_losses(bc_fn_static):
         bc_level_abs = bc_fn_static(t_left)
         z_left, _, _ = bathymetry_fn(batch['bc_left'][..., 0], batch['bc_left'][..., 1])
         h_target_left = jnp.maximum(0.0, bc_level_abs - z_left)
-        loss_bc_left = loss_boundary_dirichlet_h(model, params, batch['bc_left'], h_target_left)
+        loss_bc_left = loss_boundary_dirichlet(model, params, batch['bc_left'], h_target_left, var_idx=0)
         loss_bc_right = loss_boundary_wall_vertical(model, params, batch['bc_right'])
         loss_bc_top = loss_boundary_wall_horizontal(model, params, batch['bc_top'])
         loss_bc_bottom = loss_boundary_wall_horizontal(model, params, batch['bc_bottom'])
