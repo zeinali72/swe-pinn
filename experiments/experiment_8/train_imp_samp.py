@@ -66,6 +66,55 @@ from src.training import train_step_jitted, make_scan_body, maybe_batch_data
 from src.physics import SWEPhysics 
 
 # ==============================================================================
+# Helper: Shared PDE residual core (single Jacobian computation)
+# ==============================================================================
+def _compute_pde_squared_errors(model: nn.Module, params: Dict[str, Any],
+                                pde_batch: jnp.ndarray,
+                                config: FrozenDict) -> jnp.ndarray:
+    """Compute per-point squared PDE residual errors with a single Jacobian pass.
+
+    Returns:
+        (N,) array of sum-of-squared residual errors per collocation point.
+    """
+    def U_fn(pts):
+        return model.apply(params, pts, train=False)
+
+    U_pred = U_fn(pde_batch)
+
+    # Single Jacobian computation — the dominant cost per call
+    jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
+    dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
+
+    x_batch = pde_batch[..., 0]
+    y_batch = pde_batch[..., 1]
+
+    _, bed_grad_x, bed_grad_y = bathymetry_fn(x_batch, y_batch)
+
+    eps = config["numerics"]["eps"]
+    physics = SWEPhysics(U_pred, eps=eps)
+
+    g = config["physics"]["g"]
+    n_manning = config["physics"]["n_manning"]
+    inflow = config["physics"]["inflow"]
+
+    JF, JG = physics.flux_jac(g=g)
+    div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
+    div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
+
+    S = physics.source(g=g, n_manning=n_manning, inflow=inflow,
+                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
+
+    residual = dU_dt + div_F + div_G - S
+
+    # Mask out dry areas for stability (h < eps)
+    h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
+    final_residual = residual * h_mask[..., None]
+
+    # Sum of squared errors of the 3 equations per point — shape (N,)
+    return jnp.sum(final_residual ** 2, axis=1)
+
+
+# ==============================================================================
 # Helper: Vectorized Residual Calculation for Importance Sampling
 # ==============================================================================
 def compute_pde_residual_vector(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray,
@@ -75,48 +124,7 @@ def compute_pde_residual_vector(model: nn.Module, params: Dict[str, Any], pde_ba
     Used for Importance Sampling evaluation.
     Returns: (Batch_Size,) array of errors.
     """
-    # Create physics instance
-    U_pred = model.apply({'params': params['params']}, pde_batch, train=False)
-    
-    def U_fn(pts):
-        return model.apply({'params': params['params']}, pts, train=False)
-
-    # Calculate Gradients
-    jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
-    dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
-
-    x_batch = pde_batch[..., 0]
-    y_batch = pde_batch[..., 1]
-
-    # Bathymetry gradients
-    _, bed_grad_x, bed_grad_y = bathymetry_fn(x_batch, y_batch)
-
-    eps = config["numerics"]["eps"]
-    physics = SWEPhysics(U_pred, eps=eps)
-
-    g = config["physics"]["g"]
-    n_manning = config["physics"]["n_manning"]
-    inflow = config["physics"]["inflow"]
-
-    JF, JG = physics.flux_jac(g=g)
-    div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
-    div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
-
-    S = physics.source(g=g, n_manning=n_manning, inflow=inflow, 
-                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
-
-    # Residual vector: [N, 3]
-    residual = (dU_dt + div_F + div_G - S)
-    
-    # Mask out dry areas for stability (h < eps)
-    h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
-    final_residual = residual * h_mask[..., None]
-    
-    # Reduce to scalar error per point: Sum of squared errors of the 3 equations
-    # Shape: (N,)
-    error_per_point = jnp.sum(final_residual ** 2, axis=1)
-    
-    return error_per_point
+    return _compute_pde_squared_errors(model, params, pde_batch, config)
 
 # JIT the residual function for fast evaluation
 get_residuals_jitted = jax.jit(compute_pde_residual_vector, static_argnums=(0, 3))
@@ -124,49 +132,17 @@ get_residuals_jitted = jax.jit(compute_pde_residual_vector, static_argnums=(0, 3
 # ==============================================================================
 # Helper: Weighted PDE Loss (Corrected for Importance Sampling)
 # ==============================================================================
-def compute_weighted_pde_loss(model: nn.Module, params: FrozenDict, pde_batch: jnp.ndarray, 
+def compute_weighted_pde_loss(model: nn.Module, params: FrozenDict, pde_batch: jnp.ndarray,
                               weights: jnp.ndarray, config: FrozenDict) -> float:
     """
     Computes the weighted PDE loss.
     Essential for Unbiased Importance Sampling.
     """
-    def U_fn(pts):
-        return model.apply(params, pts, train=False)
+    squared_error = _compute_pde_squared_errors(model, params, pde_batch, config)
 
-    U_pred = U_fn(pde_batch)
-
-    jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
-    dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
-
-    x_batch = pde_batch[..., 0]
-    y_batch = pde_batch[..., 1]
-
-    _, bed_grad_x, bed_grad_y = bathymetry_fn(x_batch, y_batch)
-
-    eps = config["numerics"]["eps"]
-    physics = SWEPhysics(U_pred, eps=eps)
-
-    g = config["physics"]["g"]
-    n_manning = config["physics"]["n_manning"]
-    inflow = config["physics"]["inflow"]
-
-    JF, JG = physics.flux_jac(g=g)
-    div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
-    div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
-
-    S = physics.source(g=g, n_manning=n_manning, inflow=inflow, 
-                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
-
-    residual = (dU_dt + div_F + div_G - S)
-    h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
-    final_residual = residual * h_mask[..., None]
-    
-    # Squared error per point
-    squared_error = jnp.sum(final_residual ** 2, axis=1)
-    
     # Apply Importance Weights: Mean(Error * Weights)
     weighted_mse = jnp.mean(squared_error * weights)
-    
+
     return weighted_mse
 
 # ==============================================================================
@@ -524,17 +500,18 @@ def main(config_path: str):
                 num_eval_batches = int(np.ceil(POOL_SIZE / EVAL_BATCH_SIZE))
                 all_residuals_list = []
                 
+                # Enqueue all batches first to avoid serialising GPU work
+                gpu_results = []
                 for i in range(num_eval_batches):
                     idx_start = i * EVAL_BATCH_SIZE
                     idx_end = min((i + 1) * EVAL_BATCH_SIZE, POOL_SIZE)
-                    
-                    batch_pts_cpu = pool_pde_cpu[idx_start:idx_end]
-                    batch_pts_gpu = jax.device_put(batch_pts_cpu)
-                    
-                    batch_errs_gpu = get_residuals_jitted(model, params, batch_pts_gpu, cfg)
-                    batch_errs_cpu = np.array(batch_errs_gpu.block_until_ready())
-                    
-                    all_residuals_list.append(batch_errs_cpu)
+
+                    batch_pts_gpu = jax.device_put(pool_pde_cpu[idx_start:idx_end])
+                    gpu_results.append(get_residuals_jitted(model, params, batch_pts_gpu, cfg))
+
+                # Collect results after all batches have been dispatched
+                for res in gpu_results:
+                    all_residuals_list.append(np.array(res.block_until_ready()))
                 
                 all_residuals = np.concatenate(all_residuals_list, axis=0)
                 
