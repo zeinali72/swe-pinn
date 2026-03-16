@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Tuple
 import jax.numpy as jnp
 from jax import random
 
-from src.config import DTYPE
+from src.config import get_dtype
 from src.data import get_batches_tensor
 
 
@@ -76,12 +76,12 @@ def sample_and_batch(
     if n_points // batch_size > 0:
         pts = sample_fn(key, n_points, *sample_args)
         return get_batches_tensor(key, pts, batch_size, num_batches)
-    return jnp.zeros((num_batches, 0, feature_dim), dtype=DTYPE)
+    return jnp.zeros((num_batches, 0, feature_dim), dtype=get_dtype())
 
 
 def empty_batch(num_batches: int, feature_dim: int = 3) -> jnp.ndarray:
     """Return a zero-size placeholder batch ``(num_batches, 0, feature_dim)``."""
-    return jnp.zeros((num_batches, 0, feature_dim), dtype=DTYPE)
+    return jnp.zeros((num_batches, 0, feature_dim), dtype=get_dtype())
 
 
 def maybe_batch_data(
@@ -94,4 +94,4 @@ def maybe_batch_data(
     """Batch training data points, or return an empty placeholder if data-free."""
     if not data_free and data_points_full is not None:
         return get_batches_tensor(key, data_points_full, batch_size, num_batches)
-    return jnp.zeros((num_batches, 0, 6), dtype=DTYPE)
+    return jnp.zeros((num_batches, 0, 6), dtype=get_dtype())

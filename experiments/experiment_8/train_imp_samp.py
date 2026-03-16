@@ -36,7 +36,7 @@ import matplotlib.pyplot as plt
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 if project_root not in sys.path: sys.path.insert(0, project_root)
 
-from src.config import load_config, DTYPE
+from src.config import load_config, get_dtype
 from src.data import (
     get_batches_tensor,
     get_sample_count,
@@ -182,7 +182,7 @@ def make_compute_losses(bc_fn_static):
         terms['bc'] = loss_bc_inflow + loss_bc_wall + loss_bldg
         terms['building'] = loss_bldg
 
-        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=get_dtype()))
         if not data_free and data_batch_data.shape[0] > 0:
             terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
@@ -302,7 +302,7 @@ def main(config_path: str):
     if has_data_loss: 
         if os.path.exists(training_data_file):
             try:
-                data_points_full = jnp.load(training_data_file).astype(DTYPE) 
+                data_points_full = jnp.load(training_data_file).astype(get_dtype()) 
                 if data_points_full.shape[0] == 0:
                      data_points_full = None
                      has_data_loss = False
@@ -323,7 +323,7 @@ def main(config_path: str):
 
     if os.path.exists(validation_data_file):
         try:
-            _, val_pts_batch, val_targets = load_validation_data(validation_data_file, dtype=DTYPE)
+            _, val_pts_batch, val_targets = load_validation_data(validation_data_file, dtype=get_dtype())
             val_h_true = val_targets[:, 0]
             u_temp = val_targets[:, 1]
             v_temp = val_targets[:, 2]
@@ -412,7 +412,7 @@ def main(config_path: str):
     
     active_pde_pts = jnp.array(pool_pde_cpu[active_indices])
     # Initialize weights to 1.0 (Uniform sampling initially)
-    active_pde_weights = jnp.ones((n_pde,), dtype=DTYPE)
+    active_pde_weights = jnp.ones((n_pde,), dtype=get_dtype())
 
     # --- Optimizer ---
     reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
@@ -696,7 +696,7 @@ def main(config_path: str):
                 'bc_upstream': domain_sampler.sample_boundary(eval_keys[2], n_eval, t_range, 'upstream'),
                 'bc_wall': domain_sampler.sample_boundary(eval_keys[3], n_eval, t_range, 'wall'),
                 'bc_building': domain_sampler.sample_boundary(eval_keys[4], n_eval, t_range, 'building'),
-                'data': jnp.empty((0, 6), dtype=DTYPE),
+                'data': jnp.empty((0, 6), dtype=get_dtype()),
             }
             all_physics_losses = compute_losses_fn(model, eval_params, eval_batch, cfg, data_free=True)
             all_physics_losses = {k: float(v) for k, v in all_physics_losses.items()}
@@ -753,7 +753,7 @@ def main(config_path: str):
                     aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
 
                 print("Generating plots...")
-                t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
+                t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
                 output_points = []
 
                 output_csv_path = resolve_scenario_asset_path(

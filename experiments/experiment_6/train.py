@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Local application imports
-from src.config import DTYPE
+from src.config import get_dtype
 from src.data import (
     get_batches_tensor,
     bathymetry_fn,
@@ -74,7 +74,7 @@ def make_compute_losses(bc_fn_static):
         loss_bc_bottom = loss_boundary_wall_horizontal(model, params, batch['bc_bottom'])
         terms['bc'] = loss_bc_inflow + loss_bc_left_wall + loss_bc_right + loss_bc_top + loss_bc_bottom
 
-        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=get_dtype()))
         if not data_free and data_batch_data.shape[0] > 0:
             terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
@@ -196,7 +196,7 @@ def main(config_path: str):
         if bot_bs > 0:
             bc_left_wall_bottom = sample_and_batch(l_wall_bot_key, sample_lhs, n_bc_left_bot, bot_bs, num_batches, (0., 0.), (0., y_inflow_start), t_range)
         else:
-            bc_left_wall_bottom = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+            bc_left_wall_bottom = jnp.zeros((num_batches, 0, 3), dtype=get_dtype())
         bc_left_wall_above = sample_and_batch(l_wall_top_key, sample_lhs, n_bc_left_top, top_bs, num_batches, (0., 0.), (y_inflow_end, domain_cfg["ly"]), t_range)
         bc_left_wall = jnp.concatenate([bc_left_wall_bottom, bc_left_wall_above], axis=1)
         bc_right = sample_and_batch(r_key, sample_lhs, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range)
@@ -239,7 +239,7 @@ def main(config_path: str):
             'bc_right': sample_lhs(keys[3], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
             'bc_bottom': sample_lhs(keys[4], n_eval, x_range, (0., 0.), t_range),
             'bc_top': sample_lhs(keys[4], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
-            'data': jnp.empty((0, 6), dtype=DTYPE),
+            'data': jnp.empty((0, 6), dtype=get_dtype()),
         }
         return compute_losses_fn(model, params, batch, cfg, data_free=True)
 
@@ -269,7 +269,7 @@ def main(config_path: str):
 
     def plot_fn(final_params):
         print("Generating Experiment 6 plots...")
-        t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
+        t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
         aim_tracker = loop_result["aim_tracker"]
         final_epoch = loop_result["epoch"]
         output_csv_path = resolve_configured_asset_path(
