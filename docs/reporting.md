@@ -1,6 +1,6 @@
 # Reporting Metrics Schema
 
-This document describes the metrics logged by `src/reporting.py` to [Aim](https://aimstack.io/) during training.
+This document describes the metrics logged by `src/monitoring/aim_tracker.py` to [Aim](https://aimstack.io/) during training.
 
 ## Tracking Axes
 
@@ -21,48 +21,52 @@ To plot any metric against wall-clock time in the Aim UI, add `system/elapsed_ti
 | Metric Name | Description | Source |
 |-------------|-------------|--------|
 | `system/elapsed_time` | Seconds since training start | All experiments |
-| `system/epoch_time` | Duration of the current epoch in seconds | All experiments |
+| `optim/epoch_time_sec` | Duration of the current epoch in seconds | All experiments |
 
 ### Training Metrics (`context: {subset: 'train'}`)
 
 | Metric Name | Description | Source |
 |-------------|-------------|--------|
-| `training/learning_rate` | Current optimizer learning rate | All experiments |
+| `optim/lr` | Current optimizer learning rate | All experiments |
 
 ### Loss Metrics (`context: {subset: 'train'}`)
 
 | Metric Name | Description | Source |
 |-------------|-------------|--------|
-| `losses/epoch_avg/total_weighted` | Weighted sum of all loss terms | All experiments |
-| `losses/epoch_avg/unweighted/{key}` | Individual unweighted loss terms | All experiments |
+| `loss/total` | Weighted sum of all loss terms | All experiments |
+| `loss/{key}` | Individual unweighted loss terms | All experiments |
 
 Common loss keys: `pde`, `ic`, `bc`, `data`, `neg_h`, `building_bc`. The exact set depends on the experiment configuration and which loss weights are non-zero.
-
-### GradNorm Metrics (`context: {subset: 'train'}`)
-
-| Metric Name | Description | Source |
-|-------------|-------------|--------|
-| `gradnorm/weight_{key}` | Adaptive loss weight for each term | Experiments using GradNorm |
-
-Only logged when the `gradnorm_weights` key is present in the metrics dict (i.e., when using GradNorm loss weighting strategy).
 
 ### Validation Metrics (`context: {subset: 'validation'}`)
 
 | Metric Name | Description | Source |
 |-------------|-------------|--------|
-| `validation/nse` | Nash-Sutcliffe Efficiency (water depth) | Experiments 1-7 |
-| `validation/rmse` | Root Mean Square Error (water depth) | Experiments 1-7 |
-| `validation/nse_h` | NSE for water depth h | Experiment 8 |
-| `validation/nse_hu` | NSE for specific discharge hu | Experiment 8 |
-| `validation/nse_hv` | NSE for specific discharge hv | Experiment 8 |
-| `validation/combined_nse` | Weighted combination of component NSEs | Experiment 8 |
-| `validation/rmse_h` | RMSE for water depth h | Experiment 8 |
+| `val/nse_h` | NSE for water depth h | All experiments |
+| `val/rmse_h` | RMSE for water depth h | All experiments |
+| `val/nse_hu` | NSE for specific discharge hu | Experiments with hu/hv targets |
+| `val/rmse_hu` | RMSE for specific discharge hu | Experiments with hu/hv targets |
+| `val/nse_hv` | NSE for specific discharge hv | Experiments with hu/hv targets |
+| `val/rmse_hv` | RMSE for specific discharge hv | Experiments with hu/hv targets |
 
-Validation metrics are handled generically: `log_metrics()` iterates all keys in the `validation_metrics` dict, so any new validation metric added to an experiment will be automatically tracked.
+Validation metrics are handled generically: `log_epoch()` iterates all keys in the `val_metrics` dict, so any new validation metric added to an experiment will be automatically tracked.
+
+### Diagnostics (`context: {subset: 'diagnostics'}`)
+
+| Metric Name | Description | Source |
+|-------------|-------------|--------|
+| `diagnostics/negative_h_{key}` | Negative depth statistics (count, fraction, min, mean) | All experiments |
+
+### Best-Model Tracking (no context)
+
+| Metric Name | Description | Source |
+|-------------|-------------|--------|
+| `best/nse_h_value` | NSE at new best-NSE checkpoint | All experiments |
+| `best/loss_value` | Loss at new best-loss checkpoint | All experiments |
 
 ## Console Output
 
-`print_epoch_stats()` prints a single-line summary per epoch:
+`ConsoleLogger.print_epoch()` (in `src/monitoring/console_logger.py`) prints a single-line summary per epoch:
 
 ```
 Epoch    42 | Step    4200 | Elapsed: 123.4s | Epoch Time: 2.50s | Total Loss: 1.2345e-03 | PDE: 8.901e-04 | IC: 3.444e-04 | NSE: 0.9512 | RMSE: 0.0034
@@ -72,7 +76,7 @@ Loss terms are printed dynamically from a dict; only non-zero terms appear. This
 
 ## Final Summary
 
-`print_final_summary()` reports the best models found during training:
+`ConsoleLogger.print_completion_summary()` reports the best models found during training:
 
 - **Best NSE Model**: The checkpoint with the highest validation NSE
 - **Best Total Loss Model**: The checkpoint with the lowest total weighted loss
