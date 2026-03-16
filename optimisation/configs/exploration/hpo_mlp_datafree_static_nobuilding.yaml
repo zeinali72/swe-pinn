@@ -3,7 +3,6 @@
 
 hpo_settings:
   data_free: true
-  enable_gradnorm: false
 
 training:
   epochs: 2000
@@ -38,9 +37,6 @@ loss_weights: # Static weights (Optuna will suggest factors relative to PDE)
   bc_weight: 1.0
   neg_h_weight: 1.0
   data_weight: 0.0 # data_free is true
-
-gradnorm: # Ignored
-  learning_rate: 0.01
 
 plotting: # Fixed
   nx_val: 101

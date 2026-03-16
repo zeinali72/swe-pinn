@@ -51,7 +51,6 @@ def main():
     opt_epochs = base_config_dict.get("training", {}).get("epochs", 5000)
 
     print(f"Mode: DATA-FREE (Physics Only)")
-    print(f"GradNorm: Disabled")
     print(f"Sensitivity trials will run for {opt_epochs} epochs each.")
 
     # --- Setup Optuna Study ---

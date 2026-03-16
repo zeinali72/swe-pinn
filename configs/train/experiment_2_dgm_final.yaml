@@ -55,6 +55,4 @@ loss_weights:
   neg_h_weight: 371.8026663914469
   building_bc_weight: 216.73921695684155
   data_weight: 0.0
-gradnorm:
-  enable: false
 data_free: true
