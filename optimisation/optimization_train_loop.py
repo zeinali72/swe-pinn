@@ -374,11 +374,13 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
 
         # --- Epoch End Validation & Pruning ---
         validation_freq = trial_cfg.get("training", {}).get("validation_freq", 1) # Validate less frequently
+        # Reduce Optuna report frequency for remote storage to limit DB round-trips
+        report_interval = trial_cfg.get("training", {}).get("hpo_report_interval", 1)
         if (epoch + 1) % validation_freq == 0:
             current_nse = -jnp.inf # Default if validation fails/skipped
 
             # This single block now handles both loaded .npy data and pre-computed analytical data
-            if validation_data_loaded: 
+            if validation_data_loaded:
                 try:
                     U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
                     h_pred_val = U_pred_val[..., 0]
@@ -386,7 +388,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                 except Exception as e_val:
                     print(f"Trial {trial.number}, Epoch {epoch+1}: Warning - NSE calculation error: {e_val}")
                     current_nse = -jnp.inf
-            
+
             # Else (e.g., building case with no validation data), current_nse remains -inf
 
             if jnp.isnan(current_nse):
@@ -395,11 +397,12 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
 
             best_nse_trial = max(best_nse_trial, current_nse if current_nse > -jnp.inf else -1.0) # Keep track of best valid NSE
 
-            # Optuna Pruning - Report the best NSE seen so far in this trial
-            trial.report(best_nse_trial, epoch)
-            if trial.should_prune():
-                 print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
-                 raise optuna.exceptions.TrialPruned()
+            # Optuna Pruning - Report every report_interval validations to reduce DB calls
+            if (epoch + 1) % (validation_freq * report_interval) == 0:
+                trial.report(best_nse_trial, epoch)
+                if trial.should_prune():
+                     print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
+                     raise optuna.exceptions.TrialPruned()
 
             # Optional: Log progress less frequently
             if (epoch + 1) % (validation_freq*200) == 0:

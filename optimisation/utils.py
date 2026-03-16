@@ -22,24 +22,41 @@ def sanitize_for_yaml(data):
 def setup_study_storage(args_storage, project_root):
     """Resolve the Optuna storage URL, creating the database directory if needed.
 
+    Supports SQLite (default) and PostgreSQL backends.  When ``args_storage``
+    is *None*, the ``OPTUNA_STORAGE`` environment variable is checked before
+    falling back to a local SQLite database.
+
     Parameters
     ----------
     args_storage : str or None
-        The ``--storage`` CLI argument.  When *None*, a default SQLite path
-        under ``optimisation/database/`` is used.
+        The ``--storage`` CLI argument.  When *None*, falls back to the
+        ``OPTUNA_STORAGE`` env var, then to a default SQLite path under
+        ``optimisation/database/``.
     project_root : str
         Absolute path to the repository root.
 
     Returns
     -------
     str
-        A ``sqlite:///`` storage URL suitable for ``optuna.create_study``.
+        A storage URL suitable for ``optuna.create_study``.
+
+    Examples
+    --------
+    >>> setup_study_storage(None, "/repo")               # default SQLite
+    >>> setup_study_storage("sqlite:///my.db", "/repo")   # explicit SQLite
+    >>> setup_study_storage("postgresql://u:p@host/db", "/repo")  # PostgreSQL
     """
+    if args_storage is None:
+        args_storage = os.environ.get("OPTUNA_STORAGE")
+
     if args_storage is None:
         db_dir = os.path.join(project_root, "optimisation", "database")
         os.makedirs(db_dir, exist_ok=True)
         db_file = os.path.join(db_dir, "all_my_studies.db")
         return f"sqlite:///{db_file}"
+
+    if args_storage.startswith("postgresql://") or args_storage.startswith("postgres://"):
+        return args_storage
 
     storage_path = args_storage
     if storage_path.startswith("sqlite:///"):
@@ -50,4 +67,34 @@ def setup_study_storage(args_storage, project_root):
         db_dir = os.path.dirname(db_file)
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
-    return storage_path
+        return storage_path
+
+    raise ValueError(
+        f"Unsupported storage URL: {args_storage}. "
+        "Use sqlite:/// or postgresql://"
+    )
+
+
+def is_remote_storage(storage_url):
+    """Return True if storage_url points to a remote (non-SQLite) backend."""
+    return not storage_url.startswith("sqlite")
+
+
+def create_storage(storage_url):
+    """Create an ``optuna.storages.RDBStorage`` with appropriate settings.
+
+    For remote backends (PostgreSQL), enables heartbeat and retry so that
+    preempted trials (e.g. on Google Colab) are detected and retried.
+    """
+    import optuna
+
+    if is_remote_storage(storage_url):
+        return optuna.storages.RDBStorage(
+            url=storage_url,
+            heartbeat_interval=120,
+            grace_period=600,
+            failed_trial_callback=optuna.storages.RetryFailedTrialCallback(
+                max_retry=1
+            ),
+        )
+    return storage_url

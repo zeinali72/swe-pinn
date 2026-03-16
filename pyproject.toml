@@ -19,5 +19,8 @@ dependencies = [
     "seaborn"
 ]
 
+[project.optional-dependencies]
+postgres = ["psycopg2-binary>=2.9"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
