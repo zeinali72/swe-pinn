@@ -1,9 +1,9 @@
 """Shared training-loop body and post-training routines."""
 import os
-import copy
 import time
 import shutil
 
+import jax
 import jax.numpy as jnp
 from jax import lax
 
@@ -162,7 +162,7 @@ def run_training_loop(
                     'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()},
                     'validation_metrics': dict(val_metrics),
                 })
-                best_params_nse = copy.deepcopy(params)
+                best_params_nse = jax.tree.map(jnp.copy, params)
 
             if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
                 best_loss_stats.update({
@@ -172,7 +172,7 @@ def run_training_loop(
                     'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()},
                     'validation_metrics': dict(val_metrics),
                 })
-                best_params_loss = copy.deepcopy(params)
+                best_params_loss = jax.tree.map(jnp.copy, params)
 
             freq = cfg.get("reporting", {}).get("epoch_freq", 100)
             epoch_time = time.time() - epoch_start_time
