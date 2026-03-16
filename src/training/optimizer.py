@@ -10,9 +10,9 @@ def create_optimizer(cfg, num_batches=None):
     cfg : FrozenDict
         Full experiment config.
     num_batches : int, optional
-        Batches per epoch.  Used for ``accumulation_size`` when
-        ``accumulation_factor`` is present in config instead of a fixed
-        ``accumulation_size``.
+        Batches per epoch.  Multiplied by ``accumulation_factor`` to get
+        the step count for reduce_on_plateau.  Ignored when the config
+        provides an absolute ``accumulation_size`` instead.
 
     Returns
     -------
@@ -20,7 +20,7 @@ def create_optimizer(cfg, num_batches=None):
     """
     rop_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
 
-    # Resolve accumulation_size: either explicit or num_batches * factor
+    # accumulation_size (absolute) takes priority; otherwise factor * num_batches
     if "accumulation_size" in rop_cfg:
         accum = int(rop_cfg["accumulation_size"])
     elif num_batches is not None:

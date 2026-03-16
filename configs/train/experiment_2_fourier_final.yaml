@@ -31,7 +31,7 @@ training:
     rtol: 1e-4                     # Relative tolerance for measuring new optimum
     atol: 0.0                      # Absolute tolerance for measuring new optimum
     cooldown: 1                  # Number of steps to wait before resuming normal operation after lr has been reduced
-    accumulation_size: 201          # Number of steps to accumulate the metric (loss) before checking for plateau
+    accumulation_size: 201          # Absolute step count (HPO-optimized); overrides accumulation_factor
     min_scale: 1e-4                # Minimum scaling factor allowed
 building:
   x_max: 375.0
