@@ -13,8 +13,6 @@ from functools import partial
 import time
 import yaml
 from flax.core import unfreeze, FrozenDict
-import numpy as np
-import jax.numpy as jnp
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
@@ -22,6 +20,7 @@ if project_root not in sys.path:
 
 try:
     from optimisation.objective_function import objective
+    from optimisation.utils import sanitize_for_yaml, setup_study_storage
     from src.config import load_config
 except ImportError as e:
     print("Error: Could not import necessary modules.")
@@ -59,21 +58,7 @@ def main():
     base_config_dict["training"]["epochs"] = opt_epochs
 
     # --- Setup Optuna Study ---
-    if args.storage is None:
-        db_dir = os.path.join(project_root, "optimisation", "database")
-        os.makedirs(db_dir, exist_ok=True)
-        db_file = os.path.join(db_dir, "all_my_studies.db")
-        storage_path = f"sqlite:///{db_file}"
-    else:
-        storage_path = args.storage
-        if storage_path.startswith("sqlite:///"):
-            db_file = storage_path.split("sqlite:///")[-1]
-            if not os.path.isabs(db_file):
-                db_file = os.path.join(project_root, db_file)
-                storage_path = f"sqlite:///{db_file}"
-            db_dir = os.path.dirname(db_file)
-            if db_dir and not os.path.exists(db_dir):
-                os.makedirs(db_dir, exist_ok=True)
+    storage_path = setup_study_storage(args.storage, project_root)
 
     print("Using QMCSampler for uniform exploration (Sensitivity Analysis).")
     sampler = optuna.samplers.QMCSampler()
@@ -133,13 +118,6 @@ def main():
 
             if 'full_config' in best_trial.user_attrs:
                 best_trial_config_dict = best_trial.user_attrs['full_config']
-                
-                def sanitize_for_yaml(data):
-                    if isinstance(data, (jnp.ndarray, np.ndarray)): return data.tolist()
-                    if isinstance(data, (jnp.float32, jnp.float64, np.float32, np.float64)): return float(data)
-                    if isinstance(data, dict): return {k: sanitize_for_yaml(v) for k, v in data.items()}
-                    if isinstance(data, list): return [sanitize_for_yaml(item) for item in data]
-                    return data
                 
                 if isinstance(best_trial_config_dict, FrozenDict):
                      best_trial_config_dict = unfreeze(best_trial_config_dict)
