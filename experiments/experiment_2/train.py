@@ -36,7 +36,7 @@ from src.losses import (
 )
 from src.physics import h_exact
 from src.utils import (
-    nse, rmse, mask_points_inside_building,
+    nse, rmse, relative_l2, mask_points_inside_building,
     plot_comparison_scatter_2d
 )
 from src.training import (
@@ -125,12 +125,18 @@ def make_validation_fn(cfg, validation_data_loaded, val_points, h_true_val,
                 h_pred_val = U_pred_val[..., 0]
                 nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))
-                metrics = {'nse_h': nse_val, 'rmse_h': rmse_val}
+                metrics = {
+                    'nse_h': nse_val,
+                    'rmse_h': rmse_val,
+                    'rel_l2_h': float(relative_l2(h_pred_val, h_true_val)),
+                }
                 if hu_true_val is not None and hv_true_val is not None:
                     metrics['nse_hu'] = float(nse(U_pred_val[..., 1], hu_true_val))
                     metrics['rmse_hu'] = float(rmse(U_pred_val[..., 1], hu_true_val))
+                    metrics['rel_l2_hu'] = float(relative_l2(U_pred_val[..., 1], hu_true_val))
                     metrics['nse_hv'] = float(nse(U_pred_val[..., 2], hv_true_val))
                     metrics['rmse_hv'] = float(rmse(U_pred_val[..., 2], hv_true_val))
+                    metrics['rel_l2_hv'] = float(relative_l2(U_pred_val[..., 2], hv_true_val))
             except Exception as exc:
                 print(f"Warning: Validation calculation failed: {exc}")
         if not metrics:

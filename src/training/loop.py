@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-from src.utils import nse, rmse, save_model, ask_for_confirmation
+from src.utils import nse, rmse, relative_l2, save_model, ask_for_confirmation
 from src.utils.profiling import EpochTimer, log_memory_usage
 from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
@@ -151,15 +151,21 @@ def run_training_loop(
                         U_val = _apply_min_depth(U_val, min_depth)
                         nse_val = nse(U_val[..., 0], h_true_val_all)
                         rmse_val = rmse(U_val[..., 0], h_true_val_all)
-                        val_metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+                        val_metrics = {
+                            'nse_h': float(nse_val),
+                            'rmse_h': float(rmse_val),
+                            'rel_l2_h': float(relative_l2(U_val[..., 0], h_true_val_all)),
+                        }
                         # Compute hu/hv metrics when full targets [h, u, v] are available
                         if val_targets_all is not None and val_targets_all.shape[-1] >= 3:
                             hu_true = val_targets_all[..., 0] * val_targets_all[..., 1]
                             hv_true = val_targets_all[..., 0] * val_targets_all[..., 2]
                             val_metrics['nse_hu'] = float(nse(U_val[..., 1], hu_true))
                             val_metrics['rmse_hu'] = float(rmse(U_val[..., 1], hu_true))
+                            val_metrics['rel_l2_hu'] = float(relative_l2(U_val[..., 1], hu_true))
                             val_metrics['nse_hv'] = float(nse(U_val[..., 2], hv_true))
                             val_metrics['rmse_hv'] = float(rmse(U_val[..., 2], hv_true))
+                            val_metrics['rel_l2_hv'] = float(relative_l2(U_val[..., 2], hv_true))
                     except Exception:
                         pass
                 if not val_metrics:

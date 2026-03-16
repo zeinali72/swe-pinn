@@ -234,3 +234,24 @@ All hyperparameters are specified in YAML config files. The config structure inc
 - **JIT compilation**: First call is slow due to tracing; subsequent calls are fast. Avoid Python side effects inside JIT-compiled functions.
 - **Memory**: Large validation datasets (multi-GB) use memory-mapped numpy arrays. Use `np.load(..., mmap_mode='r')` for big files.
 - **Float precision**: Some physics computations require `float64`. Set via `config.device.dtype`.
+
+
+Experimental Programme
+This project runs 11 experiments across 3 phases. The authoritative specification for all metrics, plots, tracked values, and module structure lives in:
+docs/experimental_programme_reference.md
+Always consult this file when:
+
+Implementing any evaluation metric (definitions, formulas, units, which experiments use it)
+Creating any inference plot (plot type, axes, colour conventions, which experiments need it)
+Setting up Aim tracking for a training run (what to log, at what frequency)
+Building or modifying any module in evaluation/
+Planning what outputs an experiment run should produce
+
+Key conventions from that document:
+
+All accuracy metrics (NSE, RMSE, MAE, Rel L2) reported separately for h, hu, hv
+Metrics are grouped: A (accuracy), B (conservation), C (boundary), D (cost), E (HPO), F (data)
+Plots are grouped: P1 (time series), P2 (spatial maps), P3 (comparisons), P4 (HPO)
+Tracked values grouped: T1 (losses), T2 (optimisation state), T3 (validation), T4 (HPO trials)
+The experiment-to-module mapping table shows exactly which modules each experiment needs
+Colour palette: Exeter (Deep Green #003C3C, Teal #007D69, Mint #00C896) + Blue Heart (Navy #0D2B45, Ocean #1B5E8A, Sky #4FA3D1). Arial. 300 DPI.
