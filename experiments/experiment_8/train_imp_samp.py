@@ -652,14 +652,14 @@ def main(config_path: str):
                 console.print_epoch(
                     epoch, cfg["training"]["epochs"],
                     avg_losses_unweighted, avg_total_weighted_loss,
-                    current_lr, 0.0,
+                    current_lr,
                     val_metrics, neg_depth.get('fraction', 0.0), epoch_time
                 )
 
             aim_tracker.log_epoch(
                 epoch=epoch, step=global_step,
                 losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
-                val_metrics=val_metrics, lr=current_lr, grad_norm=0.0,
+                val_metrics=val_metrics, lr=current_lr,
                 epoch_time=epoch_time, elapsed_time=time.time() - start_time,
                 neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
             )
