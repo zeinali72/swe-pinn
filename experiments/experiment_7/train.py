@@ -21,9 +21,7 @@ import matplotlib.pyplot as plt
 from src.config import load_config, get_dtype
 from src.data import (
     get_batches_tensor,
-    load_boundary_condition,
     IrregularDomainSampler,
-    load_bathymetry,
 )
 from src.losses import (
     compute_pde_loss,
@@ -33,6 +31,7 @@ from src.losses import (
     compute_data_loss,
 )
 from src.utils import nse, rmse
+from src.utils.plotting import plot_gauge_timeseries
 from src.training import (
     apply_irregular_domain_bounds,
     apply_output_scales,
@@ -44,6 +43,7 @@ from src.training import (
     get_experiment_name,
     get_sampling_count_from_config,
     init_model_from_config,
+    load_terrain_assets,
     load_training_data,
     load_validation_from_file,
     train_step_jitted,

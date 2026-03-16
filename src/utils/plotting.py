@@ -1,10 +1,13 @@
 """Visualization utilities for PINN predictions."""
+import os
+
 import jax.numpy as jnp
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.tri as tri
 import seaborn as sns
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from src.physics import h_exact
 
@@ -152,3 +155,95 @@ def plot_comparison_scatter_2d(
         plt.savefig(filename, dpi=200, bbox_inches='tight')
         print(f"  Comparison plot saved as {filename}")
     plt.close(fig)
+
+
+def plot_gauge_timeseries(
+    x: float,
+    y: float,
+    name: str,
+    filename: str,
+    *,
+    model,
+    params,
+    t_plot: jnp.ndarray,
+    cfg: Dict[str, Any],
+    results_dir: str,
+    aim_tracker=None,
+    epoch: Optional[int] = None,
+    full_val_data=None,
+    color: Optional[str] = None,
+) -> None:
+    """Plot predicted water-depth time series at a single gauge location.
+
+    This consolidates the ``plot_gauge()`` nested function that was duplicated
+    across experiments 3-8.
+
+    Parameters
+    ----------
+    x, y : float
+        Spatial coordinates of the gauge point.
+    name : str
+        Human-readable label for the gauge (used in title/legend).
+    filename : str
+        Output filename (written inside *results_dir*).
+    model : flax.linen.Module
+        Trained PINN model.
+    params : dict
+        Model parameters (e.g. from training loop).
+    t_plot : jnp.ndarray
+        1-D array of time values at which to evaluate the model.
+    cfg : dict or FrozenDict
+        Experiment configuration — uses ``numerics.min_depth`` if present.
+    results_dir : str
+        Directory where the figure is saved.
+    aim_tracker : optional
+        If provided, ``aim_tracker.log_image(path, filename, epoch)`` is called.
+    epoch : int, optional
+        Epoch index passed to *aim_tracker*.
+    full_val_data : ndarray or None, optional
+        Full validation dataset (columns: t, x, y, h, ...).  When not None the
+        function overlays the baseline (reference) time series for the gauge.
+    color : str, optional
+        Matplotlib colour for the predicted line.  When *None* the default
+        colour cycle is used.
+    """
+    pts = jnp.stack(
+        [jnp.full_like(t_plot, x), jnp.full_like(t_plot, y), t_plot],
+        axis=-1,
+    )
+    U = model.apply(params, pts, train=False)
+    min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
+    h_pred = jnp.where(U[..., 0] < min_depth_plot, 0.0, U[..., 0])
+
+    plt.figure(figsize=(10, 6))
+
+    # Overlay baseline validation data when available
+    if full_val_data is not None:
+        val_np = np.array(full_val_data)
+        mask = np.isclose(val_np[:, 1], x) & np.isclose(val_np[:, 2], y)
+        gauge_data = val_np[mask]
+        if gauge_data.shape[0] > 0:
+            gauge_data = gauge_data[gauge_data[:, 0].argsort()]
+            plt.plot(
+                gauge_data[:, 0],
+                gauge_data[:, 3],
+                "k--",
+                linewidth=1.5,
+                alpha=0.7,
+                label=f"Baseline {name}",
+            )
+
+    plot_kwargs: Dict[str, Any] = {"label": f"Predicted h @ ({x},{y})"}
+    if color is not None:
+        plot_kwargs["color"] = color
+    plt.plot(t_plot, h_pred, **plot_kwargs)
+    plt.xlabel("Time (s)")
+    plt.ylabel("Water Level h (m)")
+    plt.title(f"{name} - Water Level vs Time")
+    plt.legend()
+    plt.grid(True)
+    path = os.path.join(results_dir, filename)
+    plt.savefig(path)
+    plt.close()
+    if aim_tracker is not None and epoch is not None:
+        aim_tracker.log_image(path, filename, epoch)

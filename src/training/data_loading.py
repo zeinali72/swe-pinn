@@ -5,7 +5,8 @@ import sys
 import jax.numpy as jnp
 
 from src.config import get_dtype
-from src.data import load_validation_data
+from src.data import load_validation_data, load_bathymetry, load_boundary_condition
+from src.training.setup import resolve_configured_asset_path
 
 
 def resolve_data_mode(cfg):
@@ -108,3 +109,54 @@ def load_validation_from_file(base_data_path, filename="validation_gauges.npy"):
         print("NSE/RMSE calculation using loaded data will be skipped.")
 
     return result
+
+
+def load_terrain_assets(cfg, base_data_path, scenario_name, *, load_dem=True):
+    """Load DEM (bathymetry) and boundary-condition CSV assets for terrain experiments.
+
+    This consolidates the repeated asset-loading pattern used across experiments 3-7.
+    Each experiment resolves the configured asset path, loads the DEM into the global
+    bathymetry interpolator, and creates a JIT-compatible boundary-condition function
+    from the CSV time-series.
+
+    Parameters
+    ----------
+    cfg : dict or FrozenDict
+        Experiment configuration (must contain ``data.assets`` section).
+    base_data_path : str
+        Root path to the experiment's data directory.
+    scenario_name : str
+        Name of the scenario sub-directory inside *base_data_path*.
+    load_dem : bool, optional
+        If True (default), load bathymetry from DEM file.  Set to False for
+        experiments that do not use terrain data (e.g. Experiment 6).
+
+    Returns
+    -------
+    dict
+        ``"bc_fn"`` — JIT-compatible boundary-condition interpolation function.
+        ``"dem_path"`` — resolved DEM file path (None when *load_dem* is False).
+        ``"bc_csv_path"`` — resolved boundary-condition CSV path.
+    """
+    dem_path = None
+    if load_dem:
+        try:
+            dem_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "dem")
+        except FileNotFoundError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
+        print(f"Loading Bathymetry from {dem_path}...")
+        load_bathymetry(dem_path)
+
+    try:
+        bc_csv_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "boundary_condition")
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    bc_fn = load_boundary_condition(bc_csv_path)
+
+    return {
+        "bc_fn": bc_fn,
+        "dem_path": dem_path,
+        "bc_csv_path": bc_csv_path,
+    }
