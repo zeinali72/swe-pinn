@@ -292,6 +292,36 @@ def main(config_path: str):
             metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
         return metrics
 
+    # --- Evaluate All Physics Losses (including zero-weight terms) ---
+    n_eval = 200
+    def compute_all_losses_fn(model, params):
+        eval_key = random.PRNGKey(0)
+        keys = random.split(eval_key, 6)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
+        batch = {
+            'pde': sample_domain(keys[0], n_eval, x_range, y_range, t_range),
+            'ic': sample_domain(keys[1], n_eval, x_range, y_range, (0., 0.)),
+            'bc': {
+                'left': sample_domain(keys[2], n_eval, (0., 0.), y_range, t_range),
+                'right': sample_domain(keys[2], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+                'bottom': sample_domain(keys[3], n_eval, x_range, (0., 0.), t_range),
+                'top': sample_domain(keys[3], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+            },
+            'data': jnp.empty((0, 6), dtype=DTYPE),
+            'building_bc': {},
+        }
+        if has_building:
+            b_cfg = cfg["building"]
+            batch['building_bc'] = {
+                'left': sample_domain(keys[4], n_eval, (b_cfg["x_min"], b_cfg["x_min"]), (b_cfg["y_min"], b_cfg["y_max"]), t_range),
+                'right': sample_domain(keys[4], n_eval, (b_cfg["x_max"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_max"]), t_range),
+                'bottom': sample_domain(keys[5], n_eval, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_min"]), t_range),
+                'top': sample_domain(keys[5], n_eval, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_max"], b_cfg["y_max"]), t_range),
+            }
+        return compute_losses(model, params, batch, cfg, data_free=True)
+
     loop_result = run_training_loop(
         cfg=cfg,
         cfg_dict=cfg_dict,
@@ -310,6 +340,7 @@ def main(config_path: str):
         config_path=config_path,
         validation_fn=validation_fn,
         source_script_path=__file__,
+        compute_all_losses_fn=compute_all_losses_fn,
     )
 
     def plot_fn(final_params):
