@@ -51,6 +51,94 @@ from src.training import (
 # jax.config.update('jax_enable_x64', True)
 
 
+def make_generate_epoch_data(cfg, n_pde, n_ic, n_bc_per_wall,
+                              batch_size, num_batches, data_free,
+                              data_points_full=None):
+    """Returns a JIT-compiled epoch data generator for Experiment 1."""
+    domain_cfg = cfg["domain"]
+
+    def generate_epoch_data(key):
+        key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
+
+        pde_data = sample_and_batch(pde_key, sample_domain, n_pde, batch_size, num_batches, x_range, y_range, t_range)
+        ic_data = sample_and_batch(ic_key, sample_domain, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
+
+        l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
+        bc_data = {
+            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (0., 0.), y_range, t_range),
+            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range),
+            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+        }
+
+        return {
+            'pde': pde_data,
+            'ic': ic_data,
+            'bc': bc_data,
+            'data': maybe_batch_data(data_key, data_points_full, batch_size, num_batches, data_free),
+            'building_bc': {},
+        }
+
+    return jax.jit(generate_epoch_data)
+
+
+def make_validation_fn(cfg, validation_data_loaded, val_points, h_true_val,
+                        hu_true_val=None, hv_true_val=None):
+    """Returns a validation callback for Experiment 1."""
+    def validation_fn(model, params):
+        nse_val, rmse_val = -jnp.inf, jnp.inf
+        metrics = {}
+        if validation_data_loaded:
+            try:
+                U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
+                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
+                U_pred_val = _apply_min_depth(U_pred_val, min_depth_val)
+                h_pred_val = U_pred_val[..., 0]
+                nse_val = float(nse(h_pred_val, h_true_val))
+                rmse_val = float(rmse(h_pred_val, h_true_val))
+                metrics = {'nse_h': nse_val, 'rmse_h': rmse_val}
+                if hu_true_val is not None and hv_true_val is not None:
+                    metrics['nse_hu'] = float(nse(U_pred_val[..., 1], hu_true_val))
+                    metrics['rmse_hu'] = float(rmse(U_pred_val[..., 1], hu_true_val))
+                    metrics['nse_hv'] = float(nse(U_pred_val[..., 2], hv_true_val))
+                    metrics['rmse_hv'] = float(rmse(U_pred_val[..., 2], hv_true_val))
+            except Exception as exc:
+                print(f"Warning: Validation calculation failed: {exc}")
+        if not metrics:
+            metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
+        return metrics
+    return validation_fn
+
+
+def make_compute_all_losses_fn(cfg, compute_losses_fn, n_eval=200):
+    """Returns a callback that evaluates all physics losses (even zero-weight)."""
+    domain_cfg = cfg["domain"]
+
+    def compute_all_losses_fn(model, params):
+        eval_key = random.PRNGKey(0)
+        keys = random.split(eval_key, 5)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
+        batch = {
+            'pde': sample_domain(keys[0], n_eval, x_range, y_range, t_range),
+            'ic': sample_domain(keys[1], n_eval, x_range, y_range, (0., 0.)),
+            'bc': {
+                'left': sample_domain(keys[2], n_eval, (0., 0.), y_range, t_range),
+                'right': sample_domain(keys[2], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+                'bottom': sample_domain(keys[3], n_eval, x_range, (0., 0.), t_range),
+                'top': sample_domain(keys[3], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+            },
+            'data': jnp.empty((0, 6), dtype=get_dtype()),
+            'building_bc': {},
+        }
+        return compute_losses_fn(model, params, batch, cfg, data_free=True)
+    return compute_all_losses_fn
+
+
 def compute_losses(model, params, batch, config, data_free):
     """Compute all loss terms for Experiment 1 (analytical dam-break)."""
     terms = {}
@@ -270,32 +358,10 @@ def main(config_path: str):
     opt_state = optimiser.init(params)
 
     # --- Define JIT Data Generator ---
-    def generate_epoch_data(key):
-        key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
-        x_range = (0., domain_cfg["lx"])
-        y_range = (0., domain_cfg["ly"])
-        t_range = (0., domain_cfg["t_final"])
-
-        pde_data = sample_and_batch(pde_key, sample_domain, n_pde, batch_size, num_batches, x_range, y_range, t_range)
-        ic_data = sample_and_batch(ic_key, sample_domain, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
-
-        l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
-        bc_data = {
-            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (0., 0.), y_range, t_range),
-            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
-            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range),
-            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
-        }
-
-        return {
-            'pde': pde_data,
-            'ic': ic_data,
-            'bc': bc_data,
-            'data': maybe_batch_data(data_key, data_points_full, batch_size, num_batches, data_free),
-            'building_bc': {},
-        }
-
-    generate_epoch_data_jit = jax.jit(generate_epoch_data)
+    generate_epoch_data_jit = make_generate_epoch_data(
+        cfg, n_pde, n_ic, n_bc_per_wall,
+        batch_size, num_batches, data_free, data_points_full,
+    )
 
     # --- Define Scan Body Function ---
     scan_body = make_scan_body(
@@ -303,50 +369,12 @@ def main(config_path: str):
         compute_losses_fn=compute_losses,
     )
 
-    def validation_fn(model, params):
-        nse_val, rmse_val = -jnp.inf, jnp.inf
-        metrics = {}
-        if validation_data_loaded:
-            try:
-                U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
-                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
-                U_pred_val = _apply_min_depth(U_pred_val, min_depth_val)
-                h_pred_val = U_pred_val[..., 0]
-                nse_val = float(nse(h_pred_val, h_true_val))
-                rmse_val = float(rmse(h_pred_val, h_true_val))
-                metrics = {'nse_h': nse_val, 'rmse_h': rmse_val}
-                if hu_true_val is not None and hv_true_val is not None:
-                    metrics['nse_hu'] = float(nse(U_pred_val[..., 1], hu_true_val))
-                    metrics['rmse_hu'] = float(rmse(U_pred_val[..., 1], hu_true_val))
-                    metrics['nse_hv'] = float(nse(U_pred_val[..., 2], hv_true_val))
-                    metrics['rmse_hv'] = float(rmse(U_pred_val[..., 2], hv_true_val))
-            except Exception as exc:
-                print(f"Warning: Validation calculation failed: {exc}")
-        if not metrics:
-            metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
-        return metrics
+    validation_fn = make_validation_fn(
+        cfg, validation_data_loaded, val_points, h_true_val,
+        hu_true_val, hv_true_val,
+    )
 
-    # --- Evaluate All Physics Losses (including zero-weight terms) ---
-    n_eval = 200
-    def compute_all_losses_fn(model, params):
-        eval_key = random.PRNGKey(0)
-        keys = random.split(eval_key, 5)
-        x_range = (0., domain_cfg["lx"])
-        y_range = (0., domain_cfg["ly"])
-        t_range = (0., domain_cfg["t_final"])
-        batch = {
-            'pde': sample_domain(keys[0], n_eval, x_range, y_range, t_range),
-            'ic': sample_domain(keys[1], n_eval, x_range, y_range, (0., 0.)),
-            'bc': {
-                'left': sample_domain(keys[2], n_eval, (0., 0.), y_range, t_range),
-                'right': sample_domain(keys[2], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
-                'bottom': sample_domain(keys[3], n_eval, x_range, (0., 0.), t_range),
-                'top': sample_domain(keys[3], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
-            },
-            'data': jnp.empty((0, 6), dtype=get_dtype()),
-            'building_bc': {},
-        }
-        return compute_losses(model, params, batch, cfg, data_free=True)
+    compute_all_losses_fn = make_compute_all_losses_fn(cfg, compute_losses)
 
     loop_result = run_training_loop(
         cfg=cfg,
