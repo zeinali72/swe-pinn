@@ -5,37 +5,44 @@ from flax import linen as nn
 from typing import Dict, Any
 
 
+def loss_boundary_dirichlet(model: nn.Module, params: Dict[str, Any],
+                            batch: jnp.ndarray, target: jnp.ndarray,
+                            var_idx: int) -> jnp.ndarray:
+    """Enforces a prescribed Dirichlet value on a single output variable.
+
+    Args:
+        model: Flax neural network module.
+        params: Model parameter dictionary.
+        batch: Collocation points at the boundary.
+        target: Target values (constant or time-varying).
+        var_idx: Output channel index (0 = h, 1 = hu, 2 = hv).
+    """
+    U_pred = model.apply({'params': params['params']}, batch, train=False)
+    pred = U_pred[..., var_idx]
+    if target.ndim != pred.ndim:
+        target = target.reshape(pred.shape)
+    return jnp.mean((pred - target)**2)
+
+
 def loss_boundary_dirichlet_h(model: nn.Module, params: Dict[str, Any],
                               batch: jnp.ndarray,
                               h_target: jnp.ndarray) -> jnp.ndarray:
     """Enforces a prescribed water level h (constant or time-varying)."""
-    U_pred = model.apply({'params': params['params']}, batch, train=False)
-    h_pred = U_pred[..., 0]
-    if h_target.ndim != h_pred.ndim:
-        h_target = h_target.reshape(h_pred.shape)
-    return jnp.mean((h_pred - h_target)**2)
+    return loss_boundary_dirichlet(model, params, batch, h_target, var_idx=0)
 
 
 def loss_boundary_dirichlet_hu(model: nn.Module, params: Dict[str, Any],
                                batch: jnp.ndarray,
                                hu_target: jnp.ndarray) -> jnp.ndarray:
     """Enforces a prescribed momentum hu (constant or time-varying)."""
-    U_pred = model.apply({'params': params['params']}, batch, train=False)
-    hu_pred = U_pred[..., 1]
-    if hu_target.ndim != hu_pred.ndim:
-        hu_target = hu_target.reshape(hu_pred.shape)
-    return jnp.mean((hu_pred - hu_target)**2)
+    return loss_boundary_dirichlet(model, params, batch, hu_target, var_idx=1)
 
 
 def loss_boundary_dirichlet_hv(model: nn.Module, params: Dict[str, Any],
                                batch: jnp.ndarray,
                                hv_target: jnp.ndarray) -> jnp.ndarray:
     """Enforces a prescribed momentum hv (constant or time-varying)."""
-    U_pred = model.apply({'params': params['params']}, batch, train=False)
-    hv_pred = U_pred[..., 2]
-    if hv_target.ndim != hv_pred.ndim:
-        hv_target = hv_target.reshape(hv_pred.shape)
-    return jnp.mean((hv_pred - hv_target)**2)
+    return loss_boundary_dirichlet(model, params, batch, hv_target, var_idx=2)
 
 
 def loss_slip_wall_generalized(model, params, batch):
