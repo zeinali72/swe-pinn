@@ -30,8 +30,7 @@ from src.data import (
 )
 from src.losses import (
     compute_pde_loss,
-    loss_boundary_dirichlet_hu,
-    loss_boundary_dirichlet_hv,
+    loss_boundary_dirichlet,
     loss_slip_wall_generalized,
     compute_neg_h_loss,
     compute_data_loss,
@@ -79,8 +78,8 @@ def make_compute_losses(bc_fn_static):
             upstream_width = config["boundary_conditions"]["upstream_discharge_width"]
             flux_target_x = Q_target / upstream_width
             loss_bc_inflow = (
-                loss_boundary_dirichlet_hu(model, params, batch['bc_upstream'], flux_target_x)
-                + loss_boundary_dirichlet_hv(model, params, batch['bc_upstream'], jnp.zeros_like(flux_target_x))
+                loss_boundary_dirichlet(model, params, batch['bc_upstream'], flux_target_x, var_idx=1)
+                + loss_boundary_dirichlet(model, params, batch['bc_upstream'], jnp.zeros_like(flux_target_x), var_idx=2)
             )
         else:
             loss_bc_inflow = 0.0

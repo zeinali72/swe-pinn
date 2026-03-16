@@ -24,27 +24,6 @@ def loss_boundary_dirichlet(model: nn.Module, params: Dict[str, Any],
     return jnp.mean((pred - target)**2)
 
 
-def loss_boundary_dirichlet_h(model: nn.Module, params: Dict[str, Any],
-                              batch: jnp.ndarray,
-                              h_target: jnp.ndarray) -> jnp.ndarray:
-    """Enforces a prescribed water level h (constant or time-varying)."""
-    return loss_boundary_dirichlet(model, params, batch, h_target, var_idx=0)
-
-
-def loss_boundary_dirichlet_hu(model: nn.Module, params: Dict[str, Any],
-                               batch: jnp.ndarray,
-                               hu_target: jnp.ndarray) -> jnp.ndarray:
-    """Enforces a prescribed momentum hu (constant or time-varying)."""
-    return loss_boundary_dirichlet(model, params, batch, hu_target, var_idx=1)
-
-
-def loss_boundary_dirichlet_hv(model: nn.Module, params: Dict[str, Any],
-                               batch: jnp.ndarray,
-                               hv_target: jnp.ndarray) -> jnp.ndarray:
-    """Enforces a prescribed momentum hv (constant or time-varying)."""
-    return loss_boundary_dirichlet(model, params, batch, hv_target, var_idx=2)
-
-
 def loss_slip_wall_generalized(model, params, batch):
     """Enforces no-flux condition: u . n = 0.
 
