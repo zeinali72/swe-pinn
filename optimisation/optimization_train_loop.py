@@ -18,7 +18,7 @@ import optuna
 
 # --- Imports from project src directory ---
 # This assumes run_optimization.py adds the project root to sys.path
-from src.config import DTYPE
+from src.config import get_dtype
 from src.data import sample_domain, get_batches_tensor, get_sample_count
 from src.models import init_model
 from src.losses import (
@@ -49,7 +49,7 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
     def loss_and_individual_terms(p):
         terms = {}
         # Compute losses based on available non-empty batches and active weights
-        pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=DTYPE))
+        pde_batch_data = all_batches.get('pde', jnp.empty((0,3), dtype=get_dtype()))
         if 'pde' in active_loss_keys_base and pde_batch_data.shape[0] > 0:
             if has_building:
                 pde_mask = mask_points_inside_building(pde_batch_data, config["building"])
@@ -65,15 +65,15 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
                 else:
                     terms['neg_h'] = compute_neg_h_loss(model, p, pde_batch_data)
 
-        ic_batch_data = all_batches.get('ic', jnp.empty((0,3), dtype=DTYPE))
+        ic_batch_data = all_batches.get('ic', jnp.empty((0,3), dtype=get_dtype()))
         if 'ic' in active_loss_keys_base and ic_batch_data.shape[0] > 0:
             terms['ic'] = compute_ic_loss(model, p, ic_batch_data)
 
         bc_batches = all_batches.get('bc', {})
-        bc_left = bc_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
-        bc_right = bc_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
-        bc_bottom = bc_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
-        bc_top = bc_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
+        bc_left = bc_batches.get('left', jnp.empty((0,3), dtype=get_dtype()))
+        bc_right = bc_batches.get('right', jnp.empty((0,3), dtype=get_dtype()))
+        bc_bottom = bc_batches.get('bottom', jnp.empty((0,3), dtype=get_dtype()))
+        bc_top = bc_batches.get('top', jnp.empty((0,3), dtype=get_dtype()))
         if 'bc' in active_loss_keys_base and any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
             # Left: Dirichlet h + hu from analytical dam-break solution
             u_const = config["physics"]["u_const"]
@@ -90,10 +90,10 @@ def train_step_trial(model: Any, params: FrozenDict, opt_state: Any,
 
         if has_building and 'building_bc' in active_loss_keys_base:
             bldg_batches = all_batches.get('building_bc', {})
-            bl = bldg_batches.get('left', jnp.empty((0,3), dtype=DTYPE))
-            br = bldg_batches.get('right', jnp.empty((0,3), dtype=DTYPE))
-            bb = bldg_batches.get('bottom', jnp.empty((0,3), dtype=DTYPE))
-            bt = bldg_batches.get('top', jnp.empty((0,3), dtype=DTYPE))
+            bl = bldg_batches.get('left', jnp.empty((0,3), dtype=get_dtype()))
+            br = bldg_batches.get('right', jnp.empty((0,3), dtype=get_dtype()))
+            bb = bldg_batches.get('bottom', jnp.empty((0,3), dtype=get_dtype()))
+            bt = bldg_batches.get('top', jnp.empty((0,3), dtype=get_dtype()))
             if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if hasattr(b, 'shape') and b.shape[0] > 0):
                 terms['building_bc'] = (loss_boundary_wall_vertical(model, p, bl) +
                                         loss_boundary_wall_vertical(model, p, br) +
@@ -182,7 +182,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
         # --- Case 1: validation_sample.npy file exists (standard case) ---
         try:
             print(f"Trial {trial.number}: Loading validation data from: {validation_data_file}")
-            loaded_val_data = np.load(validation_data_file).astype(DTYPE)
+            loaded_val_data = np.load(validation_data_file).astype(get_dtype())
             val_points_all = loaded_val_data[:, [1, 2, 0]] # (x, y, t)
             h_true_val_all = loaded_val_data[:, 3]       # (h)
             
@@ -306,14 +306,14 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
             pde_points = sample_domain(pde_key, n_pde, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
             pde_data = get_batches_tensor(pde_key, pde_points, batch_size, num_batches)
         else:
-            pde_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+            pde_data = jnp.zeros((num_batches, 0, 3), dtype=get_dtype())
 
         # IC
         if n_ic // batch_size > 0:
             ic_points = sample_domain(ic_key, n_ic, (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., 0.))
             ic_data = get_batches_tensor(ic_key, ic_points, batch_size, num_batches)
         else:
-            ic_data = jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+            ic_data = jnp.zeros((num_batches, 0, 3), dtype=get_dtype())
             
         # BCs
         bc_data = {}
@@ -324,7 +324,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
             if n // batch_size > 0:
                 pts = sample_domain(k, n, x_rng, y_rng, t_rng)
                 return get_batches_tensor(k, pts, batch_size, num_batches)
-            return jnp.zeros((num_batches, 0, 3), dtype=DTYPE)
+            return jnp.zeros((num_batches, 0, 3), dtype=get_dtype())
 
         bc_data['left'] = get_wall_data(l_key, n_bc_per_wall, (0., 0.), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))
         bc_data['right'] = get_wall_data(r_key, n_bc_per_wall, (domain_cfg["lx"], domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"]))

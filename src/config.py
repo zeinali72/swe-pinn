@@ -37,3 +37,22 @@ def load_config(config_path: str):
 # These will be set by load_config
 DTYPE = None
 EPS = None
+
+
+def get_dtype():
+    """Return the current DTYPE value.
+
+    Unlike ``from src.config import DTYPE``, which captures the value at
+    import time, this function always returns the *current* module-level
+    value so that callers see updates made by subsequent ``load_config``
+    calls (e.g. during HPO trials).
+    """
+    return DTYPE
+
+
+def get_eps():
+    """Return the current EPS value.
+
+    See ``get_dtype`` for rationale.
+    """
+    return EPS
