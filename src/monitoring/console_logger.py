@@ -96,7 +96,6 @@ class ConsoleLogger:
         losses: Dict[str, float],
         total_loss: float,
         lr: float,
-        grad_norm: float,
         val_metrics: Dict[str, float],
         neg_h_frac: float,
         epoch_time: float,
@@ -121,7 +120,6 @@ class ConsoleLogger:
             f"Epoch {epoch + 1:>6d}/{max_epochs} | "
             f"Loss: {total_loss:.6e} [{parts_str}] | "
             f"LR: {lr:.2e} | "
-            f"\u2207: {grad_norm:.2e} | "
             f"NSE(h): {nse_h:.4f} | "
             f"-h: {neg_h_frac:.1%} | "
             f"{epoch_time:.1f}s"

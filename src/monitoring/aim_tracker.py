@@ -90,7 +90,6 @@ class AimTracker:
         total_loss: float,
         val_metrics: Dict[str, float],
         lr: float,
-        grad_norm: float,
         epoch_time: float,
         elapsed_time: float,
         neg_depth: Optional[Dict[str, float]] = None,
@@ -121,11 +120,6 @@ class AimTracker:
                 _safe_float(lr), name='optim/lr',
                 step=step, epoch=epoch, context=ctx_train,
             )
-            if grad_norm is not None and grad_norm != 0.0:
-                run.track(
-                    _safe_float(grad_norm), name='optim/grad_norm',
-                    step=step, epoch=epoch, context=ctx_train,
-                )
             run.track(
                 _safe_float(epoch_time), name='optim/epoch_time_sec',
                 step=step, epoch=epoch, context=ctx_sys,
