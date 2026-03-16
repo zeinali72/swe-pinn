@@ -20,12 +20,11 @@ import statistics
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import random, lax
 from flax.core import FrozenDict
 import optax
 
-from src.config import load_config, get_dtype, DTYPE
+from src.config import load_config, get_dtype
 from src.models.pinn import MLP, FourierPINN, DGMNetwork
 from src.models.factory import init_model
 
@@ -96,7 +95,6 @@ def benchmark_architecture(cfg_dict, arch_name, width, depth, dtype, key,
         return random.uniform(epoch_key, (num_batches, batch_size, 3), dtype=dtype)
 
     def make_scan_body(model, optimiser):
-        @jax.jit
         def scan_body(carry, batch):
             p, o_s = carry
 
@@ -178,8 +176,8 @@ def run_reference_benchmark(cfg_dict, dtype, key, width=256, depth=4):
     print("-" * 90)
 
     results = {}
-    for arch_name in ["MLP", "FourierPINN", "DGMNetwork"]:
-        k = random.fold_in(key, hash(arch_name) % (2**31))
+    for idx, arch_name in enumerate(["MLP", "FourierPINN", "DGMNetwork"]):
+        k = random.fold_in(key, idx)
         result = benchmark_architecture(
             cfg_dict, arch_name, width, depth, dtype, k,
             n_warmup=5, n_measured=20,
@@ -219,10 +217,10 @@ def run_scaling_sweep(cfg_dict, dtype, key, arch_name,
 
     results = {}
 
-    for width in widths:
+    for wi, width in enumerate(widths):
         row = f"{'width=' + str(width):>12}"
-        for depth in depths:
-            k = random.fold_in(key, hash((arch_name, width, depth)) % (2**31))
+        for di, depth in enumerate(depths):
+            k = random.fold_in(key, wi * len(depths) + di)
             try:
                 result = benchmark_architecture(
                     cfg_dict, arch_name, width, depth, dtype, k,
