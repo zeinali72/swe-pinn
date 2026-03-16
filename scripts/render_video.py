@@ -9,10 +9,6 @@ import matplotlib.animation as animation
 from flax.core import FrozenDict
 import geopandas as gpd
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-import concurrent.futures
-import subprocess
-import time
-import multiprocessing
 
 # --- Configuration ---
 # FIX: reliably determine project root relative to this script
