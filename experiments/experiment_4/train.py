@@ -16,7 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Local application imports
-from src.config import DTYPE
+from src.config import get_dtype
 from src.data import (
     get_batches_tensor,
     bathymetry_fn,
@@ -26,8 +26,7 @@ from src.data import (
 )
 from src.losses import (
     compute_pde_loss,
-    loss_boundary_dirichlet_hu,
-    loss_boundary_dirichlet_hv,
+    loss_boundary_dirichlet,
     loss_boundary_wall_horizontal,
     loss_boundary_wall_vertical,
     compute_neg_h_loss,
@@ -73,8 +72,8 @@ def make_compute_losses(bc_fn_static):
         inflow_width = config["boundary_conditions"]["inflow_discharge_width"]
         flux_target_x = Q_target_x / inflow_width
         loss_bc_inflow = (
-            loss_boundary_dirichlet_hu(model, params, batch['bc_inflow'], flux_target_x)
-            + loss_boundary_dirichlet_hv(model, params, batch['bc_inflow'], jnp.zeros_like(flux_target_x))
+            loss_boundary_dirichlet(model, params, batch['bc_inflow'], flux_target_x, var_idx=1)
+            + loss_boundary_dirichlet(model, params, batch['bc_inflow'], jnp.zeros_like(flux_target_x), var_idx=2)
         )
         loss_bc_left_wall = loss_boundary_wall_vertical(model, params, batch['bc_left_wall'])
         loss_bc_right = loss_boundary_wall_vertical(model, params, batch['bc_right'])
@@ -82,7 +81,7 @@ def make_compute_losses(bc_fn_static):
         loss_bc_bottom = loss_boundary_wall_horizontal(model, params, batch['bc_bottom'])
         terms['bc'] = loss_bc_inflow + loss_bc_left_wall + loss_bc_right + loss_bc_top + loss_bc_bottom
 
-        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=get_dtype()))
         if not data_free and data_batch_data.shape[0] > 0:
             terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
@@ -227,6 +226,27 @@ def main(config_path: str):
         cfg, data_free, compute_losses_fn=compute_losses_fn,
     )
 
+    # --- Evaluate All Physics Losses (including zero-weight terms) ---
+    n_eval = 200
+    inflow_segment = cfg["boundary_conditions"]["left_inflow_segment"]
+    def compute_all_losses_fn(model, params):
+        eval_key = random.PRNGKey(0)
+        keys = random.split(eval_key, 6)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
+        batch = {
+            'pde': sample_lhs(keys[0], n_eval, x_range, y_range, t_range),
+            'ic': sample_lhs(keys[1], n_eval, x_range, y_range, (0., 0.)),
+            'bc_inflow': sample_lhs(keys[2], n_eval, (0., 0.), (inflow_segment["y_start"], inflow_segment["y_end"]), t_range),
+            'bc_left_wall': sample_lhs(keys[3], n_eval, (0., 0.), (0., inflow_segment["y_start"]), t_range),
+            'bc_right': sample_lhs(keys[3], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+            'bc_bottom': sample_lhs(keys[4], n_eval, x_range, (0., 0.), t_range),
+            'bc_top': sample_lhs(keys[4], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+            'data': jnp.empty((0, 6), dtype=get_dtype()),
+        }
+        return compute_losses_fn(model, params, batch, cfg, data_free=True)
+
     loop_result = run_training_loop(
         cfg=cfg,
         cfg_dict=cfg_dict,
@@ -248,11 +268,12 @@ def main(config_path: str):
         h_true_val_all=h_true_val_all,
         val_targets_all=val_targets_all,
         source_script_path=__file__,
+        compute_all_losses_fn=compute_all_losses_fn,
     )
 
     def plot_fn(final_params):
         print("Generating Experiment 4 plots...")
-        t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
+        t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
         aim_tracker = loop_result["aim_tracker"]
         final_epoch = loop_result["epoch"]
         output_csv_path = resolve_configured_asset_path(

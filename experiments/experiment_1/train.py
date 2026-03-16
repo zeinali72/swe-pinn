@@ -19,12 +19,13 @@ from flax.core import FrozenDict
 import numpy as np
 
 # Local application imports
-from src.config import DTYPE
+from src.config import get_dtype
 from src.predict.predictor import _apply_min_depth
 from src.data import sample_domain, get_batches_tensor
 from src.losses import (
-    compute_pde_loss, compute_ic_loss, compute_bc_loss,
-    compute_data_loss, compute_neg_h_loss
+    compute_pde_loss, compute_ic_loss, compute_data_loss, compute_neg_h_loss,
+    loss_boundary_dirichlet, loss_boundary_neumann_outflow_x,
+    loss_boundary_wall_horizontal,
 )
 from src.utils import nse, rmse, plot_h_vs_x
 from src.physics import h_exact, hu_exact, hv_exact
@@ -54,27 +55,38 @@ def compute_losses(model, params, batch, config, data_free):
     """Compute all loss terms for Experiment 1 (analytical dam-break)."""
     terms = {}
 
-    pde_batch_data = batch.get('pde', jnp.empty((0, 3), dtype=DTYPE))
+    pde_batch_data = batch.get('pde', jnp.empty((0, 3), dtype=get_dtype()))
     if pde_batch_data.shape[0] > 0:
         terms['pde'] = compute_pde_loss(model, params, pde_batch_data, config)
         terms['neg_h'] = compute_neg_h_loss(model, params, pde_batch_data)
 
-    ic_batch_data = batch.get('ic', jnp.empty((0, 3), dtype=DTYPE))
+    ic_batch_data = batch.get('ic', jnp.empty((0, 3), dtype=get_dtype()))
     if ic_batch_data.shape[0] > 0:
         terms['ic'] = compute_ic_loss(model, params, ic_batch_data)
 
     bc_batches = batch.get('bc', {})
     if any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape')):
-        terms['bc'] = compute_bc_loss(
-            model, params,
-            bc_batches.get('left', jnp.empty((0, 3), dtype=DTYPE)),
-            bc_batches.get('right', jnp.empty((0, 3), dtype=DTYPE)),
-            bc_batches.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
-            bc_batches.get('top', jnp.empty((0, 3), dtype=DTYPE)),
-            config,
-        )
+        left = bc_batches.get('left', jnp.empty((0, 3), dtype=get_dtype()))
+        right = bc_batches.get('right', jnp.empty((0, 3), dtype=get_dtype()))
+        bottom = bc_batches.get('bottom', jnp.empty((0, 3), dtype=get_dtype()))
+        top = bc_batches.get('top', jnp.empty((0, 3), dtype=get_dtype()))
 
-    data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+        # Left: Dirichlet h + hu from analytical dam-break solution
+        u_const = config["physics"]["u_const"]
+        n_manning = config["physics"]["n_manning"]
+        t_left = left[..., 2]
+        h_true = h_exact(0.0, t_left, n_manning, u_const)
+        hu_true = h_true * u_const
+        loss_left = (loss_boundary_dirichlet(model, params, left, h_true, var_idx=0) +
+                     loss_boundary_dirichlet(model, params, left, hu_true, var_idx=1))
+        # Right: Neumann outflow
+        loss_right = loss_boundary_neumann_outflow_x(model, params, right)
+        # Top/Bottom: horizontal walls
+        loss_bottom = loss_boundary_wall_horizontal(model, params, bottom)
+        loss_top = loss_boundary_wall_horizontal(model, params, top)
+        terms['bc'] = loss_left + loss_right + loss_bottom + loss_top
+
+    data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=get_dtype()))
     if not data_free and data_batch_data.shape[0] > 0:
         terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
@@ -159,7 +171,7 @@ def main(config_path: str):
                 )
 
             # Create time array at specified resolution
-            t_steps = jnp.arange(0., t_final + dt_data * 0.5, dt_data, dtype=DTYPE)
+            t_steps = jnp.arange(0., t_final + dt_data * 0.5, dt_data, dtype=get_dtype())
             n_timesteps = t_steps.shape[0]
 
             # Sample n_gauges random spatial locations
@@ -197,7 +209,7 @@ def main(config_path: str):
                 h_true_train,
                 u_true_train,
                 v_true_train
-            ], axis=1).astype(DTYPE)
+            ], axis=1).astype(get_dtype())
 
             if data_points_full.shape[0] == 0:
                  print("Warning: Analytical training data is empty. Disabling data loss.")
@@ -314,6 +326,28 @@ def main(config_path: str):
             metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
         return metrics
 
+    # --- Evaluate All Physics Losses (including zero-weight terms) ---
+    n_eval = 200
+    def compute_all_losses_fn(model, params):
+        eval_key = random.PRNGKey(0)
+        keys = random.split(eval_key, 5)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
+        batch = {
+            'pde': sample_domain(keys[0], n_eval, x_range, y_range, t_range),
+            'ic': sample_domain(keys[1], n_eval, x_range, y_range, (0., 0.)),
+            'bc': {
+                'left': sample_domain(keys[2], n_eval, (0., 0.), y_range, t_range),
+                'right': sample_domain(keys[2], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+                'bottom': sample_domain(keys[3], n_eval, x_range, (0., 0.), t_range),
+                'top': sample_domain(keys[3], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+            },
+            'data': jnp.empty((0, 6), dtype=get_dtype()),
+            'building_bc': {},
+        }
+        return compute_losses(model, params, batch, cfg, data_free=True)
+
     loop_result = run_training_loop(
         cfg=cfg,
         cfg_dict=cfg_dict,
@@ -332,6 +366,7 @@ def main(config_path: str):
         config_path=config_path,
         validation_fn=validation_fn,
         source_script_path=__file__,
+        compute_all_losses_fn=compute_all_losses_fn,
     )
 
     def plot_fn(final_params):
@@ -343,11 +378,11 @@ def main(config_path: str):
         t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
         nx_val_plot = plot_cfg.get("nx_val", 101)
         y_const_plot = plot_cfg.get("y_const_plot", 0.0)
-        x_val_plot = jnp.linspace(0.0, cfg["domain"]["lx"], nx_val_plot, dtype=DTYPE)
+        x_val_plot = jnp.linspace(0.0, cfg["domain"]["lx"], nx_val_plot, dtype=get_dtype())
         plot_points_1d = jnp.stack([
             x_val_plot,
-            jnp.full_like(x_val_plot, y_const_plot, dtype=DTYPE),
-            jnp.full_like(x_val_plot, t_const_val_plot, dtype=DTYPE),
+            jnp.full_like(x_val_plot, y_const_plot, dtype=get_dtype()),
+            jnp.full_like(x_val_plot, t_const_val_plot, dtype=get_dtype()),
         ], axis=1)
         U_plot_pred_1d = model.apply({'params': final_params['params']}, plot_points_1d, train=False)
         U_plot_pred_1d = _apply_min_depth(U_plot_pred_1d, min_depth_plot)

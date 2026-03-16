@@ -31,7 +31,7 @@ training:
     rtol: 1e-4                     # Relative tolerance for measuring new optimum
     atol: 0.0                      # Absolute tolerance for measuring new optimum
     cooldown: 1                  # Number of steps to wait before resuming normal operation after lr has been reduced
-    accumulation_factor: 1          # Number of steps to accumulate the metric (loss) before checking for plateau
+    accumulation_factor: 1          # Multiplier on num_batches: accumulation_size = num_batches * factor
     min_scale: 1e-4                # Minimum scaling factor allowed
 
 validation_grid:

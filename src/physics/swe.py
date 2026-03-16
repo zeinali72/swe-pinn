@@ -6,6 +6,8 @@ from typing import Tuple
 class SWEPhysics:
     """Compute terms for the 2D Shallow Water Equations (SWE)."""
     def __init__(self, U: jnp.ndarray, eps: float, bed_elevation: jnp.ndarray = None):
+        if eps <= 0:
+            raise ValueError(f"eps must be positive, got {eps}")
         h = U[..., 0]
         self.hu = U[..., 1]
         self.hv = U[..., 2]
@@ -34,7 +36,6 @@ class SWEPhysics:
         vel = jnp.sqrt(self.u**2 + self.v**2)
         sfx = n_manning**2 * self.u * vel / (self.h_safe**(4 / 3))
         sfy = n_manning**2 * self.v * vel / (self.h_safe**(4 / 3))
-        sox = soy = 0.0
         sox = -bed_grad_x if bed_grad_x is not None else 0.0
         soy = -bed_grad_y if bed_grad_y is not None else 0.0
 

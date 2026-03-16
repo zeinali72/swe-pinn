@@ -8,7 +8,6 @@ Builds on: Experiment 8.
 import os
 import sys
 import time
-import copy
 import argparse
 import importlib
 import itertools
@@ -37,7 +36,7 @@ import matplotlib.pyplot as plt
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 if project_root not in sys.path: sys.path.insert(0, project_root)
 
-from src.config import load_config, DTYPE
+from src.config import load_config, get_dtype
 from src.data import (
     get_batches_tensor,
     get_sample_count,
@@ -51,8 +50,7 @@ from src.data import (
 from src.models import init_model
 from src.losses import (
     compute_pde_loss,
-    loss_boundary_dirichlet_hu,
-    loss_boundary_dirichlet_hv,
+    loss_boundary_dirichlet,
     loss_slip_wall_generalized,
     compute_neg_h_loss,
     compute_data_loss,
@@ -67,6 +65,55 @@ from src.training import train_step_jitted, make_scan_body, maybe_batch_data
 from src.physics import SWEPhysics 
 
 # ==============================================================================
+# Helper: Shared PDE residual core (single Jacobian computation)
+# ==============================================================================
+def _compute_pde_squared_errors(model: nn.Module, params: Dict[str, Any],
+                                pde_batch: jnp.ndarray,
+                                config: FrozenDict) -> jnp.ndarray:
+    """Compute per-point squared PDE residual errors with a single Jacobian pass.
+
+    Returns:
+        (N,) array of sum-of-squared residual errors per collocation point.
+    """
+    def U_fn(pts):
+        return model.apply(params, pts, train=False)
+
+    U_pred = U_fn(pde_batch)
+
+    # Single Jacobian computation — the dominant cost per call
+    jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
+    dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
+
+    x_batch = pde_batch[..., 0]
+    y_batch = pde_batch[..., 1]
+
+    _, bed_grad_x, bed_grad_y = bathymetry_fn(x_batch, y_batch)
+
+    eps = config["numerics"]["eps"]
+    physics = SWEPhysics(U_pred, eps=eps)
+
+    g = config["physics"]["g"]
+    n_manning = config["physics"]["n_manning"]
+    inflow = config["physics"]["inflow"]
+
+    JF, JG = physics.flux_jac(g=g)
+    div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
+    div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
+
+    S = physics.source(g=g, n_manning=n_manning, inflow=inflow,
+                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
+
+    residual = dU_dt + div_F + div_G - S
+
+    # Mask out dry areas for stability (h < eps)
+    h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
+    final_residual = residual * h_mask[..., None]
+
+    # Sum of squared errors of the 3 equations per point — shape (N,)
+    return jnp.sum(final_residual ** 2, axis=1)
+
+
+# ==============================================================================
 # Helper: Vectorized Residual Calculation for Importance Sampling
 # ==============================================================================
 def compute_pde_residual_vector(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray,
@@ -76,48 +123,7 @@ def compute_pde_residual_vector(model: nn.Module, params: Dict[str, Any], pde_ba
     Used for Importance Sampling evaluation.
     Returns: (Batch_Size,) array of errors.
     """
-    # Create physics instance
-    U_pred = model.apply({'params': params['params']}, pde_batch, train=False)
-    
-    def U_fn(pts):
-        return model.apply({'params': params['params']}, pts, train=False)
-
-    # Calculate Gradients
-    jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
-    dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
-
-    x_batch = pde_batch[..., 0]
-    y_batch = pde_batch[..., 1]
-
-    # Bathymetry gradients
-    _, bed_grad_x, bed_grad_y = bathymetry_fn(x_batch, y_batch)
-
-    eps = config["numerics"]["eps"]
-    physics = SWEPhysics(U_pred, eps=eps)
-
-    g = config["physics"]["g"]
-    n_manning = config["physics"]["n_manning"]
-    inflow = config["physics"]["inflow"]
-
-    JF, JG = physics.flux_jac(g=g)
-    div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
-    div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
-
-    S = physics.source(g=g, n_manning=n_manning, inflow=inflow, 
-                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
-
-    # Residual vector: [N, 3]
-    residual = (dU_dt + div_F + div_G - S)
-    
-    # Mask out dry areas for stability (h < eps)
-    h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
-    final_residual = residual * h_mask[..., None]
-    
-    # Reduce to scalar error per point: Sum of squared errors of the 3 equations
-    # Shape: (N,)
-    error_per_point = jnp.sum(final_residual ** 2, axis=1)
-    
-    return error_per_point
+    return _compute_pde_squared_errors(model, params, pde_batch, config)
 
 # JIT the residual function for fast evaluation
 get_residuals_jitted = jax.jit(compute_pde_residual_vector, static_argnums=(0, 3))
@@ -125,49 +131,17 @@ get_residuals_jitted = jax.jit(compute_pde_residual_vector, static_argnums=(0, 3
 # ==============================================================================
 # Helper: Weighted PDE Loss (Corrected for Importance Sampling)
 # ==============================================================================
-def compute_weighted_pde_loss(model: nn.Module, params: FrozenDict, pde_batch: jnp.ndarray, 
+def compute_weighted_pde_loss(model: nn.Module, params: FrozenDict, pde_batch: jnp.ndarray,
                               weights: jnp.ndarray, config: FrozenDict) -> float:
     """
     Computes the weighted PDE loss.
     Essential for Unbiased Importance Sampling.
     """
-    def U_fn(pts):
-        return model.apply(params, pts, train=False)
+    squared_error = _compute_pde_squared_errors(model, params, pde_batch, config)
 
-    U_pred = U_fn(pde_batch)
-
-    jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
-    dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
-
-    x_batch = pde_batch[..., 0]
-    y_batch = pde_batch[..., 1]
-
-    _, bed_grad_x, bed_grad_y = bathymetry_fn(x_batch, y_batch)
-
-    eps = config["numerics"]["eps"]
-    physics = SWEPhysics(U_pred, eps=eps)
-
-    g = config["physics"]["g"]
-    n_manning = config["physics"]["n_manning"]
-    inflow = config["physics"]["inflow"]
-
-    JF, JG = physics.flux_jac(g=g)
-    div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
-    div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
-
-    S = physics.source(g=g, n_manning=n_manning, inflow=inflow, 
-                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
-
-    residual = (dU_dt + div_F + div_G - S)
-    h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
-    final_residual = residual * h_mask[..., None]
-    
-    # Squared error per point
-    squared_error = jnp.sum(final_residual ** 2, axis=1)
-    
     # Apply Importance Weights: Mean(Error * Weights)
     weighted_mse = jnp.mean(squared_error * weights)
-    
+
     return weighted_mse
 
 # ==============================================================================
@@ -197,8 +171,8 @@ def make_compute_losses(bc_fn_static):
             upstream_width = config["boundary_conditions"]["upstream_discharge_width"]
             flux_target_x = Q_target / upstream_width
             loss_bc_inflow = (
-                loss_boundary_dirichlet_hu(model, params, batch['bc_upstream'], flux_target_x)
-                + loss_boundary_dirichlet_hv(model, params, batch['bc_upstream'], jnp.zeros_like(flux_target_x))
+                loss_boundary_dirichlet(model, params, batch['bc_upstream'], flux_target_x, var_idx=1)
+                + loss_boundary_dirichlet(model, params, batch['bc_upstream'], jnp.zeros_like(flux_target_x), var_idx=2)
             )
         else:
             loss_bc_inflow = 0.0
@@ -208,7 +182,7 @@ def make_compute_losses(bc_fn_static):
         terms['bc'] = loss_bc_inflow + loss_bc_wall + loss_bldg
         terms['building'] = loss_bldg
 
-        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=get_dtype()))
         if not data_free and data_batch_data.shape[0] > 0:
             terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
@@ -328,7 +302,7 @@ def main(config_path: str):
     if has_data_loss: 
         if os.path.exists(training_data_file):
             try:
-                data_points_full = jnp.load(training_data_file).astype(DTYPE) 
+                data_points_full = jnp.load(training_data_file).astype(get_dtype()) 
                 if data_points_full.shape[0] == 0:
                      data_points_full = None
                      has_data_loss = False
@@ -349,7 +323,7 @@ def main(config_path: str):
 
     if os.path.exists(validation_data_file):
         try:
-            _, val_pts_batch, val_targets = load_validation_data(validation_data_file, dtype=DTYPE)
+            _, val_pts_batch, val_targets = load_validation_data(validation_data_file, dtype=get_dtype())
             val_h_true = val_targets[:, 0]
             u_temp = val_targets[:, 1]
             v_temp = val_targets[:, 2]
@@ -438,7 +412,7 @@ def main(config_path: str):
     
     active_pde_pts = jnp.array(pool_pde_cpu[active_indices])
     # Initialize weights to 1.0 (Uniform sampling initially)
-    active_pde_weights = jnp.ones((n_pde,), dtype=DTYPE)
+    active_pde_weights = jnp.ones((n_pde,), dtype=get_dtype())
 
     # --- Optimizer ---
     reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
@@ -525,17 +499,18 @@ def main(config_path: str):
                 num_eval_batches = int(np.ceil(POOL_SIZE / EVAL_BATCH_SIZE))
                 all_residuals_list = []
                 
+                # Enqueue all batches first to avoid serialising GPU work
+                gpu_results = []
                 for i in range(num_eval_batches):
                     idx_start = i * EVAL_BATCH_SIZE
                     idx_end = min((i + 1) * EVAL_BATCH_SIZE, POOL_SIZE)
-                    
-                    batch_pts_cpu = pool_pde_cpu[idx_start:idx_end]
-                    batch_pts_gpu = jax.device_put(batch_pts_cpu)
-                    
-                    batch_errs_gpu = get_residuals_jitted(model, params, batch_pts_gpu, cfg)
-                    batch_errs_cpu = np.array(batch_errs_gpu.block_until_ready())
-                    
-                    all_residuals_list.append(batch_errs_cpu)
+
+                    batch_pts_gpu = jax.device_put(pool_pde_cpu[idx_start:idx_end])
+                    gpu_results.append(get_residuals_jitted(model, params, batch_pts_gpu, cfg))
+
+                # Collect results after all batches have been dispatched
+                for res in gpu_results:
+                    all_residuals_list.append(np.array(res.block_until_ready()))
                 
                 all_residuals = np.concatenate(all_residuals_list, axis=0)
                 
@@ -639,14 +614,14 @@ def main(config_path: str):
                     'total_weighted_loss': avg_total_weighted_loss,
                     'unweighted_losses': {k: float(v) for k, v in avg_losses_unweighted.items()}
                 })
-                best_params_nse = copy.deepcopy(params)
+                best_params_nse = jax.tree.map(jnp.copy, params)
                 if combined_nse_val > -jnp.inf:
                     print(f"    ---> New Best Combined NSE: {combined_nse_val:.4f}")
 
             if avg_total_weighted_loss < best_loss_stats['total_weighted_loss']:
                 best_loss_stats['total_weighted_loss'] = avg_total_weighted_loss
                 best_loss_stats['epoch'] = epoch
-                best_params_loss = copy.deepcopy(params)
+                best_params_loss = jax.tree.map(jnp.copy, params)
 
             # Negative depth diagnostics and checkpoint tracking
             freq = cfg.get("reporting", {}).get("epoch_freq", 100)
@@ -677,14 +652,14 @@ def main(config_path: str):
                 console.print_epoch(
                     epoch, cfg["training"]["epochs"],
                     avg_losses_unweighted, avg_total_weighted_loss,
-                    current_lr, 0.0,
+                    current_lr,
                     val_metrics, neg_depth.get('fraction', 0.0), epoch_time
                 )
 
             aim_tracker.log_epoch(
                 epoch=epoch, step=global_step,
                 losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
-                val_metrics=val_metrics, lr=current_lr, grad_norm=0.0,
+                val_metrics=val_metrics, lr=current_lr,
                 epoch_time=epoch_time, elapsed_time=time.time() - start_time,
                 neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
             )
@@ -707,7 +682,37 @@ def main(config_path: str):
     finally:
         total_time = time.time() - start_time
 
-        ckpt_mgr.save_final(epoch if 'epoch' in locals() else 0, params, opt_state, val_metrics, avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth)
+        # Evaluate all physics losses on best-NSE params (even zero-weight terms)
+        all_physics_losses = {}
+        eval_params = best_params_nse if best_params_nse is not None else params
+        try:
+            eval_key = random.PRNGKey(0)
+            eval_keys = random.split(eval_key, 6)
+            n_eval = 200
+            t_range = (0., domain_cfg["t_final"])
+            eval_batch = {
+                'pde': domain_sampler.sample_interior(eval_keys[0], n_eval, t_range),
+                'ic': domain_sampler.sample_interior(eval_keys[1], n_eval, (0., 0.)),
+                'bc_upstream': domain_sampler.sample_boundary(eval_keys[2], n_eval, t_range, 'upstream'),
+                'bc_wall': domain_sampler.sample_boundary(eval_keys[3], n_eval, t_range, 'wall'),
+                'bc_building': domain_sampler.sample_boundary(eval_keys[4], n_eval, t_range, 'building'),
+                'data': jnp.empty((0, 6), dtype=get_dtype()),
+            }
+            all_physics_losses = compute_losses_fn(model, eval_params, eval_batch, cfg, data_free=True)
+            all_physics_losses = {k: float(v) for k, v in all_physics_losses.items()}
+            print(f"\nAll physics losses (best-NSE params):")
+            for k, v in all_physics_losses.items():
+                print(f"  {k}: {v:.6e}")
+        except Exception as e:
+            print(f"Warning: Failed to evaluate all physics losses: {e}")
+
+        # Merge all_physics_losses into final losses for the checkpoint
+        final_losses_for_ckpt = dict(avg_losses_unweighted)
+        for k, v in all_physics_losses.items():
+            if k not in final_losses_for_ckpt:
+                final_losses_for_ckpt[k] = v
+
+        ckpt_mgr.save_final(epoch if 'epoch' in locals() else 0, params, opt_state, val_metrics, final_losses_for_ckpt, avg_total_weighted_loss, cfg_dict, neg_depth)
 
         best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
         best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
@@ -717,7 +722,7 @@ def main(config_path: str):
             final_epoch=epoch if 'epoch' in locals() else 0,
             best_nse_stats=best_nse_ckpt,
             best_loss_stats=best_loss_ckpt,
-            final_losses=avg_losses_unweighted,
+            final_losses=final_losses_for_ckpt,
             final_val_metrics=val_metrics,
             neg_depth_final=neg_depth,
             neg_depth_best_nse={},
@@ -727,7 +732,7 @@ def main(config_path: str):
 
         final_params = best_params_loss if best_params_loss is not None else best_params_nse
 
-        aim_tracker.log_summary({
+        summary_metrics = {
             'best_validation_model': best_nse_stats,
             'best_loss_model': best_loss_stats,
             'final_system': {
@@ -735,7 +740,10 @@ def main(config_path: str):
                 'total_epochs_run': (epoch + 1) if 'epoch' in locals() else 0,
                 'total_steps_run': global_step
             }
-        })
+        }
+        if all_physics_losses:
+            summary_metrics['all_physics_losses'] = all_physics_losses
+        aim_tracker.log_summary(summary_metrics)
 
         if ask_for_confirmation():
             if final_params is not None:
@@ -745,7 +753,7 @@ def main(config_path: str):
                     aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
 
                 print("Generating plots...")
-                t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
+                t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
                 output_points = []
 
                 output_csv_path = resolve_scenario_asset_path(

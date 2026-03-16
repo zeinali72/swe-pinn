@@ -1,6 +1,5 @@
-"""Training diagnostics: negative depth stats and gradient norms."""
+"""Training diagnostics: negative depth stats."""
 import jax.numpy as jnp
-import optax
 from typing import Dict
 
 
@@ -36,7 +35,3 @@ def compute_negative_depth_diagnostics(
         'mean': float(jnp.mean(neg_values)),
     }
 
-
-def compute_grad_norm(grads) -> float:
-    """Compute the global L2 norm of a gradient pytree."""
-    return float(optax.global_norm(grads))

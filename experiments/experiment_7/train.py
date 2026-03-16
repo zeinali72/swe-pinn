@@ -18,7 +18,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Local application imports
-from src.config import load_config, DTYPE
+from src.config import load_config, get_dtype
 from src.data import (
     get_batches_tensor,
     load_boundary_condition,
@@ -27,8 +27,7 @@ from src.data import (
 )
 from src.losses import (
     compute_pde_loss,
-    loss_boundary_dirichlet_hu,
-    loss_boundary_dirichlet_hv,
+    loss_boundary_dirichlet,
     loss_slip_wall_generalized,
     compute_neg_h_loss,
     compute_data_loss,
@@ -75,13 +74,13 @@ def make_compute_losses(bc_fn_static):
         inflow_width = config["boundary_conditions"]["inflow_discharge_width"]
         flux_target_x = Q_target / inflow_width
         loss_bc_inflow = (
-            loss_boundary_dirichlet_hu(model, params, batch['bc_inflow'], flux_target_x)
-            + loss_boundary_dirichlet_hv(model, params, batch['bc_inflow'], jnp.zeros_like(flux_target_x))
+            loss_boundary_dirichlet(model, params, batch['bc_inflow'], flux_target_x, var_idx=1)
+            + loss_boundary_dirichlet(model, params, batch['bc_inflow'], jnp.zeros_like(flux_target_x), var_idx=2)
         )
         loss_bc_wall = loss_slip_wall_generalized(model, params, batch['bc_wall'])
         terms['bc'] = loss_bc_inflow + loss_bc_wall
 
-        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+        data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=get_dtype()))
         if not data_free and data_batch_data.shape[0] > 0:
             terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
@@ -238,6 +237,21 @@ def main(config_path: str):
         cfg, data_free, compute_losses_fn=compute_losses_fn,
     )
 
+    # --- Evaluate All Physics Losses (including zero-weight terms) ---
+    n_eval = 200
+    def compute_all_losses_fn(model, params):
+        eval_key = random.PRNGKey(0)
+        keys = random.split(eval_key, 5)
+        t_range = (0., domain_cfg["t_final"])
+        batch = {
+            'pde': domain_sampler.sample_interior(keys[0], n_eval, t_range),
+            'ic': domain_sampler.sample_interior(keys[1], n_eval, (0., 0.)),
+            'bc_inflow': domain_sampler.sample_boundary(keys[2], n_eval, t_range, 'inflow'),
+            'bc_wall': domain_sampler.sample_boundary(keys[3], n_eval, t_range, 'wall'),
+            'data': jnp.empty((0, 6), dtype=get_dtype()),
+        }
+        return compute_losses_fn(model, params, batch, cfg, data_free=True)
+
     loop_result = run_training_loop(
         cfg=cfg,
         cfg_dict=cfg_dict,
@@ -259,11 +273,12 @@ def main(config_path: str):
         h_true_val_all=h_true_val_all,
         val_targets_all=val_targets_all,
         source_script_path=__file__,
+        compute_all_losses_fn=compute_all_losses_fn,
     )
 
     def plot_fn(final_params):
         print("Generating Experiment 7 plots...")
-        t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=DTYPE)
+        t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
         aim_tracker = loop_result["aim_tracker"]
         final_epoch = loop_result["epoch"]
         output_csv_path = resolve_configured_asset_path(

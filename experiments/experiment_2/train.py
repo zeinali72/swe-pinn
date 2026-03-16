@@ -26,13 +26,15 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
     print(f"Added project root to path: {project_root}")
 
-from src.config import DTYPE
+from src.config import get_dtype
 from src.predict.predictor import _apply_min_depth
 from src.data import sample_domain, get_batches_tensor, load_validation_data
 from src.losses import (
-    compute_pde_loss, compute_ic_loss, compute_bc_loss,
-    compute_building_bc_loss, compute_data_loss, compute_neg_h_loss
+    compute_pde_loss, compute_ic_loss, compute_data_loss, compute_neg_h_loss,
+    loss_boundary_dirichlet, loss_boundary_neumann_outflow_x,
+    loss_boundary_wall_horizontal, loss_boundary_wall_vertical,
 )
+from src.physics import h_exact
 from src.utils import (
     nse, rmse, mask_points_inside_building,
     plot_comparison_scatter_2d
@@ -65,38 +67,50 @@ def compute_losses(model, params, batch, config, data_free):
     """Compute all loss terms for Experiment 2 (building obstacle)."""
     terms = {}
 
-    pde_batch_data = batch.get('pde', jnp.empty((0, 3), dtype=DTYPE))
+    pde_batch_data = batch.get('pde', jnp.empty((0, 3), dtype=get_dtype()))
     if pde_batch_data.shape[0] > 0:
         pde_mask = mask_points_inside_building(pde_batch_data, config["building"])
         terms['pde'] = compute_pde_loss(model, params, pde_batch_data, config, pde_mask)
         terms['neg_h'] = compute_neg_h_loss(model, params, pde_batch_data, pde_mask)
 
-    ic_batch_data = batch.get('ic', jnp.empty((0, 3), dtype=DTYPE))
+    ic_batch_data = batch.get('ic', jnp.empty((0, 3), dtype=get_dtype()))
     if ic_batch_data.shape[0] > 0:
         terms['ic'] = compute_ic_loss(model, params, ic_batch_data)
 
     bc_batches = batch.get('bc', {})
     if any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape')):
-        terms['bc'] = compute_bc_loss(
-            model, params,
-            bc_batches.get('left', jnp.empty((0, 3), dtype=DTYPE)),
-            bc_batches.get('right', jnp.empty((0, 3), dtype=DTYPE)),
-            bc_batches.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
-            bc_batches.get('top', jnp.empty((0, 3), dtype=DTYPE)),
-            config,
-        )
+        left = bc_batches.get('left', jnp.empty((0, 3), dtype=get_dtype()))
+        right = bc_batches.get('right', jnp.empty((0, 3), dtype=get_dtype()))
+        bottom = bc_batches.get('bottom', jnp.empty((0, 3), dtype=get_dtype()))
+        top = bc_batches.get('top', jnp.empty((0, 3), dtype=get_dtype()))
+
+        # Left: Dirichlet h + hu from analytical dam-break solution
+        u_const = config["physics"]["u_const"]
+        n_manning = config["physics"]["n_manning"]
+        t_left = left[..., 2]
+        h_true = h_exact(0.0, t_left, n_manning, u_const)
+        hu_true = h_true * u_const
+        loss_left = (loss_boundary_dirichlet(model, params, left, h_true, var_idx=0) +
+                     loss_boundary_dirichlet(model, params, left, hu_true, var_idx=1))
+        # Right: Neumann outflow
+        loss_right = loss_boundary_neumann_outflow_x(model, params, right)
+        # Top/Bottom: horizontal walls
+        loss_bottom = loss_boundary_wall_horizontal(model, params, bottom)
+        loss_top = loss_boundary_wall_horizontal(model, params, top)
+        terms['bc'] = loss_left + loss_right + loss_bottom + loss_top
 
     bldg_batches = batch.get('building_bc', {})
     if bldg_batches and any(b.shape[0] > 0 for b in bldg_batches.values() if hasattr(b, 'shape')):
-        terms['building_bc'] = compute_building_bc_loss(
-            model, params,
-            bldg_batches.get('left', jnp.empty((0, 3), dtype=DTYPE)),
-            bldg_batches.get('right', jnp.empty((0, 3), dtype=DTYPE)),
-            bldg_batches.get('bottom', jnp.empty((0, 3), dtype=DTYPE)),
-            bldg_batches.get('top', jnp.empty((0, 3), dtype=DTYPE)),
-        )
+        bl = bldg_batches.get('left', jnp.empty((0, 3), dtype=get_dtype()))
+        br = bldg_batches.get('right', jnp.empty((0, 3), dtype=get_dtype()))
+        bb = bldg_batches.get('bottom', jnp.empty((0, 3), dtype=get_dtype()))
+        bt = bldg_batches.get('top', jnp.empty((0, 3), dtype=get_dtype()))
+        terms['building_bc'] = (loss_boundary_wall_vertical(model, params, bl) +
+                                loss_boundary_wall_vertical(model, params, br) +
+                                loss_boundary_wall_horizontal(model, params, bb) +
+                                loss_boundary_wall_horizontal(model, params, bt))
 
-    data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=DTYPE))
+    data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=get_dtype()))
     if not data_free and data_batch_data.shape[0] > 0:
         terms['data'] = compute_data_loss(model, params, data_batch_data, config)
 
@@ -164,7 +178,7 @@ def main(config_path: str):
     if os.path.exists(validation_data_file):
         try:
             print(f"Loading VALIDATION data from: {validation_data_file}")
-            _, val_points_all, val_targets_all = load_validation_data(validation_data_file, dtype=DTYPE)
+            _, val_points_all, val_targets_all = load_validation_data(validation_data_file, dtype=get_dtype())
             h_true_val_all = val_targets_all[:, 0]
             print("Applying building mask to validation metrics points...")
             mask_val = mask_points_inside_building(val_points_all, cfg["building"])
@@ -292,6 +306,36 @@ def main(config_path: str):
             metrics = {'nse_h': float(nse_val), 'rmse_h': float(rmse_val)}
         return metrics
 
+    # --- Evaluate All Physics Losses (including zero-weight terms) ---
+    n_eval = 200
+    def compute_all_losses_fn(model, params):
+        eval_key = random.PRNGKey(0)
+        keys = random.split(eval_key, 6)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
+        batch = {
+            'pde': sample_domain(keys[0], n_eval, x_range, y_range, t_range),
+            'ic': sample_domain(keys[1], n_eval, x_range, y_range, (0., 0.)),
+            'bc': {
+                'left': sample_domain(keys[2], n_eval, (0., 0.), y_range, t_range),
+                'right': sample_domain(keys[2], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+                'bottom': sample_domain(keys[3], n_eval, x_range, (0., 0.), t_range),
+                'top': sample_domain(keys[3], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+            },
+            'data': jnp.empty((0, 6), dtype=get_dtype()),
+            'building_bc': {},
+        }
+        if has_building:
+            b_cfg = cfg["building"]
+            batch['building_bc'] = {
+                'left': sample_domain(keys[4], n_eval, (b_cfg["x_min"], b_cfg["x_min"]), (b_cfg["y_min"], b_cfg["y_max"]), t_range),
+                'right': sample_domain(keys[4], n_eval, (b_cfg["x_max"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_max"]), t_range),
+                'bottom': sample_domain(keys[5], n_eval, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_min"], b_cfg["y_min"]), t_range),
+                'top': sample_domain(keys[5], n_eval, (b_cfg["x_min"], b_cfg["x_max"]), (b_cfg["y_max"], b_cfg["y_max"]), t_range),
+            }
+        return compute_losses(model, params, batch, cfg, data_free=True)
+
     loop_result = run_training_loop(
         cfg=cfg,
         cfg_dict=cfg_dict,
@@ -310,6 +354,7 @@ def main(config_path: str):
         config_path=config_path,
         validation_fn=validation_fn,
         source_script_path=__file__,
+        compute_all_losses_fn=compute_all_losses_fn,
     )
 
     def plot_fn(final_params):
@@ -326,12 +371,12 @@ def main(config_path: str):
             return
 
         plot_data = np.load(plot_data_file)
-        plot_points_scatter = jnp.array(plot_data[:, [1, 2, 0]], dtype=DTYPE)
-        x_coords_plot = jnp.array(plot_data[:, 1], dtype=DTYPE)
-        y_coords_plot = jnp.array(plot_data[:, 2], dtype=DTYPE)
-        h_true_plot = jnp.array(plot_data[:, 3], dtype=DTYPE)
-        u_true_plot = jnp.array(plot_data[:, 4], dtype=DTYPE)
-        v_true_plot = jnp.array(plot_data[:, 5], dtype=DTYPE)
+        plot_points_scatter = jnp.array(plot_data[:, [1, 2, 0]], dtype=get_dtype())
+        x_coords_plot = jnp.array(plot_data[:, 1], dtype=get_dtype())
+        y_coords_plot = jnp.array(plot_data[:, 2], dtype=get_dtype())
+        h_true_plot = jnp.array(plot_data[:, 3], dtype=get_dtype())
+        u_true_plot = jnp.array(plot_data[:, 4], dtype=get_dtype())
+        v_true_plot = jnp.array(plot_data[:, 5], dtype=get_dtype())
         h_true_safe = jnp.maximum(h_true_plot, eps_plot)
         hu_true_plot = h_true_safe * u_true_plot
         hv_true_plot = h_true_safe * v_true_plot
