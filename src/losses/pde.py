@@ -52,17 +52,21 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     residual = (dU_dt + div_F + div_G - S)
 
     h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)
-    final_residual = residual * h_mask[..., None]* pde_mask[..., None]
-    return jnp.mean(final_residual ** 2)
+    combined_mask = h_mask * pde_mask
+    final_residual = residual * combined_mask[..., None]
+    per_point = jnp.mean(final_residual ** 2, axis=-1)
+    return jnp.sum(per_point) / jnp.maximum(jnp.sum(combined_mask), 1.0)
 
 def compute_neg_h_loss(model: nn.Module, params: Dict[str, Any], pde_points: jnp.ndarray,
                      pde_mask: Optional[jnp.ndarray] = None) -> jnp.ndarray:
     """Compute penalty for negative water height."""
     U_pred = model.apply({'params': params['params']}, pde_points, train=False)
     h_pred = U_pred[..., 0]
+    per_point = jax.nn.relu(-h_pred) ** 2
     if pde_mask is not None:
-        h_pred = h_pred * pde_mask
-    return jnp.mean(jax.nn.relu(-h_pred) ** 2)
+        per_point = per_point * pde_mask
+        return jnp.sum(per_point) / jnp.maximum(jnp.sum(pde_mask), 1.0)
+    return jnp.mean(per_point)
 
 def compute_ic_loss(model: nn.Module, params: Dict[str, Any], ic_batch: jnp.ndarray) -> jnp.ndarray:
     """Compute initial condition loss for h=0, hu=0, hv=0 at t=0."""
