@@ -4,61 +4,104 @@ This file provides guidance for AI assistants working with the SWE-PINN codebase
 
 ## Project Overview
 
-SWE-PINN implements **Physics-Informed Neural Networks (PINNs)** for solving **2D Shallow Water Equations (SWE)** using JAX and Flax. It models water flow in channels, rivers, and coastal areas, optionally with building obstacles. The project is research-grade, configuration-driven, and designed for GPU-accelerated training.
+SWE-PINN is a **Physics-Informed Neural Network (PINN) framework for urban flood prediction**. It solves the **2D Shallow Water Equations (SWE)** as a neural PDE solver: the network takes spatiotemporal coordinates `(x, y, t)` as input and predicts water depth `h` and specific discharges `hu`, `hv`. Physics is enforced through a composite loss that penalises PDE residuals (via automatic differentiation), initial condition violations, boundary condition violations, and deviation from observational data produced by InfoWorks ICM numerical simulations.
+
+The codebase is built in Python with JAX and Flax, using Optuna for hyperparameter optimisation. Three neural network architectures are compared:
+- **MLP** — standard multi-layer perceptron baseline
+- **Fourier-MLP** — projects inputs into a higher-dimensional frequency space to overcome spectral bias
+- **DGM** (Deep Galerkin Method) — injects raw coordinates into every hidden layer via gated sub-networks
+
+### Research Phases and Experiments
+
+**Phase 1 — Baseline Verification and Architecture Selection**
+- **Experiment 1**: Verifies the framework against an analytical dam-break solution on a flat domain.
+- **Experiment 2**: Introduces a building obstacle; motivates Fourier-MLP and DGM adoption.
+
+**Phase 2 — Topographic Complexity on Synthetic Domains**
+- **Experiment 3**: Introduces terrain slope in the x-direction via bi-linear interpolation.
+- **Experiment 4**: Extends slope to both x and y directions.
+- **Experiment 5**: Further synthetic complexity to validate robustness.
+
+**Phase 3 — Domain Generalisation and Real-World Application**
+- **Experiment 7**: Irregular boundaries using triangulated mesh-based sampling and wall normals.
+- **Experiment 8**: Real urban subcatchment in Eastbourne, UK (Blue Heart Project).
 
 ## Repository Structure
 
 ```
 swe-pinn/
-├── src/                        # Core source code
-│   ├── train.py                # Unified training script (main entry point)
-│   ├── models.py               # Neural network architectures (FourierPINN, MLP, DGMNetwork, DeepONet)
-│   ├── losses.py               # PDE, IC, BC loss functions for SWE
-│   ├── physics.py              # SWE physics computations and Jacobians
-│   ├── gradnorm.py             # GradNorm adaptive loss weighting
-│   ├── ntk.py                  # Neural Tangent Kernel trace computation
-│   ├── data.py                 # Data sampling and batching utilities
-│   ├── config.py               # YAML configuration loading
-│   ├── utils.py                # Metrics (NSE, RMSE), plotting, model saving
-│   ├── reporting.py            # Training stats logging and Aim integration
-│   ├── scenarios/              # Scenario-specific training scripts
-│   │   ├── analytical/         # Pure analytical scenarios (no buildings)
-│   │   │   ├── analytical.py   # Standard analytical training
-│   │   │   ├── analytical_ntk.py   # NTK-based weight adaptation
-│   │   │   └── train_deeponet.py   # DeepONet operator learning
-│   │   └── building/           # Scenarios with building obstacles
-│   │       └── building.py     # Training with spatial masking
-│   └── operator_learning/      # DeepONet operator learning modules
-│       ├── physics_op.py       # SWE physics for parameter-varying solutions
-│       └── losses_op.py        # DeepONet-specific loss functions
-├── configs/                    # Experiment configuration YAML files
-│   ├── fourier_pinn_config.yaml
-│   ├── dgm_datafree_static.yaml
-│   ├── dgm_datafree_gradnorm.yaml
-│   ├── analytical_ntk_config.yaml
-│   └── config_operatornet_analytical.yaml
-├── test/                       # Unit tests
-│   ├── test_train.py           # Main training script validation
-│   ├── test_train_gradnorm.py  # GradNorm mode tests (6 test cases)
+├── src/                            # Core source code
+│   ├── train.py                    # Unified training script (main entry point)
+│   ├── models.py                   # Neural network architectures (FourierPINN, MLP, DGMNetwork)
+│   ├── losses.py                   # PDE, IC, BC loss functions for SWE
+│   ├── physics.py                  # SWE physics computations and Jacobians
+│   ├── gradnorm.py                 # GradNorm adaptive loss weighting
+│   ├── softadapt.py                # SoftAdapt adaptive loss weighting
+│   ├── ntk.py                      # Neural Tangent Kernel trace computation
+│   ├── data.py                     # Data sampling, batching, and validation loading
+│   ├── config.py                   # YAML configuration loading
+│   ├── utils.py                    # Metrics (NSE, RMSE), plotting, model saving
+│   ├── reporting.py                # Training stats logging and Aim integration
+│   └── scenarios/                  # Per-experiment training scripts
+│       ├── experiment_1/           # Phase 1: analytical dam-break, flat domain
+│       │   ├── experiment_1.py
+│       │   ├── analytical_ntk.py
+│       │   └── experiment_1_lbfgs_finetune.py
+│       ├── experiment_2/           # Phase 1: building obstacle
+│       │   └── experiment_2.py
+│       ├── experiment_3/           # Phase 2: x-direction terrain slope
+│       │   └── experiment_3.py
+│       ├── experiment_4/           # Phase 2: x+y terrain slope
+│       │   └── experiment_4.py
+│       ├── experiment_5/           # Phase 2: synthetic complexity
+│       │   └── experiment_5.py
+│       ├── experiment_6/           # Phase 2: synthetic complexity stage 2
+│       │   └── experiment_6.py
+│       ├── experiment_7/           # Phase 3: irregular boundaries, mesh-based sampling
+│       │   └── experiment_7.py
+│       └── experiment_8/           # Phase 3: real urban domain (Eastbourne)
+│           ├── experiment_8.py
+│           └── experiment_8_imp_samp.py    # Importance sampling variant
+├── configs/                        # Experiment configuration YAML files
+│   ├── experiment_<N>.yaml             # Per-experiment configs (3–8)
+│   ├── experiment_<N>_<arch>.yaml      # Per-architecture variant configs
+│   └── train/                          # Final HPO-optimized configs for production runs
+│       └── experiment_<N>_<arch>_final.yaml
+├── test/                           # Unit tests
+│   ├── test_train.py               # Main training script validation
+│   ├── test_train_gradnorm.py      # GradNorm mode tests
 │   └── test_assets/
-│       └── test_config.yaml    # Minimal test configuration
-├── scripts/                    # Data processing and utility scripts
-│   ├── create_samples.py       # Generate training samples
-│   ├── filter_sample.py        # Filter/preprocess samples
-│   ├── convert_bin_to_npy.py   # Binary-to-numpy conversion
-│   └── cpp/                    # C++ utilities for data generation
-├── optimisation/               # Hyperparameter optimization (Optuna)
-│   ├── run_optimization.py     # Main HPO entry point
+│       └── test_config.yaml        # Minimal test configuration
+├── scripts/                        # Data processing and utility scripts
+│   ├── run_preprocess.sh           # Stage 1: Build & run C++ CSV→binary converter
+│   ├── binary_to_numpy.py          # Stage 2: Binary→.npy conversion
+│   ├── generate_training_data.py   # Stage 3: .npy→training/validation/plotting datasets
+│   ├── process_gauge_csvs.py       # Gauge CSV processing (depth/angle/speed→.npy)
+│   ├── extract_gauge_timeseries.py # Extract gauge time series from tensor
+│   ├── filter_by_time.py           # Filter .npy by maximum time
+│   ├── preprocess_irregular.py     # Mesh preprocessing for irregular domains (Exp 7/8)
+│   ├── render_video.py             # Render solution animations (CLI-driven)
+│   ├── infer.py                    # Post-training inference CLI wrapper
+│   ├── lidar_download.py           # Download LIDAR elevation data from UK gov WCS
+│   └── cpp/                        # C++ CSV→binary converter
+│       └── preprocess.cpp
+├── optimisation/                   # Hyperparameter optimisation (Optuna)
+│   ├── run_optimization.py         # Main HPO entry point
 │   ├── run_sensitivity_analysis.py
 │   ├── extract_best_params.py
-│   ├── objective_function.py   # Optuna objective
+│   ├── objective_function.py       # Optuna objective
 │   ├── optimization_train_loop.py
-│   └── configs/                # HPO-specific config files
-├── notebook/                   # Jupyter notebooks for analysis
-├── .devcontainer/              # Docker dev container setup (NVIDIA JAX + CUDA)
-├── .github/workflows/          # CI/CD: Docker image build/publish to GHCR
-├── pyproject.toml              # Package metadata and dependencies
-└── README.md                   # Project documentation
+│   ├── configs/                    # HPO-specific config files
+│   │   ├── exploration/            # Sobol exploration configs
+│   │   └── exploitation/           # TPE exploitation configs
+│   └── sensitivity_analysis_output/  # Importance reports + best params
+├── data/                           # Reference simulation data (InfoWorks ICM output)
+│   └── experiment_N/               # Per-experiment data folders
+├── notebook/                       # Jupyter notebooks for analysis
+├── .devcontainer/                  # Docker dev container setup (NVIDIA JAX + CUDA)
+├── .github/workflows/              # CI/CD: Docker image build/publish to GHCR
+├── pyproject.toml                  # Package metadata and dependencies
+└── README.md                       # Project documentation
 ```
 
 ## Tech Stack
@@ -80,13 +123,10 @@ swe-pinn/
 # Main unified training script (takes config path as argument)
 python src/train.py <config_path>
 
-# Example with a specific config
-python src/train.py configs/fourier_pinn_config.yaml
-
 # Scenario-specific scripts (run as modules)
-python -m src.scenarios.analytical.analytical <config_path>
-python -m src.scenarios.analytical.analytical_ntk <config_path>
-python -m src.scenarios.building.building <config_path>
+python -m src.scenarios.experiment_1.experiment_1 <config_path>
+python -m src.scenarios.experiment_2.experiment_2 <config_path>
+# ... same pattern for experiments 3–8
 ```
 
 ### Running Tests
@@ -113,14 +153,12 @@ python optimisation/extract_best_params.py
 ### Experiment Tracking
 
 ```bash
-# Launch Aim dashboard to view experiment logs
 aim up
 ```
 
 ### Installing Dependencies
 
 ```bash
-# Via dev container (recommended) or manually:
 pip install -r .devcontainer/requirements.txt
 ```
 
@@ -133,7 +171,7 @@ All hyperparameters are specified in YAML config files. The config structure inc
 | Section | Key Parameters |
 |---------|---------------|
 | `training` | `learning_rate`, `epochs`, `batch_size`, `seed` |
-| `model` | `name` (FourierPINN/MLP/DGMNetwork/DeepONet), `width`, `depth`, `output_dim` |
+| `model` | `name` (FourierPINN/MLP/DGMNetwork), `width`, `depth`, `output_dim` |
 | `domain` | `lx`, `ly`, `t_final` (spatial/temporal bounds) |
 | `grid` | `nx`, `ny`, `nt` (sampling grid points) |
 | `physics` | `u_const`, `n_manning`, `g`, `inflow` |
@@ -141,19 +179,17 @@ All hyperparameters are specified in YAML config files. The config structure inc
 | `device` | `dtype` (float32/float64), early stopping parameters |
 | `numerics` | `eps` (machine epsilon) |
 
-The model class is dynamically imported based on the `model.name` field in the config.
-
 ### Neural Network Architectures (`src/models.py`)
 
 1. **FourierPINN** - Fourier feature encoding + dense layers with tanh activation
 2. **MLP** - Standard multi-layer perceptron
 3. **DGMNetwork** - Deep Galerkin Method with LSTM-like gates
-4. **DeepONet** - Operator learning (branch + trunk networks)
 
 ### Loss Weighting Strategies
 
 - **Static**: Fixed weights from config
 - **GradNorm** (`src/gradnorm.py`): Adaptive weights that balance gradient magnitudes across loss terms
+- **SoftAdapt** (`src/softadapt.py`): Rate-of-change-based adaptive weighting
 - **NTK** (`src/ntk.py`): Weights based on Neural Tangent Kernel traces
 
 ### Physics Implementation
@@ -188,6 +224,7 @@ The model class is dynamically imported based on the `model.name` field in the c
 - Use `unittest.mock` for mocking file I/O and data
 - setUp/tearDown for temporary directory management
 - Test both data-free and data-driven modes, static and GradNorm weight strategies
+- **Manual training smoke-tests**: When verifying a training code change, run with **200 epochs**.
 
 ## CI/CD
 

@@ -1,0 +1,82 @@
+experiment:
+  name: experiment_8
+
+scenario: experiment_8
+data:
+  root_dir: data
+  training_file: training_dataset_sample.npy
+  validation_file: validation_gauges_ground_truth.npy
+
+sampling_defaults:
+  n_points_pde: 1000
+  n_points_ic: 100
+  n_points_bc_domain: 100
+  n_points_bc_inflow: 100
+  n_points_bc_building: 100
+
+domain:
+  t_final: 21600.0         # 6 hours
+boundary_conditions:
+  upstream_discharge_width: 372.92
+
+physics:
+  g: 1.0
+  inflow: null
+  n_manning: 0.03
+  u_const: 0.0
+device:
+  dtype: float32
+  early_stop_min_epochs: 1000
+  early_stop_patience: 3000
+numerics:
+  eps: 1.0e-03
+  min_depth: 0.005
+training:
+  epochs: 2000
+  seed: 42
+  learning_rate: 0.0006984150930531603
+  batch_size: 1024
+  reduce_on_plateau:
+    factor: 0.5
+    patience: 5
+    rtol: 1.0e-04
+    atol: 0.0
+    cooldown: 1
+    accumulation_factor: 2
+    min_scale: 1.0e-04
+model:
+  name: DGMNetwork
+  output_dim: 3
+  bias_init: 0.0
+  width: 256
+  depth: 5
+  output_scales: [1.0, 1.0, 1.0]
+  
+# --- CRITICAL FIX: Increased Sample Counts ---
+sampling:
+  n_points_pde: 500000    # Increased to cover 48h simulation
+  n_points_ic: 40000      # Sufficient for 2000x2000m area
+  n_points_bc_domain: 500000 # Sufficient for time-varying BCs
+  n_points_bc_inflow: 20000
+  n_points_bc_building: 100000
+  importance_sampling:
+    enabled: true
+    pool_size: 2000000           # Size of the candidate pool (CPU memory intensive)
+    resample_freq: 1             # Update pool every N epochs
+    eval_batch_size: 10000       # Batch size for evaluating residuals (VRAM intensive)
+    p_error_weight: 0.8
+loss_weights:
+  pde_weight: 10.0
+  ic_weight: 4.21261832e-04
+  bc_weight: 0.5
+  neg_h_weight: 1.50177776e-04
+  data_weight: 10.0
+gradnorm:
+  enable: false
+data_free: false
+
+reporting:
+  epoch_freq: 2
+# --- REQUIRED: Needed for folder naming ---
+CONFIG_PATH: configs/train/experiment_6_dgm_final.yaml
+

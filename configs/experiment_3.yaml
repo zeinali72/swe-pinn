@@ -1,0 +1,78 @@
+experiment:
+  name: experiment_3
+
+scenario: experiment_3
+data:
+  root_dir: data
+  training_file: training_dataset_sample.npy
+  validation_file: validation_gauges.npy
+
+sampling_defaults:
+  n_points_pde: 1000
+  n_points_ic: 100
+  n_points_bc_domain: 100
+
+domain:
+  lx: 700.0
+  ly: 100.0
+  t_final: 72000.0         # 20 hours
+initial_condition:
+  absolute_water_level: 9.7
+
+physics:
+  g: 9.81
+  inflow: null
+  n_manning: 0.03
+  u_const: 0.0
+device:
+  dtype: float32
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+numerics:
+  eps: 1.0e-06
+  min_depth: 0.005
+training:
+  epochs: 50000
+  seed: 42
+  learning_rate: 0.0006984150930531603
+  batch_size: 256
+  reduce_on_plateau:
+    factor: 0.5
+    patience: 5
+    rtol: 1.0e-04
+    atol: 0.0
+    cooldown: 1
+    accumulation_factor: 2
+    min_scale: 1.0e-04
+model:
+  name: FourierPINN
+  output_dim: 3
+  bias_init: 0.0
+  width: 512
+  depth: 5
+  ff_dims: 256
+  fourier_scale: 6.138224643110013
+# --- CRITICAL FIX: Increased Sample Counts ---
+sampling:
+  n_points_pde: 80000    # Increased to cover 20h simulation
+  n_points_ic: 4000      # Sufficient for 700x100m area
+  n_points_bc_domain: 30000 # Sufficient for time-varying BCs
+loss_weights:
+  pde_weight: 1.0
+  ic_weight: 0.02411
+  bc_weight: 10.0
+  neg_h_weight: 0.000002411
+  data_weight: 0.02411
+gradnorm:
+  enable: false
+data_free: false
+
+reporting:
+  epoch_freq: 100
+# --- REQUIRED: Needed for folder naming ---
+CONFIG_PATH: configs/train/test1_fourier_final.yaml
+
+
+softadapt:
+  enable: true
+  warmup_epochs: 100
