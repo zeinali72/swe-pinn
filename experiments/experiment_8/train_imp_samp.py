@@ -683,7 +683,37 @@ def main(config_path: str):
     finally:
         total_time = time.time() - start_time
 
-        ckpt_mgr.save_final(epoch if 'epoch' in locals() else 0, params, opt_state, val_metrics, avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth)
+        # Evaluate all physics losses on best-NSE params (even zero-weight terms)
+        all_physics_losses = {}
+        eval_params = best_params_nse if best_params_nse is not None else params
+        try:
+            eval_key = random.PRNGKey(0)
+            eval_keys = random.split(eval_key, 6)
+            n_eval = 200
+            t_range = (0., domain_cfg["t_final"])
+            eval_batch = {
+                'pde': domain_sampler.sample_interior(eval_keys[0], n_eval, t_range),
+                'ic': domain_sampler.sample_interior(eval_keys[1], n_eval, (0., 0.)),
+                'bc_upstream': domain_sampler.sample_boundary(eval_keys[2], n_eval, t_range, 'upstream'),
+                'bc_wall': domain_sampler.sample_boundary(eval_keys[3], n_eval, t_range, 'wall'),
+                'bc_building': domain_sampler.sample_boundary(eval_keys[4], n_eval, t_range, 'building'),
+                'data': jnp.empty((0, 6), dtype=DTYPE),
+            }
+            all_physics_losses = compute_losses_fn(model, eval_params, eval_batch, cfg, data_free=True)
+            all_physics_losses = {k: float(v) for k, v in all_physics_losses.items()}
+            print(f"\nAll physics losses (best-NSE params):")
+            for k, v in all_physics_losses.items():
+                print(f"  {k}: {v:.6e}")
+        except Exception as e:
+            print(f"Warning: Failed to evaluate all physics losses: {e}")
+
+        # Merge all_physics_losses into final losses for the checkpoint
+        final_losses_for_ckpt = dict(avg_losses_unweighted)
+        for k, v in all_physics_losses.items():
+            if k not in final_losses_for_ckpt:
+                final_losses_for_ckpt[k] = v
+
+        ckpt_mgr.save_final(epoch if 'epoch' in locals() else 0, params, opt_state, val_metrics, final_losses_for_ckpt, avg_total_weighted_loss, cfg_dict, neg_depth)
 
         best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
         best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
@@ -693,7 +723,7 @@ def main(config_path: str):
             final_epoch=epoch if 'epoch' in locals() else 0,
             best_nse_stats=best_nse_ckpt,
             best_loss_stats=best_loss_ckpt,
-            final_losses=avg_losses_unweighted,
+            final_losses=final_losses_for_ckpt,
             final_val_metrics=val_metrics,
             neg_depth_final=neg_depth,
             neg_depth_best_nse={},
@@ -703,7 +733,7 @@ def main(config_path: str):
 
         final_params = best_params_loss if best_params_loss is not None else best_params_nse
 
-        aim_tracker.log_summary({
+        summary_metrics = {
             'best_validation_model': best_nse_stats,
             'best_loss_model': best_loss_stats,
             'final_system': {
@@ -711,7 +741,10 @@ def main(config_path: str):
                 'total_epochs_run': (epoch + 1) if 'epoch' in locals() else 0,
                 'total_steps_run': global_step
             }
-        })
+        }
+        if all_physics_losses:
+            summary_metrics['all_physics_losses'] = all_physics_losses
+        aim_tracker.log_summary(summary_metrics)
 
         if ask_for_confirmation():
             if final_params is not None:

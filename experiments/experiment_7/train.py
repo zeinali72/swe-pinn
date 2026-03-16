@@ -238,6 +238,21 @@ def main(config_path: str):
         cfg, data_free, compute_losses_fn=compute_losses_fn,
     )
 
+    # --- Evaluate All Physics Losses (including zero-weight terms) ---
+    n_eval = 200
+    def compute_all_losses_fn(model, params):
+        eval_key = random.PRNGKey(0)
+        keys = random.split(eval_key, 5)
+        t_range = (0., domain_cfg["t_final"])
+        batch = {
+            'pde': domain_sampler.sample_interior(keys[0], n_eval, t_range),
+            'ic': domain_sampler.sample_interior(keys[1], n_eval, (0., 0.)),
+            'bc_inflow': domain_sampler.sample_boundary(keys[2], n_eval, t_range, 'inflow'),
+            'bc_wall': domain_sampler.sample_boundary(keys[3], n_eval, t_range, 'wall'),
+            'data': jnp.empty((0, 6), dtype=DTYPE),
+        }
+        return compute_losses_fn(model, params, batch, cfg, data_free=True)
+
     loop_result = run_training_loop(
         cfg=cfg,
         cfg_dict=cfg_dict,
@@ -259,6 +274,7 @@ def main(config_path: str):
         h_true_val_all=h_true_val_all,
         val_targets_all=val_targets_all,
         source_script_path=__file__,
+        compute_all_losses_fn=compute_all_losses_fn,
     )
 
     def plot_fn(final_params):
