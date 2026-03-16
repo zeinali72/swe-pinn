@@ -5,9 +5,9 @@
 hpo_settings:
   data_free: true
   enable_gradnorm: false
-  opt_epochs: 2000
 
 training:
+  epochs: 2000
   seed: 42
 
 scenario: experiment_2
@@ -39,9 +39,6 @@ building: # Fixed geometry, Optuna suggests sampling density
   x_max: 375.0
   y_min: 25.0
   y_max: 75.0
-  nx: 20
-  ny: 20
-  nt: 20
 
 physics: # Fixed
   u_const: 0.29
