@@ -69,7 +69,7 @@ def make_compute_losses(bc_fn_static):
         terms['neg_h'] = compute_neg_h_loss(model, params, batch['pde'])
 
         # IC: dry bed
-        U_ic = model.apply(params, batch['ic'], train=True)
+        U_ic = model.apply(params, batch['ic'], train=False)
         terms['ic'] = jnp.mean(U_ic[..., 0] ** 2) + jnp.mean(U_ic[..., 1] ** 2 + U_ic[..., 2] ** 2)
 
         # BC: upstream inflow + outer wall + building walls

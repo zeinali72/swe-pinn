@@ -131,10 +131,10 @@ def compute_weighted_pde_loss(model: nn.Module, params: FrozenDict, pde_batch: j
     Computes the weighted PDE loss.
     Essential for Unbiased Importance Sampling.
     """
-    U_pred = model.apply(params, pde_batch, train=True)
-    
     def U_fn(pts):
-        return model.apply(params, pts, train=True)
+        return model.apply(params, pts, train=False)
+
+    U_pred = U_fn(pde_batch)
 
     jac_U = jax.vmap(jax.jacfwd(U_fn))(pde_batch)
     dU_dx, dU_dy, dU_dt = jac_U[..., 0], jac_U[..., 1], jac_U[..., 2]
@@ -187,7 +187,7 @@ def make_compute_losses(bc_fn_static):
         terms['neg_h'] = compute_neg_h_loss(model, params, batch['pde'])
 
         # IC: dry bed
-        U_ic = model.apply(params, batch['ic'], train=True)
+        U_ic = model.apply(params, batch['ic'], train=False)
         terms['ic'] = jnp.mean(U_ic[..., 0] ** 2) + jnp.mean(U_ic[..., 1] ** 2 + U_ic[..., 2] ** 2)
 
         # BC: upstream inflow + outer wall + building walls

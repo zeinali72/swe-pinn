@@ -63,7 +63,7 @@ def make_compute_losses(bc_fn_static):
         terms['neg_h'] = compute_neg_h_loss(model, params, batch['pde'])
 
         # IC: target depth = max(0, water_level - z)
-        U_ic = model.apply(params, batch['ic'], train=True)
+        U_ic = model.apply(params, batch['ic'], train=False)
         z_ic, _, _ = bathymetry_fn(batch['ic'][..., 0], batch['ic'][..., 1])
         initial_water_level = config["initial_condition"]["absolute_water_level"]
         h_target_ic = jnp.maximum(0.0, initial_water_level - z_ic)
