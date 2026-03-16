@@ -26,30 +26,7 @@ from src.training import (
     make_scan_body,
 )
 
-# Experiment-specific logic: compute_losses + factories from #88
-from experiments.experiment_1.train import (
-    compute_losses as compute_losses_exp1,
-    make_generate_epoch_data as make_gen_exp1,
-    make_validation_fn as make_val_exp1,
-)
-from experiments.experiment_2.train import (
-    compute_losses as compute_losses_exp2,
-    make_generate_epoch_data as make_gen_exp2,
-    make_validation_fn as make_val_exp2,
-)
-
-EXPERIMENT_REGISTRY = {
-    "experiment_1": {
-        "compute_losses": compute_losses_exp1,
-        "make_gen": make_gen_exp1,
-        "make_val": make_val_exp1,
-    },
-    "experiment_2": {
-        "compute_losses": compute_losses_exp2,
-        "make_gen": make_gen_exp2,
-        "make_val": make_val_exp2,
-    },
-}
+from optimisation.experiment_registry import get_experiment_fns
 
 
 def _load_validation_data(trial_cfg, val_key):
@@ -97,7 +74,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     scenario = trial_cfg.get("scenario", "experiment_1")
     has_building = "building" in trial_cfg
     data_free = trial_cfg.get("hpo_settings", {}).get("data_free", True)
-    registry = EXPERIMENT_REGISTRY[scenario]
+    registry = get_experiment_fns(scenario)
 
     print(f"--- Starting Trial {trial.number} ---")
 
@@ -150,7 +127,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
             active_loss_term_keys=active_keys,
             n_bldg_per_wall=n_bldg_per_wall,
         )
-    generate_epoch_data_jit = registry["make_gen"](**gen_kwargs)
+    generate_epoch_data_jit = registry["make_generate_epoch_data"](**gen_kwargs)
 
     # 6. Scan body (same as production)
     scan_body = make_scan_body(
@@ -160,7 +137,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
 
     # 7. Validation (experiment-specific factory)
     val_loaded, val_points, h_true_val = _load_validation_data(trial_cfg, val_key)
-    validation_fn = registry["make_val"](
+    validation_fn = registry["make_validation_fn"](
         trial_cfg, val_loaded, val_points, h_true_val,
     )
 
