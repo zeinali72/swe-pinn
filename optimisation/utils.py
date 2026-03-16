@@ -4,6 +4,7 @@ import os
 
 import numpy as np
 import jax.numpy as jnp
+import optuna
 
 
 def sanitize_for_yaml(data):
@@ -75,9 +76,9 @@ def setup_study_storage(args_storage, project_root):
     )
 
 
-def is_remote_storage(storage_url):
-    """Return True if storage_url points to a remote (non-SQLite) backend."""
-    return not storage_url.startswith("sqlite")
+def _is_remote_storage(storage_url):
+    """Return True if *storage_url* points to a remote (PostgreSQL) backend."""
+    return storage_url.startswith("postgresql://") or storage_url.startswith("postgres://")
 
 
 def create_storage(storage_url):
@@ -85,10 +86,9 @@ def create_storage(storage_url):
 
     For remote backends (PostgreSQL), enables heartbeat and retry so that
     preempted trials (e.g. on Google Colab) are detected and retried.
+    For SQLite, returns the URL string directly (Optuna handles it).
     """
-    import optuna
-
-    if is_remote_storage(storage_url):
+    if _is_remote_storage(storage_url):
         return optuna.storages.RDBStorage(
             url=storage_url,
             heartbeat_interval=120,

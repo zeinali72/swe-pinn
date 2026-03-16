@@ -47,13 +47,20 @@ python optimisation/run_optimization.py \
 
 ## Latency considerations
 
-Remote databases add ~50-200ms per Optuna operation. To reduce the number of
-DB round-trips during training:
+Remote databases add ~50-200ms per Optuna operation. Without mitigation, every
+validation epoch triggers a `trial.report()` + `trial.should_prune()` round-trip.
 
-- Set `training.hpo_report_interval: 10` in your HPO config to report to
-  Optuna every 10th validation epoch instead of every one.
-- The heartbeat is configured automatically (120s interval, 600s grace period)
-  for Colab preemption recovery.
+**Required for remote storage:** Set `training.hpo_report_interval` in your HPO
+config to reduce DB calls. Without this, training will be bottlenecked by network
+latency:
+
+```yaml
+training:
+  hpo_report_interval: 10  # report every 10th validation, not every one
+```
+
+The heartbeat is configured automatically (120s interval, 600s grace period)
+for Colab preemption recovery.
 
 ## Multi-machine parallelism
 
