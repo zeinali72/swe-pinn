@@ -115,7 +115,14 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
         trial_params["loss_weights"][w] = suggest(w, weights_cfg,
             lambda w=w, min_w=min_w, max_w=max_w: trial.suggest_float(w, min_w, max_w, log=True))
 
-    trial_params["loss_weights"]["data_weight"] = 0.0
+    # Data weight: include in search space when data-driven, else 0.0
+    hpo_settings = base_config_dict.get("hpo_settings", {})
+    data_free = hpo_settings.get("data_free", True)
+    if not data_free:
+        trial_params["loss_weights"]["data_weight"] = suggest("data_weight", weights_cfg,
+            lambda: trial.suggest_float("data_weight", 1e-2, 1e4, log=True))
+    else:
+        trial_params["loss_weights"]["data_weight"] = 0.0
 
     # === Construct Configuration ===
     trial_config_dict = copy.deepcopy(base_config_dict)
