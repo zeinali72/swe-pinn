@@ -255,3 +255,27 @@ Plots are grouped: P1 (time series), P2 (spatial maps), P3 (comparisons), P4 (HP
 Tracked values grouped: T1 (losses), T2 (optimisation state), T3 (validation), T4 (HPO trials)
 The experiment-to-module mapping table shows exactly which modules each experiment needs
 Colour palette: Exeter (Deep Green #003C3C, Teal #007D69, Mint #00C896) + Blue Heart (Navy #0D2B45, Ocean #1B5E8A, Sky #4FA3D1). Arial. 300 DPI.
+
+## Subagent Orchestration
+
+Use specialised subagents for tasks matching their domain. Prefer parallel launches when tasks are independent.
+
+| Agent | Use for |
+|-------|---------|
+| `ai-engineer` | Architecture decisions, JAX optimisation, model design, training strategy |
+| `ml-engineer` | JAX/Flax training pipelines, loss functions, Optuna HPO, model optimisation |
+| `debugger` | JAX tracing errors, NaN propagation, shape mismatches, JIT issues |
+| `code-reviewer` | Code quality reviews, JIT safety, physics correctness, loss implementations |
+| `python-pro` | Python refactoring, type safety, idiomatic patterns |
+| `data-scientist` | Statistical analysis of training metrics (NSE, RMSE), experiment interpretation |
+| `data-analyst` | Data exploration, visualisation, training log analysis, plotting |
+| `docker-expert` | Dockerfile, NVIDIA JAX devcontainer, GPU containers, CI/CD |
+| `scientific-literature-researcher` | PINN methods, SWE solvers, spectral bias, adaptive loss weighting |
+| `senior-orchestrator` | Multi-step tasks spanning multiple specialist agents |
+
+**Guidelines:**
+- For multi-file refactors or new features, start with `ai-engineer` or `senior-orchestrator` to plan, then delegate to specialists.
+- After writing code, use `code-reviewer` to check JIT safety and physics correctness.
+- For debugging training failures (NaN losses, shape errors), use `debugger` first.
+- Use `scientific-literature-researcher` when implementing new PINN techniques or loss formulations.
+- Run `data-scientist` and `data-analyst` in parallel when analysing experiment results.
