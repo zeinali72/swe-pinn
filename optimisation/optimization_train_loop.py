@@ -9,7 +9,7 @@ import traceback
 
 import jax.numpy as jnp
 from jax import random, lax
-from flax.core import FrozenDict
+from flax.core import FrozenDict, unfreeze
 import optuna
 
 
@@ -17,7 +17,6 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     """Run a single HPO trial. Returns best metric value (or -1.0 on failure)."""
     # Accept both FrozenDict and plain dict
     if isinstance(trial_cfg, FrozenDict):
-        from flax.core import unfreeze
         trial_cfg_dict = unfreeze(trial_cfg)
     else:
         trial_cfg_dict = trial_cfg
@@ -36,13 +35,9 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     # 2. Run experiment-specific setup (model init, terrain, closures, etc.)
     try:
         ctx = setup_trial(trial_cfg_dict)
-    except Exception as e:
+    except (ValueError, RuntimeError, FileNotFoundError, OSError) as e:
         print(f"Trial {trial.number}: ERROR during setup: {e}")
         traceback.print_exc()
-        return -1.0
-
-    if ctx.get("num_batches", 0) == 0:
-        print(f"Trial {trial.number}: batch_size too large for sample counts. Returning -1.0.")
         return -1.0
 
     # 3. Read HPO settings from config

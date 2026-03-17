@@ -27,7 +27,7 @@ from src.losses import (
     loss_boundary_dirichlet, loss_boundary_neumann_outflow_x,
     loss_boundary_wall_horizontal,
 )
-from src.utils import nse, rmse, plot_h_vs_x
+from src.utils import nse, rmse, relative_l2, plot_h_vs_x
 from src.physics import h_exact, hu_exact, hv_exact
 from src.training import (
     create_optimizer,
@@ -249,8 +249,9 @@ def setup_trial(cfg_dict: dict) -> dict:
     )
 
     if num_batches == 0:
-        print(f"Error: Batch size {batch_size} is too large for configured sample counts or data. No training will occur.")
-        return {"num_batches": 0}
+        raise ValueError(
+            f"Batch size {batch_size} is too large for configured sample counts or data."
+        )
 
     # --- Setup Optimizer ---
     optimiser = create_optimizer(cfg, num_batches=num_batches)
@@ -302,12 +303,18 @@ def setup_trial(cfg_dict: dict) -> dict:
                 h_pred_val = U_pred_val[..., 0]
                 nse_val = float(nse(h_pred_val, h_true_val))
                 rmse_val = float(rmse(h_pred_val, h_true_val))
-                metrics = {'nse_h': nse_val, 'rmse_h': rmse_val}
+                metrics = {
+                    'nse_h': nse_val,
+                    'rmse_h': rmse_val,
+                    'rel_l2_h': float(relative_l2(h_pred_val, h_true_val)),
+                }
                 if hu_true_val is not None and hv_true_val is not None:
                     metrics['nse_hu'] = float(nse(U_pred_val[..., 1], hu_true_val))
                     metrics['rmse_hu'] = float(rmse(U_pred_val[..., 1], hu_true_val))
+                    metrics['rel_l2_hu'] = float(relative_l2(U_pred_val[..., 1], hu_true_val))
                     metrics['nse_hv'] = float(nse(U_pred_val[..., 2], hv_true_val))
                     metrics['rmse_hv'] = float(rmse(U_pred_val[..., 2], hv_true_val))
+                    metrics['rel_l2_hv'] = float(relative_l2(U_pred_val[..., 2], hv_true_val))
             except Exception as exc:
                 print(f"Warning: Validation calculation failed: {exc}")
         if not metrics:
@@ -364,9 +371,6 @@ def main(config_path: str):
     """Main training function for the analytical scenario."""
     cfg_dict = load_config(config_path)
     ctx = setup_trial(cfg_dict)
-
-    if ctx.get("num_batches", 0) == 0:
-        return -1.0
 
     experiment_name = ctx["experiment_name"]
     trial_name, results_dir, model_dir = create_output_dirs(ctx["cfg"], experiment_name)
