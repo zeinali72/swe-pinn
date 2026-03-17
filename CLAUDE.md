@@ -236,7 +236,7 @@ All hyperparameters are specified in YAML config files. The config structure inc
 - **Float precision**: Some physics computations require `float64`. Set via `config.device.dtype`.
 
 
-Experimental Programme
+# Experimental Programme
 This project runs 11 experiments across 3 phases. The authoritative specification for all metrics, plots, tracked values, and module structure lives in:
 docs/experimental_programme_reference.md
 Always consult this file when:
@@ -247,7 +247,7 @@ Setting up Aim tracking for a training run (what to log, at what frequency)
 Building or modifying any module in evaluation/
 Planning what outputs an experiment run should produce
 
-Key conventions from that document:
+## Key conventions from that document
 
 All accuracy metrics (NSE, RMSE, MAE, Rel L2) reported separately for h, hu, hv
 Metrics are grouped: A (accuracy), B (conservation), C (boundary), D (cost), E (HPO), F (data)

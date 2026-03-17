@@ -150,12 +150,12 @@ class TestSetupTrialExperiment1(unittest.TestCase):
         self.assertIn("nse_hu", metrics)
         self.assertIn("nse_hv", metrics)
 
-    def test_zero_batch_size_returns_sentinel(self):
+    def test_zero_batch_size_raises_valueerror(self):
         from experiments.experiment_1.train import setup_trial
         cfg_dict = _make_base_config()
         cfg_dict["training"]["batch_size"] = 999999
-        ctx = setup_trial(cfg_dict)
-        self.assertEqual(ctx.get("num_batches", 0), 0)
+        with self.assertRaises(ValueError):
+            setup_trial(cfg_dict)
 
     def test_generate_epoch_data_callable(self):
         from experiments.experiment_1.train import setup_trial
@@ -193,6 +193,10 @@ class TestSetupTrialExperiment2(unittest.TestCase):
 
 # ─── Experiment 3: Terrain slope x-direction ─────────────────────────────────
 
+@unittest.skipUnless(
+    os.path.exists("configs/experiment_3.yaml") and os.path.isdir("data/experiment_3"),
+    "Experiment 3 config/data not available",
+)
 class TestSetupTrialExperiment3(unittest.TestCase):
     """Test setup_trial() for Experiment 3 (terrain, x-direction slope)."""
 
@@ -214,6 +218,10 @@ class TestSetupTrialExperiment3(unittest.TestCase):
 
 # ─── Experiment 4: Terrain slope x+y ─────────────────────────────────────────
 
+@unittest.skipUnless(
+    os.path.exists("configs/experiment_4.yaml") and os.path.isdir("data/experiment_4"),
+    "Experiment 4 config/data not available",
+)
 class TestSetupTrialExperiment4(unittest.TestCase):
     """Test setup_trial() for Experiment 4 (terrain, x+y slope, split inflow)."""
 
@@ -230,6 +238,10 @@ class TestSetupTrialExperiment4(unittest.TestCase):
 
 # ─── Experiment 5: Synthetic complexity stage 1 ──────────────────────────────
 
+@unittest.skipUnless(
+    os.path.exists("configs/experiment_5.yaml") and os.path.isdir("data/experiment_5"),
+    "Experiment 5 config/data not available",
+)
 class TestSetupTrialExperiment5(unittest.TestCase):
     """Test setup_trial() for Experiment 5 (single left inflow)."""
 
@@ -246,6 +258,10 @@ class TestSetupTrialExperiment5(unittest.TestCase):
 
 # ─── Experiment 6: Synthetic complexity stage 2 ──────────────────────────────
 
+@unittest.skipUnless(
+    os.path.exists("configs/experiment_6.yaml") and os.path.isdir("data/experiment_6"),
+    "Experiment 6 config/data not available",
+)
 class TestSetupTrialExperiment6(unittest.TestCase):
     """Test setup_trial() for Experiment 6 (split inflow + left wall)."""
 
@@ -262,6 +278,10 @@ class TestSetupTrialExperiment6(unittest.TestCase):
 
 # ─── Experiment 7: Irregular domain ──────────────────────────────────────────
 
+@unittest.skipUnless(
+    os.path.exists("configs/experiment_7.yaml") and os.path.isdir("data/experiment_7"),
+    "Experiment 7 config/data not available",
+)
 class TestSetupTrialExperiment7(unittest.TestCase):
     """Test setup_trial() for Experiment 7 (irregular boundaries, mesh-based)."""
 
@@ -285,6 +305,10 @@ class TestSetupTrialExperiment7(unittest.TestCase):
 
 # ─── Experiment 8: Real urban domain ─────────────────────────────────────────
 
+@unittest.skipUnless(
+    os.path.exists("configs/experiment_8.yaml") and os.path.isdir("data/experiment_8"),
+    "Experiment 8 config/data not available",
+)
 class TestSetupTrialExperiment8(unittest.TestCase):
     """Test setup_trial() for Experiment 8 (real urban, combined NSE)."""
 

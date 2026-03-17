@@ -177,8 +177,9 @@ def setup_trial(cfg_dict: dict) -> dict:
         data_free=data_free,
     )
     if num_batches == 0:
-        print(f"Error: Batch size {batch_size} is too large for sample counts.")
-        return {"num_batches": 0}
+        raise ValueError(
+            f"Batch size {batch_size} is too large for configured sample counts or data."
+        )
     print(f"Batches per epoch: {num_batches}")
 
     # --- Optimizer ---
@@ -291,9 +292,6 @@ def main(config_path: str):
     """Main training loop for Experiment 4 Scenario."""
     cfg_dict = load_config(config_path)
     ctx = setup_trial(cfg_dict)
-
-    if ctx.get("num_batches", 0) == 0:
-        return -1.0
 
     experiment_name = ctx["experiment_name"]
     trial_name, results_dir, model_dir = create_output_dirs(ctx["cfg"], experiment_name)
