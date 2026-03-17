@@ -41,6 +41,10 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
         traceback.print_exc()
         return -1.0
 
+    if ctx.get("num_batches", 0) == 0:
+        print(f"Trial {trial.number}: batch_size too large for sample counts. Returning -1.0.")
+        return -1.0
+
     # 3. Read HPO settings from config
     hpo_settings = trial_cfg_dict.get("hpo_settings", {})
     objective_key = hpo_settings.get("objective_key", "nse_h")
