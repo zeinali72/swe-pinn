@@ -1,0 +1,137 @@
+# HPO exploration for Experiment 3 — FourierPINN, data-driven, terrain slope (x-dir).
+# Quick test config: 500 epochs per trial, small search space.
+
+hpo_settings:
+  data_free: false
+  objective_key: rmse_h
+  study_name: exp3-fourier-exploration
+  storage_backend: local      # "local" = SQLite, "remote" = PostgreSQL (credentials from .env)
+
+scenario: experiment_3
+
+experiment:
+  name: experiment_3
+
+data:
+  root_dir: data
+  training_file: training_dataset_sample.npy
+  validation_file: validation_gauges.npy
+
+training:
+  epochs: 500
+  seed: 42
+  hpo_patience: 200
+  hpo_report_interval: 10
+  validation_freq: 1
+
+# --- Hyperparameter search spaces ---
+# Scalars = fixed, {min, max} = Optuna range, [list] = categorical
+hpo_hyperparameters:
+  # Training
+  learning_rate:
+    min: 1.0e-5
+    max: 1.0e-2
+    log: true
+  batch_size: [128, 256, 512, 1024]
+
+  # Model architecture
+  model_width: [128, 256, 512]
+  model_depth:
+    min: 3
+    max: 6
+    type: int
+  ff_dims: [128, 256, 512]
+  fourier_scale:
+    min: 1.0
+    max: 30.0
+
+  # Sampling density
+  sampling:
+    n_points_pde:
+      min: 10000
+      max: 100000
+      log: true
+      type: int
+    n_points_ic:
+      min: 500
+      max: 10000
+      log: true
+      type: int
+    n_points_bc_domain:
+      min: 2000
+      max: 40000
+      log: true
+      type: int
+
+  # Loss weights (pde_weight fixed at 1.0, others relative)
+  loss_weights:
+    pde_weight: 1.0          # fixed anchor
+    ic_weight:
+      min: 1.0e-2
+      max: 1.0e+2
+      log: true
+    bc_weight:
+      min: 1.0e-2
+      max: 1.0e+2
+      log: true
+    neg_h_weight:
+      min: 1.0e-6
+      max: 1.0
+      log: true
+    data_weight:
+      min: 1.0e-2
+      max: 1.0e+4
+      log: true
+
+# --- Fixed values (not tuned) ---
+model:
+  name: "FourierPINN"
+  output_dim: 3
+  kernel_init: "glorot_uniform"
+  bias_init: 0.0
+  # defaults overridden by hpo_hyperparameters above
+  width: 256
+  depth: 4
+  ff_dims: 256
+  fourier_scale: 10.0
+
+domain:
+  lx: 700.0
+  ly: 100.0
+  t_final: 72000.0
+
+initial_condition:
+  absolute_water_level: 9.7
+
+sampling:
+  n_points_pde: 20000
+  n_points_ic: 1000
+  n_points_bc_domain: 5000
+
+physics:
+  g: 9.81
+  inflow: null
+  n_manning: 0.03
+  u_const: 0.0
+
+loss_weights:
+  pde_weight: 1.0
+  ic_weight: 1.0
+  bc_weight: 1.0
+  neg_h_weight: 1.0
+  data_weight: 1.0
+
+device:
+  dtype: "float32"
+  early_stop_min_epochs: 400
+  early_stop_patience: 300
+
+numerics:
+  eps: 1.0e-06
+  min_depth: 0.005
+
+train_grid:
+  n_points_train: 2000
+
+reporting:
+  epoch_freq: 100

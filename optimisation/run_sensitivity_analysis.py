@@ -49,19 +49,24 @@ def main():
 
     hpo_settings = base_config_dict.get("hpo_settings", {})
     opt_epochs = base_config_dict.get("training", {}).get("epochs", 5000)
+    data_free = hpo_settings.get("data_free", True)
 
-    print(f"Mode: DATA-FREE (Physics Only)")
+    print(f"Mode: {'DATA-FREE (Physics Only)' if data_free else 'DATA-DRIVEN'}")
     print(f"Sensitivity trials will run for {opt_epochs} epochs each.")
 
-    # --- Setup Optuna Study ---
-    storage_url = setup_study_storage(args.storage, project_root)
+    # --- Setup Optuna Study (config storage_backend > CLI --storage override) ---
+    storage_backend = hpo_settings.get("storage_backend", "local")
+    storage_url = setup_study_storage(storage_backend, project_root, cli_storage=args.storage)
     storage = create_storage(storage_url)
 
     print("Using QMCSampler for uniform exploration (Sensitivity Analysis).")
     sampler = optuna.samplers.QMCSampler()
 
+    study_name = args.study_name if args.study_name != "hpo-sensitivity" else \
+        hpo_settings.get("study_name", args.study_name)
+
     study = optuna.create_study(
-        study_name=args.study_name,
+        study_name=study_name,
         storage=storage,
         direction="maximize",
         sampler=sampler,
