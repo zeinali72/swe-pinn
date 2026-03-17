@@ -94,7 +94,7 @@ def make_compute_losses(bc_fn_static):
     return compute_losses
 
 
-def setup_trial(cfg_dict: dict) -> dict:
+def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     """Set up all training components for Experiment 4 from a config dict.
 
     Args:

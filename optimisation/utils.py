@@ -143,6 +143,18 @@ def _resolve_explicit_url(url, project_root):
     )
 
 
+MINIMIZE_METRICS = frozenset({
+    "rmse_h", "rmse_hu", "rmse_hv",
+    "mae_h", "mae_hu", "mae_hv",
+    "rel_l2_h", "rel_l2_hu", "rel_l2_hv",
+})
+
+
+def get_direction(objective_key: str) -> str:
+    """Return ``'minimize'`` or ``'maximize'`` for the given metric key."""
+    return "minimize" if objective_key in MINIMIZE_METRICS else "maximize"
+
+
 def _is_remote_storage(storage_url):
     """Return True if *storage_url* points to a remote (PostgreSQL) backend."""
     return storage_url.startswith("postgresql://") or storage_url.startswith("postgres://")

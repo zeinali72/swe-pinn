@@ -1,11 +1,11 @@
-# HPO exploration for Experiment 3 — FourierPINN, data-driven, terrain slope (x-dir).
-# Quick test config: 500 epochs per trial, small search space.
+# HPO exploration for Experiment 3 — MLP, data-driven, terrain slope (x-dir).
+# 500 epochs per trial for fast exploration.
 
 hpo_settings:
   data_free: false
-  objective_key: nse_h
-  study_name: exp3-fourier-exploration
-  storage_backend: remote      # "local" = SQLite, "remote" = PostgreSQL (credentials from .env)
+  objective_key: rmse_h
+  study_name: exp3-mlp-exploration
+  storage_backend: local      # "local" = SQLite, "remote" = PostgreSQL (credentials from .env)
 
 scenario: experiment_3
 
@@ -35,16 +35,12 @@ hpo_hyperparameters:
     log: true
   batch_size: [128, 256, 512, 1024]
 
-  # Model architecture
-  model_width: [128, 256, 512]
+  # Model architecture (no Fourier params for MLP)
+  model_width: [128, 256, 512, 1024]
   model_depth:
     min: 3
-    max: 6
+    max: 8
     type: int
-  ff_dims: [128, 256, 512]
-  fourier_scale:
-    min: 1.0
-    max: 30.0
 
   # Sampling density
   sampling:
@@ -86,15 +82,12 @@ hpo_hyperparameters:
 
 # --- Fixed values (not tuned) ---
 model:
-  name: "FourierPINN"
+  name: "MLP"
   output_dim: 3
   kernel_init: "glorot_uniform"
   bias_init: 0.0
-  # defaults overridden by hpo_hyperparameters above
   width: 256
-  depth: 4
-  ff_dims: 256
-  fourier_scale: 10.0
+  depth: 5
 
 domain:
   lx: 700.0
@@ -135,4 +128,4 @@ train_grid:
   n_points_train: 2000
 
 reporting:
-  epoch_freq: 1
+  epoch_freq: 100

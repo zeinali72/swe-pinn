@@ -14,7 +14,7 @@ import optuna
 
 
 def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> float:
-    """Run a single HPO trial. Returns best metric value (or -1.0 on failure)."""
+    """Run a single HPO trial. Returns best metric value (or NaN on failure)."""
     # Accept both FrozenDict and plain dict
     if isinstance(trial_cfg, FrozenDict):
         trial_cfg_dict = unfreeze(trial_cfg)
@@ -22,7 +22,6 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
         trial_cfg_dict = trial_cfg
 
     scenario = trial_cfg_dict.get("scenario", "experiment_1")
-    print(f"--- Starting Trial {trial.number} ---")
 
     # 1. Dynamically import the experiment's setup_trial function
     try:
@@ -30,15 +29,15 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
         setup_trial = mod.setup_trial
     except (ImportError, AttributeError) as e:
         print(f"Trial {trial.number}: Cannot import experiments.{scenario}.train.setup_trial: {e}")
-        return -1.0
+        return float("nan")
 
     # 2. Run experiment-specific setup (model init, terrain, closures, etc.)
     try:
-        ctx = setup_trial(trial_cfg_dict)
+        ctx = setup_trial(trial_cfg_dict, hpo_mode=True)
     except (ValueError, RuntimeError, FileNotFoundError, OSError) as e:
         print(f"Trial {trial.number}: ERROR during setup: {e}")
         traceback.print_exc()
-        return -1.0
+        return float("nan")
 
     # 3. Read HPO settings from config
     hpo_settings = trial_cfg_dict.get("hpo_settings", {})
@@ -47,11 +46,16 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     validation_freq = trial_cfg_dict.get("training", {}).get("validation_freq", 1)
     hpo_patience = trial_cfg_dict.get("training", {}).get("hpo_patience", 300)
     report_interval = trial_cfg_dict.get("training", {}).get("hpo_report_interval", 1)
-    log_freq = validation_freq * 200
+    # Warmup: no early-stopping or pruning during first N epochs (min 20% of trial epochs)
+    warmup = trial_cfg_dict.get("training", {}).get("hpo_warmup_epochs", max(100, epochs // 5))
+    log_freq = max(1, epochs // 5)
 
-    # 4. Generic training loop with Optuna integration
-    best_metric = -jnp.inf
-    last_improvement = -hpo_patience
+    # 4. Determine optimisation direction from the objective metric
+    minimize = objective_key in ("rmse_h", "rmse_hu", "rmse_hv",
+                                  "mae_h", "mae_hu", "mae_hv",
+                                  "rel_l2_h", "rel_l2_hu", "rel_l2_hv")
+    best_metric = jnp.inf if minimize else -jnp.inf
+    last_improvement = 0
     train_key = ctx["train_key"]
     params = ctx["params"]
     opt_state = ctx["opt_state"]
@@ -65,24 +69,27 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
 
         if (epoch + 1) % validation_freq == 0:
             metrics = ctx["validation_fn"](ctx["model"], params)
-            current = metrics.get(objective_key, -jnp.inf)
+            fallback = jnp.inf if minimize else -jnp.inf
+            current = metrics.get(objective_key, fallback)
 
             if jnp.isnan(current):
                 print(f"Trial {trial.number}, Epoch {epoch+1}: NaN metric. Pruning.")
                 raise optuna.exceptions.TrialPruned()
 
-            if current > best_metric:
+            improved = current < best_metric if minimize else current > best_metric
+            if improved:
                 best_metric = current
                 last_improvement = epoch
 
-            # Intra-trial patience-based early stopping
-            if epoch - last_improvement > hpo_patience:
+            # Early stopping & pruning only AFTER warmup
+            past_warmup = (epoch + 1) > warmup
+
+            if past_warmup and (epoch - last_improvement > hpo_patience):
                 print(f"Trial {trial.number}: No improvement for "
                       f"{hpo_patience} epochs. Early stopping at epoch {epoch+1}.")
                 break
 
-            # Report to Optuna (every report_interval validations)
-            if (epoch + 1) % (validation_freq * report_interval) == 0:
+            if past_warmup and (epoch + 1) % (validation_freq * report_interval) == 0:
                 trial.report(float(best_metric), epoch)
                 if trial.should_prune():
                     print(f"Trial {trial.number}: Pruned at epoch {epoch+1}.")
@@ -95,14 +102,14 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
                 terms_str = " ".join(
                     f"{k}={v:.3e}" for k, v in sorted(avg_terms.items())
                 )
-                print(f"  Trial {trial.number}, Epoch {epoch+1}/{epochs}: "
+                print(f"  T{trial.number} E{epoch+1}/{epochs}: "
                       f"loss={avg_total:.3e} [{terms_str}] "
-                      f"{objective_key}={current:.6f}, Best={best_metric:.6f}")
-                trial.set_user_attr(f"losses_epoch_{epoch+1}", avg_terms)
+                      f"{objective_key}={current:.6f} best={best_metric:.6f}")
 
-    if best_metric <= -jnp.inf:
+    no_valid = (best_metric >= jnp.inf) if minimize else (best_metric <= -jnp.inf)
+    if no_valid:
         print(f"Trial {trial.number}: No valid metric achieved.")
-        return -1.0
+        return float("nan")
 
     print(f"Trial {trial.number}: Finished. Best {objective_key} = {best_metric:.6f}")
     return float(best_metric)

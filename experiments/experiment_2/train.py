@@ -119,7 +119,7 @@ def compute_losses(model, params, batch, config, data_free):
     return terms
 
 
-def setup_trial(cfg_dict: dict) -> dict:
+def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     """Set up all training components for Experiment 2 from a config dict.
 
     Args:
