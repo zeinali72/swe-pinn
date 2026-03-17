@@ -98,22 +98,20 @@ class TestObjectiveSmoke(unittest.TestCase):
         self.assertFalse(float('nan') == result)
 
 
-class TestExperimentRegistry(unittest.TestCase):
-    """Test the experiment registry."""
+class TestExperimentDynamicImport(unittest.TestCase):
+    """Test that experiments can be dynamically imported for HPO."""
 
-    def test_known_experiments(self):
-        from optimisation.experiment_registry import get_experiment_fns
+    def test_known_experiments_have_setup_trial(self):
+        import importlib
         for name in ["experiment_1", "experiment_2"]:
-            fns = get_experiment_fns(name)
-            self.assertIn("compute_losses", fns)
-            self.assertIn("make_generate_epoch_data", fns)
-            self.assertIn("make_validation_fn", fns)
+            mod = importlib.import_module(f"experiments.{name}.train")
+            self.assertTrue(hasattr(mod, "setup_trial"), f"{name} missing setup_trial")
+            self.assertTrue(callable(mod.setup_trial))
 
-    def test_unknown_experiment_raises(self):
-        from optimisation.experiment_registry import get_experiment_fns
-        with self.assertRaises(KeyError) as ctx:
-            get_experiment_fns("nonexistent")
-        self.assertIn("nonexistent", str(ctx.exception))
+    def test_unknown_experiment_import_fails(self):
+        import importlib
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("experiments.nonexistent.train")
 
 
 if __name__ == "__main__":
