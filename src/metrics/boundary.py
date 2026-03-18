@@ -140,11 +140,12 @@ def outflow_gradient_residual(
 
     flax_params = {"params": params["params"]}
 
-    def U_fn(pts):
-        return model.apply(flax_params, pts, train=False)
+    def single_U(pt):
+        """Forward pass for a single point (1, 3) → (3,)."""
+        return model.apply(flax_params, pt[None], train=False)[0]
 
-    # jac shape: (K, 3_outputs, 3_inputs) — take dh/dx = jac[:, 0, 0]
-    jac_U = jax.vmap(jax.jacfwd(U_fn))(outflow_coords)
+    # vmap over single-point jacfwd: jac shape (K, 3_outputs, 3_inputs)
+    jac_U = jax.vmap(jax.jacfwd(single_U))(outflow_coords)
     dh_dx = jnp.abs(jac_U[:, 0, 0])
 
     return {

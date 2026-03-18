@@ -67,7 +67,7 @@ def data_efficiency_ratio(
         target_fraction_data = next(
             (float(f) for f, nd in zip(fractions, nse_data_only) if nd >= target_nse), None
         )
-        if target_fraction_hybrid and target_fraction_data and target_fraction_hybrid > 0:
+        if target_fraction_hybrid is not None and target_fraction_data is not None and target_fraction_hybrid > 0:
             efficiency_ratio = target_fraction_data / target_fraction_hybrid
 
     return {

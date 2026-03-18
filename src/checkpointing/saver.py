@@ -57,6 +57,7 @@ class CheckpointManager:
         total_loss: float,
         config: dict,
         neg_depth: Optional[Dict[str, float]] = None,
+        elapsed_time_s: Optional[float] = None,
     ) -> List[str]:
         """Check both criteria and save if improved. Returns list of events."""
         saved = []
@@ -70,6 +71,7 @@ class CheckpointManager:
             self._save_checkpoint(
                 'best_nse', epoch, params, opt_state,
                 val_metrics, losses, total_loss, config, neg_depth,
+                elapsed_time_s=elapsed_time_s,
             )
             self._save_validation_outputs('best_nse', params, epoch,
                                           val_metrics, losses)
@@ -83,6 +85,7 @@ class CheckpointManager:
             self._save_checkpoint(
                 'best_loss', epoch, params, opt_state,
                 val_metrics, losses, total_loss, config, neg_depth,
+                elapsed_time_s=elapsed_time_s,
             )
             self._save_validation_outputs('best_loss', params, epoch,
                                           val_metrics, losses)
@@ -93,11 +96,13 @@ class CheckpointManager:
     def save_final(self, epoch: int, params: dict, opt_state,
                    val_metrics: Dict[str, float], losses: Dict[str, float],
                    total_loss: float, config: dict,
-                   neg_depth: Optional[Dict[str, float]] = None):
+                   neg_depth: Optional[Dict[str, float]] = None,
+                   training_time_s: Optional[float] = None):
         """Save the final-epoch checkpoint (no validation outputs)."""
         self._save_checkpoint(
             'final', epoch, params, opt_state,
             val_metrics, losses, total_loss, config, neg_depth,
+            elapsed_time_s=training_time_s,
         )
 
     def get_best_nse_stats(self) -> dict:
@@ -116,7 +121,8 @@ class CheckpointManager:
     # Internal helpers
     # ------------------------------------------------------------------
     def _save_checkpoint(self, name, epoch, params, opt_state,
-                         val_metrics, losses, total_loss, config, neg_depth):
+                         val_metrics, losses, total_loss, config, neg_depth,
+                         elapsed_time_s=None):
         ckpt_dir = self.experiment_dir / 'checkpoints' / name
         with open(ckpt_dir / 'model.pkl', 'wb') as f:
             pickle.dump({'params': params, 'opt_state': opt_state}, f)
@@ -128,6 +134,8 @@ class CheckpointManager:
         }
         if neg_depth:
             metadata['neg_depth'] = {k: float(v) for k, v in neg_depth.items()}
+        if elapsed_time_s is not None:
+            metadata['elapsed_time_s'] = float(elapsed_time_s)
         with open(ckpt_dir / 'metadata.yaml', 'w') as f:
             yaml.dump(metadata, f, default_flow_style=False)
 

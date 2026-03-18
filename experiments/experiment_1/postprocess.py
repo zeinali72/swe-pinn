@@ -27,6 +27,7 @@ Usage
 -----
 python -m experiments.experiment_1.postprocess \\
     --config configs/experiment_1.yaml \\
+    --postprocess-config configs/postprocess/experiment_1_postprocess.yaml \\
     --checkpoint models/experiment_1/best_nse \\
     [--output inference_output/experiment_1/best_nse] \\
     [--precision-results float64=path1,float32=path2,bfloat16=path3] \\
@@ -34,6 +35,10 @@ python -m experiments.experiment_1.postprocess \\
     [--batch-size 50000] \\
     [--skip-conservation] \\
     [--skip-plots]
+
+The ``--postprocess-config`` controls postprocessing-specific parameters (validation
+grid resolution, DPI, snapshot fractions, batch size, etc.) independently of the
+model training config.  CLI flags override the postprocess config when supplied.
 """
 
 import argparse
@@ -63,10 +68,68 @@ from src.metrics.cost import inference_cost
 from src.metrics.decomposition import classify_points
 
 # ---------------------------------------------------------------------------
+# Postprocess config helpers
+# ---------------------------------------------------------------------------
+
+_PP_DEFAULTS = {
+    "validation": {"nx": 101, "nt": 21, "n_boundary_pts": 500},
+    "plots": {
+        "dpi": 300,
+        "t_const_val": None,
+        "y_const_plot": 0.0,
+        "t_snapshot_fracs": [0.1, 0.25, 0.5, 0.75, 1.0],
+    },
+    "inference": {"batch_size": 50_000, "skip_conservation": False, "skip_plots": False},
+    "aim": {"postprocess_tracking": False},
+}
+
+
+def _load_pp_config(path: str | None, model_cfg: dict) -> dict:
+    """Load and merge postprocess config.
+
+    Priority (highest first):
+      1. Values in ``path`` YAML file
+      2. Fallback from model config ``plotting`` section
+      3. Built-in defaults in ``_PP_DEFAULTS``
+    """
+    import copy, collections.abc
+    cfg = copy.deepcopy(_PP_DEFAULTS)
+
+    # Seed plots section from the model config's plotting section
+    plot_sec = model_cfg.get("plotting", {})
+    if plot_sec.get("t_const_val") is not None:
+        cfg["plots"]["t_const_val"] = float(plot_sec["t_const_val"])
+    if plot_sec.get("y_const_plot") is not None:
+        cfg["plots"]["y_const_plot"] = float(plot_sec["y_const_plot"])
+    if plot_sec.get("nx_val") is not None:
+        cfg["validation"]["nx"] = int(plot_sec["nx_val"])
+    if plot_sec.get("plot_resolution") is not None:
+        cfg["plots"]["dpi"] = int(plot_sec["plot_resolution"])
+
+    if path and os.path.exists(path):
+        with open(path) as f:
+            overrides = yaml.safe_load(f) or {}
+
+        def _deep_update(base, over):
+            for k, v in over.items():
+                if isinstance(v, collections.abc.Mapping) and isinstance(base.get(k), collections.abc.Mapping):
+                    _deep_update(base[k], v)
+                else:
+                    base[k] = v
+        _deep_update(cfg, overrides)
+
+    # t_const_val default: midpoint of simulation
+    if cfg["plots"]["t_const_val"] is None:
+        cfg["plots"]["t_const_val"] = float(model_cfg.get("domain", {}).get("t_final", 1.0)) / 2.0
+
+    return cfg
+
+
+# ---------------------------------------------------------------------------
 # Grid generation
 # ---------------------------------------------------------------------------
 
-def _build_validation_grid(cfg_dict: dict) -> tuple:
+def _build_validation_grid(cfg_dict: dict, pp_cfg: dict) -> tuple:
     """Generate a dense structured (x, y, t) validation grid.
 
     Returns
@@ -167,7 +230,7 @@ def _compute_accuracy(predictions: jnp.ndarray, targets: jnp.ndarray) -> dict:
 
 
 def _compute_boundary_metrics(model, params, bpts: dict, cfg_dict: dict,
-                               skip_conservation: bool = False) -> dict:
+                               skip_c3: bool = False) -> dict:
     domain = cfg_dict["domain"]
     physics = cfg_dict["physics"]
     eps = cfg_dict.get("numerics", {}).get("eps", 1e-6)
@@ -192,7 +255,7 @@ def _compute_boundary_metrics(model, params, bpts: dict, cfg_dict: dict,
     )
 
     # C3: outflow zero-gradient at x=lx (Exp 1 only)
-    if not skip_conservation:
+    if not skip_c3:
         results["C3_outflow_gradient"] = outflow_gradient_residual(
             model, params, bpts["right"], cfg_dict,
         )
@@ -262,9 +325,7 @@ def _generate_plots(
             jnp.full(200, gx), jnp.asarray(t_gauge), n_manning, u_const
         ))
 
-        # Predict at this gauge
-        flax_params = {"params": predictions}  # will fail — use model later
-        # Use nearest-x points from the validation grid
+        # Use nearest-x points from the pre-computed validation grid
         mask_gauge = (np.abs(coords_np[:, 0] - gx) < lx * 0.01) & \
                      (np.abs(coords_np[:, 1] - y_mid) < ly * 0.15)
         if mask_gauge.sum() < 3:
@@ -323,9 +384,9 @@ def _generate_plots(
     if training_history is not None:
         try:
             epochs = np.array(training_history.get("epochs", []))
+            _loss_include = ("total", "total_loss", "pde", "bc", "ic", "data", "neg_h")
             losses_dict = {k: np.array(v) for k, v in training_history.items()
-                           if k.endswith("_loss") or k in
-                           ("total", "pde", "bc", "ic", "data", "neg_h")}
+                           if k.endswith("_loss") or k in _loss_include}
             lrs = np.array(training_history["learning_rate"]) \
                 if "learning_rate" in training_history else None
 
@@ -421,21 +482,11 @@ def _generate_plots(
         try:
             x_m, y_m, _ = snapshots_depth_pred[mid_idx]
             _, _, hr_m = snapshots_depth_ref[mid_idx]
-            pred_full_m = predictions[
-                np.abs(t_all - float(ts[ts.shape[0] // 2])) < (t_final / 40.0)
-            ]
-            coords_m = coords[
-                np.abs(t_all - float(ts[ts.shape[0] // 2])) < (t_final / 40.0)
-            ]
-            cats = classify_points(
-                np.asarray(coords_m), hr_m, domain_bounds,
-            )
-            err_m = np.abs(
-                np.asarray(predictions[
-                    np.abs(t_all - float(ts[ts.shape[0] // 2])) < (t_final / 40.0),
-                    0
-                ]) - hr_m
-            )
+            t_mid = float(ts[ts.shape[0] // 2])
+            mask_mid = np.abs(t_all - t_mid) < (t_final / 40.0)
+            coords_m = coords[mask_mid]
+            cats = classify_points(np.asarray(coords_m), hr_m, domain_bounds)
+            err_m = np.abs(np.asarray(predictions[mask_mid, 0]) - hr_m)
             fig = plot_error_decomposition(
                 x=x_m, y=y_m,
                 error_h=err_m,
@@ -480,25 +531,11 @@ def _generate_precision_comparison(precision_results: dict, plots_dir: str) -> N
 # Report writing
 # ---------------------------------------------------------------------------
 
-def _sanitize(obj):
-    if isinstance(obj, dict):
-        return {k: _sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize(v) for v in obj]
-    if hasattr(obj, "item"):
-        return obj.item()
-    if isinstance(obj, float):
-        if obj != obj:
-            return "NaN"
-        if obj == float("inf"):
-            return "Inf"
-        if obj == float("-inf"):
-            return "-Inf"
-    return obj
+from src.inference.reporting import _sanitize_for_yaml as _sanitize
 
 
-def _write_report(results: dict, output_dir: str) -> None:
-    # YAML
+def _write_report(results: dict, arrays: dict, output_dir: str) -> None:
+    # YAML — write results only, never the raw arrays
     with open(os.path.join(output_dir, "summary_metrics.yaml"), "w") as f:
         yaml.dump(_sanitize(results), f, default_flow_style=False, sort_keys=False)
 
@@ -507,14 +544,16 @@ def _write_report(results: dict, output_dir: str) -> None:
              "  Experiment 1 Postprocessing Report",
              "=" * 64, ""]
 
+    # accuracy is a nested dict: {"h": {"nse": ..., "rmse": ...}, ...}
     acc = results.get("accuracy", {})
     lines.append("--- Accuracy (A1-A4) ---")
     for var in ["h", "hu", "hv"]:
-        lines.append(f"  {var}:")
-        for m in ["nse", "rmse", "mae", "rel_l2"]:
-            key = f"{m}_{var}"
-            if key in acc:
-                lines.append(f"    {m:10s}: {acc[key]:.6f}")
+        var_metrics = acc.get(var, {})
+        if var_metrics:
+            lines.append(f"  {var}:")
+            for m in ["nse", "rmse", "mae", "rel_l2"]:
+                if m in var_metrics:
+                    lines.append(f"    {m:10s}: {var_metrics[m]:.6f}")
 
     vb = results.get("volume_balance", {})
     if vb:
@@ -542,10 +581,8 @@ def _write_report(results: dict, output_dir: str) -> None:
         f.write(report_text)
 
     # Save raw predictions
-    np.savez_compressed(
-        os.path.join(output_dir, "predictions.npz"),
-        **results.get("_arrays", {}),
-    )
+    if arrays:
+        np.savez_compressed(os.path.join(output_dir, "predictions.npz"), **arrays)
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +671,7 @@ def run_postprocess(
     print("  Computing boundary metrics...")
     bpts = _build_boundary_points(cfg_dict, n_pts=500)
     boundary = _compute_boundary_metrics(
-        model, params, bpts, cfg_dict, skip_conservation=skip_conservation
+        model, params, bpts, cfg_dict, skip_c3=skip_conservation
     )
 
     # 8. Inference cost (D3)
@@ -644,16 +681,54 @@ def run_postprocess(
         "throughput_pts_per_s": coords.shape[0] / elapsed_infer if elapsed_infer > 0 else float("inf"),
     }
 
-    # Training cost from metadata (D2)
+    # Training cost from metadata (D2); key written by saver.py is elapsed_time_s
     training_cost_s = None
-    if train_meta and "training_time_s" in train_meta:
-        training_cost_s = train_meta["training_time_s"]
+    if train_meta:
+        training_cost_s = train_meta.get("training_time_s") or train_meta.get("elapsed_time_s")
+    # Also try training_history total time (more accurate for the full run)
+    if training_cost_s is None and training_history and training_history.get("total_training_time_s"):
+        training_cost_s = training_history["total_training_time_s"]
 
     # 9. Load optional training history
+    # Auto-detect: look for training_history.json one level up from checkpoint dir
+    if not training_history_path:
+        _model_dir = str(Path(checkpoint_path).parent)
+        _candidate = os.path.join(_model_dir, "training_history.json")
+        if os.path.exists(_candidate):
+            training_history_path = _candidate
+
     training_history = None
     if training_history_path and os.path.exists(training_history_path):
         with open(training_history_path) as f:
-            training_history = json.load(f)
+            _raw = json.load(f)
+        # Normalise: the new format has {"total_training_time_s": ..., "epochs": [...]}
+        # where each element is {"epoch": int, "total_loss": float, "losses": {...},
+        # "val_metrics": {...}, "lr": float, "epoch_time_s": float, "elapsed_time_s": float}.
+        # Convert to the flat format expected by the plot functions.
+        if isinstance(_raw.get("epochs"), list) and _raw["epochs"] and isinstance(_raw["epochs"][0], dict):
+            _records = _raw["epochs"]
+            training_history = {
+                "epochs": [r["epoch"] for r in _records],
+                "total_loss": [r.get("total_loss", float("nan")) for r in _records],
+                "learning_rate": [r.get("lr", float("nan")) for r in _records],
+                "elapsed_time_s": [r.get("elapsed_time_s", float("nan")) for r in _records],
+                "total_training_time_s": _raw.get("total_training_time_s"),
+            }
+            # Per-component losses
+            _loss_keys = set()
+            for r in _records:
+                _loss_keys.update(r.get("losses", {}).keys())
+            for _lk in _loss_keys:
+                training_history[_lk] = [r.get("losses", {}).get(_lk, float("nan")) for r in _records]
+            # Validation metrics (treat epoch list as val_epochs; NSE fields as nse_h etc.)
+            training_history["val_epochs"] = training_history["epochs"]
+            _vm_keys = set()
+            for r in _records:
+                _vm_keys.update(r.get("val_metrics", {}).keys())
+            for _vk in _vm_keys:
+                training_history[_vk] = [r.get("val_metrics", {}).get(_vk, float("nan")) for r in _records]
+        else:
+            training_history = _raw  # old flat format, pass through unchanged
         print(f"  Loaded training history from {training_history_path}")
 
     # 10. Assemble results
@@ -671,15 +746,13 @@ def run_postprocess(
     if train_meta:
         results["training_metadata"] = train_meta
 
-    # Arrays for npz
-    results["_arrays"] = {
+    # 11. Write report (arrays kept separate — never written to YAML)
+    _arrays = {
         "coords": np.asarray(coords),
         "predictions": np.asarray(predictions),
         "targets": np.asarray(targets),
     }
-
-    # 11. Write report
-    _write_report(results, output_dir)
+    _write_report(results, _arrays, output_dir)
     print(f"  Summary saved to {output_dir}")
 
     # 12. Generate plots
@@ -701,16 +774,16 @@ def run_postprocess(
                     prec_data = yaml.safe_load(f)
                 acc_prec = prec_data.get("accuracy", {})
                 meta_prec = prec_data.get("training_metadata", {})
+                nse_h = acc_prec.get("h", {}).get("nse", float("nan"))
                 prec_results[label] = {
-                    "nse_h": acc_prec.get("nse_h", float("nan")),
-                    "training_time_s": meta_prec.get("training_time_s", float("nan")),
+                    "nse_h": nse_h,
+                    "training_time_s": meta_prec.get("elapsed_time_s",
+                                       meta_prec.get("training_time_s", float("nan"))),
                 }
         if prec_results:
             os.makedirs(plots_dir, exist_ok=True)
             _generate_precision_comparison(prec_results, plots_dir)
 
-    # Remove internal arrays from returned dict
-    results.pop("_arrays", None)
     return results
 
 

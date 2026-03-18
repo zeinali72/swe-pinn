@@ -1,4 +1,5 @@
 """Shared training-loop body and post-training routines."""
+import json
 import os
 import time
 import shutil
@@ -95,6 +96,7 @@ def run_training_loop(
     avg_total_weighted_loss = 0.0
     global_step = 0
     current_lr = cfg["training"]["learning_rate"]
+    epoch_history: list = []  # per-epoch records for training_history.json
 
     best_nse_stats = {
         'nse': -jnp.inf, 'rmse': jnp.inf, 'epoch': 0, 'global_step': 0,
@@ -205,9 +207,11 @@ def run_training_loop(
                 except Exception:
                     pass
 
+            elapsed_now = time.time() - start_time
             saved_events = ckpt_mgr.update(
                 epoch, params, opt_state, val_metrics,
-                avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth
+                avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth,
+                elapsed_time_s=elapsed_now,
             )
             for event in saved_events:
                 event_type, value, ep, prev_value, prev_epoch = event
@@ -226,11 +230,22 @@ def run_training_loop(
                     val_metrics, neg_depth.get('fraction', 0.0), epoch_time
                 )
 
+            elapsed_now = time.time() - start_time
+            epoch_history.append({
+                'epoch': int(epoch),
+                'total_loss': float(avg_total_weighted_loss),
+                'losses': {k: float(v) for k, v in avg_losses_unweighted.items()},
+                'val_metrics': {k: float(v) for k, v in val_metrics.items()},
+                'lr': float(current_lr),
+                'epoch_time_s': float(epoch_time),
+                'elapsed_time_s': float(elapsed_now),
+            })
+
             aim_tracker.log_epoch(
                 epoch=epoch, step=global_step,
                 losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
                 val_metrics=val_metrics, lr=current_lr,
-                epoch_time=epoch_time, elapsed_time=time.time() - start_time,
+                epoch_time=epoch_time, elapsed_time=elapsed_now,
                 neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
             )
 
@@ -276,7 +291,20 @@ def run_training_loop(
                 final_losses_for_ckpt[k] = v
 
         ckpt_mgr.save_final(epoch, params, opt_state, val_metrics,
-                            final_losses_for_ckpt, avg_total_weighted_loss, cfg_dict, neg_depth)
+                            final_losses_for_ckpt, avg_total_weighted_loss, cfg_dict, neg_depth,
+                            training_time_s=total_time)
+
+        # Write per-epoch history for postprocessing / P1.3–P1.4 plots
+        try:
+            history_path = os.path.join(model_dir, 'training_history.json')
+            with open(history_path, 'w') as _hf:
+                json.dump({
+                    'total_training_time_s': float(total_time),
+                    'total_epochs': int(epoch + 1),
+                    'epochs': epoch_history,
+                }, _hf, indent=2)
+        except Exception as _he:
+            print(f"Warning: Failed to write training_history.json: {_he}")
         best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
         best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
 

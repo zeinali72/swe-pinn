@@ -297,6 +297,5 @@ def generate_plots(ctx, results: dict, output_dir: str):
         print(f"  Warning: Plot generation failed: {e}")
 
 
-# Lazy imports used in generate_plots
-import numpy as np
+# jnp used in generate_plots (numpy already imported at top)
 import jax.numpy as jnp

@@ -7,6 +7,7 @@ D4: Break-even query count — N where PINN amortises its upfront cost vs ICM.
 """
 import time
 from contextlib import contextmanager
+from typing import Union
 
 import jax
 import jax.numpy as jnp
@@ -74,7 +75,7 @@ def inference_cost(model, params: dict, coords: np.ndarray, batch_size: int = 50
     for start in range(0, n_points, batch_size):
         chunk = coords[start: start + batch_size]
         outputs.append(model.apply(flax_params, chunk, train=False))
-    jax.block_until_ready(outputs[-1])
+    jax.block_until_ready(outputs)
     elapsed = time.perf_counter() - t0
 
     return {
@@ -103,7 +104,7 @@ def break_even_query_count(
     upfront = t_data_prep + t_training
     saving_per_query = t_icm - t_inference
     if saving_per_query <= 0:
-        n_break: float | int = float("inf")
+        n_break: Union[float, int] = float("inf")
     else:
         n_break = int(np.ceil(upfront / saving_per_query))
 
