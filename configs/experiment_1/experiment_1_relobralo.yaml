@@ -1,0 +1,63 @@
+scenario: experiment_1
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+physics:
+  g: 9.81
+  inflow: null
+  n_manning: 0.03
+  u_const: 0.29
+device:
+  dtype: float32
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+numerics:
+  eps: 1.0e-06
+  min_depth: 0.00
+plotting:
+  nx_val: 101
+  plot_resolution: 150
+  t_const_val: 1800.0
+  y_const_plot: 0
+training:
+  epochs: 500
+  seed: 42
+  learning_rate: 0.0006
+  batch_size: 256
+  reduce_on_plateau:
+    factor: 0.5                    # Factor by which the learning rate will be reduced (new_lr = lr * factor)
+    patience: 5                 # Number of steps with no improvement after which learning rate will be reduced
+    rtol: 1e-4                     # Relative tolerance for measuring new optimum
+    atol: 0.0                      # Absolute tolerance for measuring new optimum
+    cooldown: 1                  # Number of steps to wait before resuming normal operation after lr has been reduced
+    accumulation_factor: 40          # Multiplier on num_batches: accumulation_size = num_batches * factor
+    min_scale: 1e-4                # Minimum scaling factor allowed
+
+validation_grid:
+  n_points_val: 45000
+model:
+  name: MLP
+  output_dim: 3
+  width: 512
+  depth: 5
+sampling:
+  n_points_pde: 100000
+  n_points_ic: 2000
+  n_points_bc_domain: 5000
+loss_weights:
+  pde_weight: 100.0
+  ic_weight: 0.0005
+  bc_weight: 0.5
+  neg_h_weight: 0.0005
+  data_weight: 0.0
+relobralo:
+  alpha: 0.999           # EMA decay for weight smoothing
+  warmup: 20             # Epochs to hold uniform weights before activating
+  min_weight: 0.01       # Floor applied to all weights after EMA
+reporting:
+  epoch_freq: 100
+data_free: true
+train_grid:
+  n_gauges: 0           # number of spatial gauge locations to sample
+  dt_data: 10.0         # temporal resolution in seconds for gauge time series
