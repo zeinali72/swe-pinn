@@ -10,9 +10,8 @@
 
   "envFile": ["devcontainer.env"],
 
-  "features": {
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
-  },
+  // REMOVED: "ghcr.io/anthropics/devcontainer-features/claude-code:1.0"
+  // That feature installs via npm, which causes the "Interrupted" bug.
 
   "containerEnv": {
     "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:${containerEnv:LD_LIBRARY_PATH}",
@@ -34,8 +33,7 @@
     }
   ],
 
-  "postCreateCommand": "mkdir -p /root/.claude && echo '{\"hasCompletedOnboarding\":true,\"installMethod\":\"native\"}' > /root/.claude/.claude.json && ln -sf /root/.claude/.claude.json /root/.claude.json || true",
-
+  "postCreateCommand": "mkdir -p /root/.claude && echo '{\"hasCompletedOnboarding\":true,\"installMethod\":\"native\"}' > /root/.claude/.claude.json && ln -sf /root/.claude/.claude.json /root/.claude.json && curl -fsSL https://claude.ai/install.sh | bash && ln -sf /root/.local/bin/claude /usr/local/bin/claude || true",
   "postAttachCommand": "cp /root/.claude/.credentials.json /root/.claude/.credentials.json.bak 2>/dev/null || true",
 
   "workspaceFolder": "/workspace",
@@ -52,7 +50,8 @@
         "ms-toolsai.jupyter-renderers"
       ],
       "settings": {
-        "terminal.integrated.defaultProfile.linux": "bash"
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "terminal.integrated.shellIntegration.enabled": false
       }
     }
   }

@@ -302,6 +302,17 @@ class AimTracker:
         except Exception as e:
             print(f"Warning: Aim log_hpo_trial failed for trial {trial_number}: {e}")
 
+    def log_scalars(self, scalars: dict, step: int, prefix: str = "") -> None:
+        """Track a flat dict of scalar values under an optional name prefix."""
+        if not self.enabled:
+            return
+        try:
+            for k, v in scalars.items():
+                name = f"{prefix}/{k}" if prefix else k
+                self.aim_run.track(_safe_float(v), name=name, step=step)
+        except Exception as e:
+            print(f"Warning: Aim log_scalars failed at step {step}: {e}")
+
     # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
