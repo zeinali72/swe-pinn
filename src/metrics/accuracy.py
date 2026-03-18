@@ -16,7 +16,9 @@ def nse(pred: jnp.ndarray, true: jnp.ndarray) -> float:
     num = jnp.sum((true - pred) ** 2)
     den = jnp.sum((true - jnp.mean(true)) ** 2)
     if den < 1e-9:
-        return -jnp.inf
+        # True series is constant — NSE undefined.
+        # Perfect prediction → 1.0; non-zero error → nan.
+        return 1.0 if num < 1e-9 else float('nan')
     return 1 - num / den
 
 
@@ -35,7 +37,9 @@ def relative_l2(pred: jnp.ndarray, true: jnp.ndarray) -> float:
     num = jnp.sqrt(jnp.sum((pred - true) ** 2))
     den = jnp.sqrt(jnp.sum(true ** 2))
     if den < 1e-9:
-        return jnp.inf
+        # True is zero everywhere — rel L2 undefined.
+        # Perfect prediction → 0.0; non-zero error → nan.
+        return 0.0 if num < 1e-9 else float('nan')
     return num / den
 
 
