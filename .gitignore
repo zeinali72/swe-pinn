@@ -165,3 +165,4 @@ ovh_token.md
 
 *.html
 temp_tiles/
+.claude/settings.local.json
