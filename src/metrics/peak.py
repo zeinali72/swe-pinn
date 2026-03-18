@@ -15,26 +15,25 @@ def r_squared(pred: jnp.ndarray, true: jnp.ndarray) -> float:
 
 
 def peak_depth_error(pred_h: jnp.ndarray, true_h: jnp.ndarray) -> float:
-    """Absolute error between predicted and true peak water depth."""
-    return float(jnp.abs(jnp.max(pred_h) - jnp.max(true_h)))
+    """Signed peak water depth error: max(h_pred) - max(h_ref).
+
+    Positive = over-prediction, negative = under-prediction.
+    Units: m.  Used in Exp 4-11.
+    """
+    return float(jnp.max(pred_h) - jnp.max(true_h))
 
 
 def time_to_peak_error(
     pred_h: jnp.ndarray, true_h: jnp.ndarray, t_coords: jnp.ndarray
 ) -> float:
-    """Absolute difference in time-to-peak between prediction and reference.
+    """Signed time-to-peak error: t(max(h_pred)) - t(max(h_ref)).
 
-    Args:
-        pred_h: (N,) predicted water depth.
-        true_h: (N,) reference water depth.
-        t_coords: (N,) time coordinate for each point.
-
-    Returns:
-        |t_peak_pred - t_peak_true| in the same units as *t_coords*.
+    Positive = peak arrives late, negative = peak arrives early.
+    Units: same as *t_coords* (s or hrs).  Used in Exp 4-11.
     """
     t_peak_pred = t_coords[jnp.argmax(pred_h)]
     t_peak_true = t_coords[jnp.argmax(true_h)]
-    return float(jnp.abs(t_peak_pred - t_peak_true))
+    return float(t_peak_pred - t_peak_true)
 
 
 def rmse_mae_ratio(pred: jnp.ndarray, true: jnp.ndarray) -> float:

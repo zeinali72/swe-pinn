@@ -1,4 +1,5 @@
 """Spatial and temporal error decomposition metrics."""
+import numpy as np
 import jax.numpy as jnp
 
 from src.metrics.accuracy import compute_all_metrics
@@ -82,6 +83,64 @@ def spatial_decomposition(
         results[name] = region
 
     return results
+
+
+def classify_points(
+    coords: np.ndarray,
+    true_h: np.ndarray,
+    domain_bounds: dict,
+    boundary_threshold_frac: float = 0.05,
+) -> np.ndarray:
+    """Classify evaluation points into spatial categories.
+
+    Returns an integer label array:
+      0 = interior
+      1 = boundary  (within *boundary_threshold_frac* of any domain edge)
+      2 = shock     (top-10% |grad h| proxy)
+
+    Args:
+        coords: (N, 3) coordinates [x, y, t].
+        true_h: (N,) reference water depth.
+        domain_bounds: Dict with ``lx``, ``ly`` (and optional ``x_min``, ``y_min``).
+        boundary_threshold_frac: Fraction of domain size defining the boundary strip.
+
+    Returns:
+        (N,) integer numpy array of category labels.
+    """
+    coords = np.asarray(coords)
+    true_h = np.asarray(true_h)
+    x = coords[:, 0]
+    y = coords[:, 1]
+
+    lx = domain_bounds["lx"]
+    ly = domain_bounds["ly"]
+    x_min = domain_bounds.get("x_min", 0.0)
+    y_min = domain_bounds.get("y_min", 0.0)
+
+    dx = boundary_threshold_frac * lx
+    dy = boundary_threshold_frac * ly
+
+    # Boundary mask
+    min_dist = np.minimum(
+        np.minimum(np.abs(x - x_min), np.abs(x - (x_min + lx))),
+        np.minimum(np.abs(y - y_min), np.abs(y - (y_min + ly))),
+    )
+    boundary_mask = min_dist < min(dx, dy)
+
+    # Shock proxy: large local variation in h (sorted by x)
+    sort_idx = np.argsort(x)
+    h_sorted = true_h[sort_idx]
+    h_diff = np.abs(np.diff(h_sorted))
+    h_diff = np.append(h_diff, h_diff[-1])
+    grad_mag = np.empty_like(true_h)
+    grad_mag[sort_idx] = h_diff
+    shock_threshold = np.percentile(grad_mag, 90)
+    shock_mask = grad_mag > shock_threshold
+
+    labels = np.zeros(len(x), dtype=np.int32)
+    labels[boundary_mask] = 1
+    labels[shock_mask & ~boundary_mask] = 2
+    return labels
 
 
 def temporal_decomposition(

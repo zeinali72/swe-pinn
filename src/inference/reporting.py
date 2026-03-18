@@ -218,7 +218,7 @@ def save_comparison_table(all_results: Dict[str, dict], output_dir: str):
 # ---------------------------------------------------------------------------
 
 def generate_plots(ctx, results: dict, output_dir: str):
-    """Generate standard comparison plots."""
+    """Generate standard inference plots using the src.plots suite."""
     plots_dir = os.path.join(output_dir, "plots")
     os.makedirs(plots_dir, exist_ok=True)
 
@@ -227,83 +227,76 @@ def generate_plots(ctx, results: dict, output_dir: str):
     coords = ctx.val_coords
 
     try:
-        from src.utils.plotting import plot_comparison_scatter_2d
+        from src.plots.spatial_maps import plot_depth_map, plot_error_map
+        from src.plots.time_series import plot_gauge_timeseries
 
-        # Find a representative time slice
         plot_cfg = ctx.config.get("plotting", {})
-        t_const = plot_cfg.get("t_const_val", float(ctx.domain_bounds.get("t_final", 1.0)) / 2)
-        t_all = coords[:, 2]
-        unique_t = jnp.unique(t_all)
-        t_closest = unique_t[jnp.argmin(jnp.abs(unique_t - t_const))]
-        t_mask = jnp.abs(t_all - t_closest) < 1e-6
+        t_final = float(ctx.domain_bounds.get("t_final", 1.0))
+        t_const = plot_cfg.get("t_const_val", t_final / 2)
+        t_all = np.asarray(coords[:, 2])
+        unique_t = np.unique(t_all)
+        t_closest = unique_t[np.argmin(np.abs(unique_t - t_const))]
+        t_mask = np.abs(t_all - t_closest) < (t_final / 200.0 + 1e-6)
 
-        if jnp.sum(t_mask) > 3 and targets.shape[-1] >= 3:
-            x_slice = coords[t_mask, 0]
-            y_slice = coords[t_mask, 1]
+        preds_np = np.asarray(preds)
+        targets_np = np.asarray(targets)
+        coords_np = np.asarray(coords)
 
-            for i, var in enumerate(["h", "hu", "hv"]):
-                filename = os.path.join(plots_dir, f"comparison_{var}.png")
-                plot_comparison_scatter_2d(
-                    x_slice, y_slice,
-                    preds[t_mask, i], targets[t_mask, i],
-                    var, ctx.config, filename=filename,
-                )
+        # P2.2 — depth map at representative time
+        if t_mask.sum() > 5 and targets.shape[-1] >= 1:
+            x_s = coords_np[t_mask, 0]
+            y_s = coords_np[t_mask, 1]
+            plot_depth_map(
+                x_s, y_s,
+                preds_np[t_mask, 0], targets_np[t_mask, 0],
+                time_label=f"{t_closest:.0f}s",
+                save_path=os.path.join(plots_dir, "P2_2_depth_map.png"),
+            )
 
-        # 1D plot for experiment 1
+        # P2.1 — error map at 3 time snapshots
+        snap_fracs = [0.25, 0.5, 0.75]
+        snapshots = []
+        for frac in snap_fracs:
+            t_s = t_final * frac
+            mask_s = np.abs(t_all - t_s) < (t_final / 40.0)
+            if mask_s.sum() < 5:
+                idx_c = np.argmin(np.abs(unique_t - t_s))
+                mask_s = np.abs(t_all - unique_t[idx_c]) < 1e-3
+            if mask_s.sum() >= 5 and targets.shape[-1] >= 1:
+                snapshots.append((
+                    coords_np[mask_s, 0],
+                    coords_np[mask_s, 1],
+                    np.abs(preds_np[mask_s, 0] - targets_np[mask_s, 0]),
+                    f"{t_s:.0f}s",
+                ))
+        if snapshots:
+            from src.plots.spatial_maps import plot_error_maps_multi
+            plot_error_maps_multi(
+                snapshots=snapshots,
+                save_path=os.path.join(plots_dir, "P2_1_error_maps.png"),
+            )
+
+        # Analytical 1D plot (Exp 1)
         if ctx.experiment_meta.get("reference_type") == "analytical":
             from src.utils.plotting import plot_h_vs_x
             y_const = plot_cfg.get("y_const_plot", 0)
-            y_mask = jnp.abs(coords[:, 1] - y_const) < 1e-6
+            y_mask = np.abs(coords_np[:, 1] - y_const) < 1e-6
             yt_mask = t_mask & y_mask
-            if jnp.sum(yt_mask) > 1:
-                x_line = coords[yt_mask, 0]
-                sort_idx = jnp.argsort(x_line)
+            if yt_mask.sum() > 1:
+                x_line = coords_np[yt_mask, 0]
+                sort_idx = np.argsort(x_line)
                 plot_h_vs_x(
-                    x_line[sort_idx],
-                    preds[yt_mask, 0][sort_idx],
+                    jnp.asarray(x_line[sort_idx]),
+                    jnp.asarray(preds_np[yt_mask, 0][sort_idx]),
                     float(t_closest), float(y_const),
                     ctx.config,
                     filename=os.path.join(plots_dir, "h_vs_x.png"),
                 )
 
-        # Error heatmap for h
-        if jnp.sum(t_mask) > 3 and targets.shape[-1] >= 1:
-            _plot_error_heatmap(
-                coords[t_mask, 0], coords[t_mask, 1],
-                preds[t_mask, 0], targets[t_mask, 0],
-                os.path.join(plots_dir, "error_h.png"),
-            )
-
     except Exception as e:
         print(f"  Warning: Plot generation failed: {e}")
 
 
-def _plot_error_heatmap(x, y, pred, true, filename):
-    """Simple error heatmap using tricontourf."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import matplotlib.tri as mtri
-
-    error = pred - true
-    try:
-        triang = mtri.Triangulation(x, y)
-    except Exception:
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    v_max = max(float(jnp.max(jnp.abs(error))), 1e-9)
-    levels = jnp.linspace(-v_max, v_max, 51)
-    cf = ax.tricontourf(triang, error, levels=levels, cmap="coolwarm", extend="both")
-    fig.colorbar(cf, ax=ax, label="Error (pred - true)")
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.set_title("Water depth error")
-    ax.set_aspect("equal", adjustable="box")
-    plt.tight_layout()
-    plt.savefig(filename, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
-# Lazy import for jnp used in generate_plots
+# Lazy imports used in generate_plots
+import numpy as np
 import jax.numpy as jnp

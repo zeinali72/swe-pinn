@@ -52,19 +52,15 @@ from src.config import load_config
 from src.training.setup import init_model_from_config, get_experiment_name
 from src.checkpointing import load_checkpoint
 from src.physics import h_exact, hu_exact, hv_exact
-
-from evaluation.metrics.accuracy import compute_all_accuracy
-from evaluation.metrics.boundary import (
+from src.metrics.accuracy import compute_all_accuracy
+from src.metrics.boundary import (
     slip_violation,
     inflow_boundary_error,
     outflow_gradient_residual,
-    initial_condition_error,
+    initial_condition_accuracy as initial_condition_error,
 )
-from evaluation.metrics.cost import inference_cost
-from evaluation.decomposition.spatial_decomp import (
-    classify_points,
-    compute_spatial_decomposition,
-)
+from src.metrics.cost import inference_cost
+from src.metrics.decomposition import classify_points
 
 # ---------------------------------------------------------------------------
 # Grid generation
@@ -226,13 +222,13 @@ def _generate_plots(
 
     os.makedirs(plots_dir, exist_ok=True)
 
-    from evaluation.plots.time_series import (
+    from src.plots.time_series import (
         plot_gauge_timeseries,
         plot_mass_balance_timeseries,
         plot_training_loss_curves,
         plot_validation_nse_during_training,
     )
-    from evaluation.plots.spatial_maps import (
+    from src.plots.spatial_maps import (
         plot_error_map,
         plot_error_maps_multi,
         plot_depth_map,
@@ -258,7 +254,7 @@ def _generate_plots(
     n_manning = cfg_dict["physics"]["n_manning"]
     u_const = cfg_dict["physics"]["u_const"]
 
-    from evaluation.metrics.accuracy import compute_nse
+    from src.metrics.accuracy import nse as compute_nse
     for gx in gauge_xs:
         # Build a dense time vector for this gauge
         t_gauge = np.linspace(0.0, t_final, 200)
@@ -462,7 +458,7 @@ def _generate_precision_comparison(precision_results: dict, plots_dir: str) -> N
         precision_results: Dict mapping precision label to results dict,
             e.g. {'float64': {'nse_h': 0.99, 'training_time_s': 120.0}, ...}
     """
-    from evaluation.plots.comparisons import plot_precision_comparison_bar
+    from src.plots.comparisons import plot_precision_comparison_bar
 
     precisions = list(precision_results.keys())
     nse_vals = [precision_results[p].get("nse_h", float("nan")) for p in precisions]
@@ -622,16 +618,16 @@ def run_postprocess(
 
     # 6. Conservation (B1)
     print("  Computing volume balance...")
-    from evaluation.metrics.conservation import compute_volume_balance as _vb_fn
+    from src.metrics.conservation import volume_balance as _vb_fn
+    _domain_bounds_vb = {
+        "lx": cfg_dict["domain"]["lx"],
+        "ly": cfg_dict["domain"]["ly"],
+        "t_final": cfg_dict["domain"]["t_final"],
+    }
     vb_result = _vb_fn(
-        np.asarray(predictions[:, 0]),
-        None,  # no explicit cell areas
-        None,  # no inflow volume
-        None,  # no outflow volume
-        domain_bounds={"lx": cfg_dict["domain"]["lx"],
-                       "ly": cfg_dict["domain"]["ly"],
-                       "t_final": cfg_dict["domain"]["t_final"]},
-        coords=np.asarray(coords),
+        jnp.asarray(predictions[:, 0]),
+        jnp.asarray(coords),
+        _domain_bounds_vb,
     )
 
     # 7. Boundary metrics (C1-C4)
