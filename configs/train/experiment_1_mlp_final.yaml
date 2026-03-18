@@ -52,6 +52,8 @@ loss_weights:
   neg_h_weight: 0.000002409
   data_weight: 0.0
 data_free: true
+reporting:
+  epoch_freq: 100
 train_grid:
   n_gauges: 0
   dt_data: 0.0
