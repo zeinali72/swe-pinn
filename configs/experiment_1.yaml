@@ -60,6 +60,8 @@ relobralo:
   alpha: 0.999           # EMA decay for weight smoothing
   warmup: 20             # Epochs to hold uniform weights before activating
   min_weight: 0.01       # Floor applied to all weights after EMA
+reporting:
+  epoch_freq: 100
 data_free: true
 train_grid:
   n_gauges: 0           # number of spatial gauge locations to sample

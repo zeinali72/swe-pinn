@@ -352,7 +352,7 @@ def main(config_path: str):
     POOL_SIZE = int(is_cfg.get("pool_size", 2_000_000))
     RESAMPLE_FREQ_EPOCHS = int(is_cfg.get("resample_freq", 5))
     EVAL_BATCH_SIZE = int(is_cfg.get("eval_batch_size", 10_000))
-    P_ERROR_WEIGHT = float(is_cfg.get("p_error_weight", 0.8)) # Alpha
+    P_ERROR_WEIGHT = float(is_cfg.get("p_error_weight", 0.8))
 
     print(f"Importance Sampling Config: Pool={POOL_SIZE}, Freq={RESAMPLE_FREQ_EPOCHS}, Alpha={P_ERROR_WEIGHT}")
 
