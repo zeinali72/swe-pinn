@@ -140,15 +140,14 @@ def _build_validation_grid(cfg_dict: dict, pp_cfg: dict) -> tuple:
     """
     domain = cfg_dict["domain"]
     physics = cfg_dict["physics"]
-    plot_cfg = cfg_dict.get("plotting", {})
 
     lx = domain["lx"]
     ly = domain["ly"]
     t_final = domain["t_final"]
 
-    nx = plot_cfg.get("nx_val", 101)
+    nx = int(pp_cfg["validation"]["nx"])
+    nt = int(pp_cfg["validation"]["nt"])
     ny = max(int(round(ly / lx * nx)), 5)
-    nt = 21  # 21 time snapshots over [0, T]
 
     xs = jnp.linspace(0.0, lx, nx)
     ys = jnp.linspace(0.0, ly, ny)
@@ -251,7 +250,7 @@ def _compute_boundary_metrics(model, params, bpts: dict, cfg_dict: dict,
     t_left = bpts["left"][:, 2]
     h_presc = h_exact(jnp.zeros_like(t_left), t_left, n_manning, u_const)
     results["C2_inflow_error"] = inflow_boundary_error(
-        model, params, bpts["left"], np.asarray(h_presc), np.asarray(t_left),
+        model, params, bpts["left"], np.asarray(h_presc),
     )
 
     # C3: outflow zero-gradient at x=lx (Exp 1 only)
@@ -276,6 +275,7 @@ def _generate_plots(
     targets: jnp.ndarray,
     ts: jnp.ndarray,
     cfg_dict: dict,
+    pp_cfg: dict,
     plots_dir: str,
     training_history: dict | None,
     skip_plots: bool,
@@ -341,7 +341,7 @@ def _generate_plots(
         ))
 
         gauge_nse = float(compute_nse(h_pred_pts, h_ref_pts))
-        fig = plot_gauge_timeseries(
+        plot_gauge_timeseries(
             t=t_pts,
             predictions={"PINN": h_pred_pts},
             h_ref=h_ref_pts,
@@ -370,7 +370,7 @@ def _generate_plots(
         e_mass = [abs(v - volumes[0]) / max(initial_vol, 1e-12) * 100.0
                   for v in volumes]
 
-        fig = plot_mass_balance_timeseries(
+        plot_mass_balance_timeseries(
             t_pinn=np.array(t_mids),
             e_mass_pinn=np.array(e_mass),
             save_path=os.path.join(plots_dir, "P1_2_mass_balance.png"),
@@ -391,7 +391,7 @@ def _generate_plots(
                 if "learning_rate" in training_history else None
 
             if len(epochs) > 0 and losses_dict:
-                fig = plot_training_loss_curves(
+                plot_training_loss_curves(
                     epochs=epochs,
                     losses_dict=losses_dict,
                     learning_rates=lrs,
@@ -413,7 +413,7 @@ def _generate_plots(
                     nse_dict["hu"] = np.array(training_history["nse_hu"])
                 if "nse_hv" in training_history:
                     nse_dict["hv"] = np.array(training_history["nse_hv"])
-                fig = plot_validation_nse_during_training(
+                plot_validation_nse_during_training(
                     epochs=val_epochs,
                     nse_dict=nse_dict,
                     save_path=os.path.join(plots_dir, "P1_4_nse_training.png"),
@@ -424,7 +424,7 @@ def _generate_plots(
     # ------------------------------------------------------------------
     # P2 — Spatial plots at 5 time snapshots
     # ------------------------------------------------------------------
-    t_snap_fracs = [0.1, 0.25, 0.5, 0.75, 1.0]
+    t_snap_fracs = pp_cfg["plots"]["t_snapshot_fracs"]
     t_snaps = [t_final * f for f in t_snap_fracs]
     snapshots_error = []
     snapshots_depth_pred = []
@@ -454,7 +454,7 @@ def _generate_plots(
     # P2.1 multi-timestep error map
     if snapshots_error:
         try:
-            fig = plot_error_maps_multi(
+            plot_error_maps_multi(
                 snapshots=snapshots_error,
                 save_path=os.path.join(plots_dir, "P2_1_error_maps.png"),
             )
@@ -468,7 +468,7 @@ def _generate_plots(
             x_m, y_m, hp_m = snapshots_depth_pred[mid_idx]
             _, _, hr_m = snapshots_depth_ref[mid_idx]
             t_mid_label = snapshots_error[mid_idx][3]
-            fig = plot_depth_map(
+            plot_depth_map(
                 x=x_m, y=y_m,
                 h_pred=hp_m, h_ref=hr_m,
                 time_label=t_mid_label,
@@ -487,7 +487,7 @@ def _generate_plots(
             coords_m = coords[mask_mid]
             cats = classify_points(np.asarray(coords_m), hr_m, domain_bounds)
             err_m = np.abs(np.asarray(predictions[mask_mid, 0]) - hr_m)
-            fig = plot_error_decomposition(
+            plot_error_decomposition(
                 x=x_m, y=y_m,
                 error_h=err_m,
                 categories=cats,
@@ -517,7 +517,7 @@ def _generate_precision_comparison(precision_results: dict, plots_dir: str) -> N
                    for p in precisions]
 
     try:
-        fig = plot_precision_comparison_bar(
+        plot_precision_comparison_bar(
             precisions=precisions,
             nse_values=nse_vals,
             training_times=train_times,
@@ -592,10 +592,11 @@ def _write_report(results: dict, arrays: dict, output_dir: str) -> None:
 def run_postprocess(
     config_path: str,
     checkpoint_path: str,
+    postprocess_config_path: str = None,
     output_dir: str = None,
     precision_results_spec: str = None,
     training_history_path: str = None,
-    batch_size: int = 50_000,
+    batch_size: int = None,
     skip_conservation: bool = False,
     skip_plots: bool = False,
 ) -> dict:
@@ -604,11 +605,13 @@ def run_postprocess(
     Args:
         config_path: Path to experiment YAML config.
         checkpoint_path: Path to checkpoint directory (contains model.pkl).
+        postprocess_config_path: Path to postprocess YAML config (optional).
+            Values override defaults; CLI flags override the config.
         output_dir: Output directory. Auto-generated if None.
         precision_results_spec: Comma-separated 'label=path' pairs for P3.1,
             e.g. 'float64=results/exp1_f64,float32=results/exp1_f32'.
         training_history_path: JSON file with training history for P1.3/P1.4.
-        batch_size: Prediction batch size.
+        batch_size: Prediction batch size. Overrides postprocess config.
         skip_conservation: If True, skip C3 (outflow AD gradient).
         skip_plots: If True, skip all plot generation.
 
@@ -616,6 +619,20 @@ def run_postprocess(
         Results dict.
     """
     cfg_dict = load_config(config_path)
+    pp_cfg = _load_pp_config(postprocess_config_path, cfg_dict)
+
+    # CLI overrides win over pp_cfg
+    if batch_size is not None:
+        pp_cfg["inference"]["batch_size"] = batch_size
+    if skip_conservation:
+        pp_cfg["inference"]["skip_conservation"] = True
+    if skip_plots:
+        pp_cfg["inference"]["skip_plots"] = True
+
+    _batch_size = pp_cfg["inference"]["batch_size"]
+    _skip_c3 = pp_cfg["inference"]["skip_conservation"]
+    _skip_plots = pp_cfg["inference"]["skip_plots"]
+
     experiment_name = get_experiment_name(cfg_dict, "experiment_1")
 
     if output_dir is None:
@@ -638,13 +655,13 @@ def run_postprocess(
 
     # 3. Generate validation grid
     print("  Generating analytical validation grid...")
-    coords, targets, xs, ys, ts = _build_validation_grid(cfg_dict)
+    coords, targets, xs, ys, ts = _build_validation_grid(cfg_dict, pp_cfg)
     print(f"  Grid: {coords.shape[0]:,} points ({xs.shape[0]}x{ys.shape[0]}x{ts.shape[0]})")
 
     # 4. Predict (timed for D3)
     print("  Running inference...")
     t0_infer = time.perf_counter()
-    predictions = _predict_batched(model, params, coords, batch_size=batch_size)
+    predictions = _predict_batched(model, params, coords, batch_size=_batch_size)
     jax.block_until_ready(predictions)
     elapsed_infer = time.perf_counter() - t0_infer
     print(f"  Prediction: {coords.shape[0]:,} points in {elapsed_infer:.3f}s")
@@ -669,9 +686,9 @@ def run_postprocess(
 
     # 7. Boundary metrics (C1-C4)
     print("  Computing boundary metrics...")
-    bpts = _build_boundary_points(cfg_dict, n_pts=500)
+    bpts = _build_boundary_points(cfg_dict, n_pts=pp_cfg["validation"]["n_boundary_pts"])
     boundary = _compute_boundary_metrics(
-        model, params, bpts, cfg_dict, skip_c3=skip_conservation
+        model, params, bpts, cfg_dict, skip_c3=_skip_c3
     )
 
     # 8. Inference cost (D3)
@@ -757,10 +774,10 @@ def run_postprocess(
 
     # 12. Generate plots
     _generate_plots(
-        coords, predictions, targets, ts, cfg_dict,
-        plots_dir, training_history, skip_plots,
+        coords, predictions, targets, ts, cfg_dict, pp_cfg,
+        plots_dir, training_history, _skip_plots,
     )
-    if not skip_plots:
+    if not _skip_plots:
         print(f"  Plots saved to {plots_dir}")
 
     # 13. P3.1 precision comparison (optional)
@@ -795,14 +812,16 @@ def main():
                         help="Path to experiment YAML config.")
     parser.add_argument("--checkpoint", required=True,
                         help="Path to checkpoint directory.")
+    parser.add_argument("--postprocess-config", default=None, dest="postprocess_config",
+                        help="Path to postprocess YAML config (optional).")
     parser.add_argument("--output", default=None,
                         help="Output directory (auto-generated if omitted).")
     parser.add_argument("--precision-results", default=None, dest="precision_results",
                         help="Comma-separated 'label=path' pairs for P3.1 precision comparison.")
     parser.add_argument("--training-history", default=None, dest="training_history",
                         help="Path to training_history.json for P1.3/P1.4 plots.")
-    parser.add_argument("--batch-size", type=int, default=50_000, dest="batch_size",
-                        help="Prediction batch size.")
+    parser.add_argument("--batch-size", type=int, default=None, dest="batch_size",
+                        help="Prediction batch size (overrides postprocess config).")
     parser.add_argument("--skip-conservation", action="store_true", dest="skip_conservation",
                         help="Skip C3 (AD outflow gradient residual).")
     parser.add_argument("--skip-plots", action="store_true", dest="skip_plots",
@@ -817,6 +836,7 @@ def main():
     run_postprocess(
         config_path=args.config,
         checkpoint_path=args.checkpoint,
+        postprocess_config_path=args.postprocess_config,
         output_dir=args.output,
         precision_results_spec=args.precision_results,
         training_history_path=args.training_history,
