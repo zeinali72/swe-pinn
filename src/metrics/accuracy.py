@@ -53,6 +53,22 @@ def compute_all_metrics(pred: jnp.ndarray, true: jnp.ndarray) -> dict:
     }
 
 
+def compute_all_accuracy(
+    y_pred: dict,
+    y_ref: dict,
+) -> dict:
+    """Compute all accuracy metrics for each variable using a dict interface.
+
+    Args:
+        y_pred: Dict keyed by variable name, e.g. {'h': ..., 'hu': ..., 'hv': ...}.
+        y_ref:  Dict keyed by variable name, same keys as y_pred.
+
+    Returns:
+        Dict of dicts: {'h': {'nse': ..., 'rmse': ..., 'mae': ..., 'rel_l2': ...}, ...}
+    """
+    return {var: compute_all_metrics(y_pred[var], y_ref[var]) for var in y_pred}
+
+
 def compute_validation_metrics(U_pred: jnp.ndarray, U_true: jnp.ndarray) -> dict:
     """Compute accuracy metrics for all 3 output variables (h, hu, hv).
 

@@ -215,6 +215,94 @@ class AimTracker:
             print(f"Warning: Failed to log image '{name}': {e}")
 
     # ------------------------------------------------------------------
+    # T1-T4: Structured logging (experimental programme reference)
+    # ------------------------------------------------------------------
+    def log_losses(self, epoch: int, losses: dict) -> None:
+        """T1: Log all loss components at the current epoch.
+
+        Args:
+            epoch:  Current epoch index.
+            losses: Dict with keys like 'total', 'pde', 'bc', 'ic', 'data', etc.
+        """
+        if not self.enabled:
+            return
+        try:
+            ctx = {'subset': 'train'}
+            for key, val in losses.items():
+                self.aim_run.track(
+                    _safe_float(val), name=f'loss/{key}',
+                    step=epoch, epoch=epoch, context=ctx,
+                )
+        except Exception as e:
+            print(f"Warning: Aim log_losses failed at epoch {epoch}: {e}")
+
+    def log_optimisation_state(self, epoch: int, state: dict) -> None:
+        """T2: Log optimisation state (lr, grad_norm, epoch_time_s, clip_count).
+
+        Args:
+            epoch: Current epoch index.
+            state: Dict with keys 'learning_rate', 'grad_norm',
+                   'epoch_time_s', 'clip_count'.
+        """
+        if not self.enabled:
+            return
+        try:
+            ctx_opt = {'subset': 'train'}
+            ctx_sys = {'subset': 'system'}
+            for key, aim_name, ctx in [
+                ('learning_rate',  'optim/lr',               ctx_opt),
+                ('grad_norm',      'optim/grad_norm',         ctx_opt),
+                ('clip_count',     'optim/clip_count',        ctx_opt),
+                ('epoch_time_s',   'optim/epoch_time_sec',    ctx_sys),
+            ]:
+                if key in state:
+                    self.aim_run.track(
+                        _safe_float(state[key]), name=aim_name,
+                        step=epoch, epoch=epoch, context=ctx,
+                    )
+        except Exception as e:
+            print(f"Warning: Aim log_optimisation_state failed at epoch {epoch}: {e}")
+
+    def log_validation(self, epoch: int, metrics: dict) -> None:
+        """T3: Log validation metrics (NSE, RMSE, etc.) evaluated every N epochs.
+
+        Args:
+            epoch:   Current epoch index.
+            metrics: Dict with keys like 'nse_h', 'rmse_h', 'nse_hu', etc.
+        """
+        if not self.enabled:
+            return
+        try:
+            ctx = {'subset': 'validation'}
+            for key, val in metrics.items():
+                default = -float('inf') if 'nse' in key else float('inf')
+                self.aim_run.track(
+                    _safe_float(val, default), name=f'val/{key}',
+                    step=epoch, epoch=epoch, context=ctx,
+                )
+        except Exception as e:
+            print(f"Warning: Aim log_validation failed at epoch {epoch}: {e}")
+
+    def log_hpo_trial(self, trial_number: int, trial_info: dict) -> None:
+        """T4: Log a completed or pruned HPO trial (Optuna).
+
+        Args:
+            trial_number: Optuna trial index.
+            trial_info:   Dict with keys 'nse' (objective), 'total_epochs',
+                          'elapsed_s', 'pruned' (bool), 'params' (dict of HPs).
+        """
+        if not self.enabled:
+            return
+        try:
+            self.aim_run.track(
+                _safe_float(trial_info.get('nse', float('nan'))),
+                name='hpo/trial_nse', step=trial_number,
+            )
+            self.aim_run[f'hpo/trial_{trial_number}'] = sanitize_for_aim(trial_info)
+        except Exception as e:
+            print(f"Warning: Aim log_hpo_trial failed for trial {trial_number}: {e}")
+
+    # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
     def delete_run(self):
