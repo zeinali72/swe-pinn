@@ -326,8 +326,10 @@ def main(config_path: str):
                 all_residuals = eval_pool_jit(model, params, pool_pde, cfg, EVAL_BATCH_SIZE)
                 current_probs = compute_sampling_probs(all_residuals, ALPHA)
 
-                print(f"    mean_residual={float(jnp.mean(all_residuals)):.3e}, "
-                      f"max_residual={float(jnp.max(all_residuals)):.3e}")
+                _w = 1.0 / (POOL_SIZE * current_probs)
+                _w = _w / jnp.mean(_w)
+                print(f"    residual: mean={float(jnp.mean(all_residuals)):.3e}  max={float(jnp.max(all_residuals)):.3e}")
+                print(f"    weight:   min={float(jnp.min(_w)):.3f}  mean={float(jnp.mean(_w)):.3f}  max={float(jnp.max(_w)):.3f}")
 
             # --- Draw fresh active set every epoch from current pool + probs ---
             active_pde_pts, active_pde_weights = sample_from_pool(
