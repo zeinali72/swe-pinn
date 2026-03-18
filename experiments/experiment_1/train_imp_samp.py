@@ -317,7 +317,13 @@ def main(config_path: str):
             # --- IS pool update ---
             if epoch > 0 and epoch % RESAMPLE_FREQ == 0:
                 print(f"--- Epoch {epoch}: IS pool update ---")
-                train_key, sample_key = random.split(train_key)
+                train_key, pool_key, sample_key = random.split(train_key, 3)
+
+                # Resample pool from domain so new high-residual regions are reachable
+                pool_pde = sample_lhs(
+                    pool_key, POOL_SIZE,
+                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
+                )
 
                 # Evaluate residuals entirely on GPU via lax.map (no CPU round-trip)
                 all_residuals = eval_pool_jit(model, params, pool_pde, cfg, EVAL_BATCH_SIZE)

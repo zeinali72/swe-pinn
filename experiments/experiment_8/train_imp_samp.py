@@ -494,7 +494,18 @@ def main(config_path: str):
             # --- IMPORTANCE SAMPLING UPDATE ---
             if epoch > 0 and epoch % RESAMPLE_FREQ_EPOCHS == 0:
                 print(f"--- Epoch {epoch}: Updating Importance Sampling Pool ---")
-                
+
+                # 0. Resample pool from domain so new high-residual regions are reachable
+                train_key, pool_base_key = random.split(train_key)
+                new_pool_chunks = []
+                for i in range(num_chunks):
+                    subkey = random.fold_in(pool_base_key, i)
+                    current_chunk_size = min(chunk_size, POOL_SIZE - i * chunk_size)
+                    pts = domain_sampler.sample_interior(subkey, current_chunk_size, (0., domain_cfg["t_final"]))
+                    new_pool_chunks.append(np.array(pts))
+                pool_pde_cpu = np.concatenate(new_pool_chunks, axis=0)
+                del new_pool_chunks
+
                 # 1. Evaluate residuals on the WHOLE pool
                 num_eval_batches = int(np.ceil(POOL_SIZE / EVAL_BATCH_SIZE))
                 all_residuals_list = []
