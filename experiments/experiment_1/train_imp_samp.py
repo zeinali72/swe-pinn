@@ -212,7 +212,7 @@ def main(config_path: str):
 
     # --- Build IS pool on GPU (LHS for space-filling coverage) ---
     # Keys derived from the config seed via train_key (same root as model init)
-    train_key, pool_key, init_sample_key = random.split(train_key, 3)
+    train_key, pool_key = random.split(train_key)
     print(f"Generating IS pool ({POOL_SIZE} points) on GPU via LHS...")
     pool_pde = sample_lhs(
         pool_key, POOL_SIZE,
@@ -220,11 +220,8 @@ def main(config_path: str):
     )
     print(f"Pool ready: {pool_pde.shape}")
 
-    # Initial draw: uniform probabilities, fresh key from config seed
-    init_probs = jnp.ones(POOL_SIZE, dtype=get_dtype()) / POOL_SIZE
-    active_pde_pts, active_pde_weights = sample_from_pool(
-        init_sample_key, pool_pde, init_probs, n_pde
-    )
+    # Initial probabilities: uniform — active set redrawn every epoch
+    current_probs = jnp.ones(POOL_SIZE, dtype=get_dtype()) / POOL_SIZE
 
     # JIT pool residual evaluator (model and config are static; chunk_size is static)
     eval_pool_jit = jax.jit(evaluate_pool_residuals, static_argnums=(0, 3, 4))
@@ -312,12 +309,12 @@ def main(config_path: str):
     try:
         for epoch in range(cfg["training"]["epochs"]):
             epoch_start = time.time()
-            train_key, epoch_key, shuffle_key = random.split(train_key, 3)
+            train_key, epoch_key, sample_key = random.split(train_key, 3)
 
-            # --- IS pool update ---
+            # --- IS pool update: resample pool + recompute probs ---
             if epoch > 0 and epoch % RESAMPLE_FREQ == 0:
                 print(f"--- Epoch {epoch}: IS pool update ---")
-                train_key, pool_key, sample_key = random.split(train_key, 3)
+                train_key, pool_key = random.split(train_key)
 
                 # Resample pool from domain so new high-residual regions are reachable
                 pool_pde = sample_lhs(
@@ -325,25 +322,19 @@ def main(config_path: str):
                     (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
                 )
 
-                # Evaluate residuals entirely on GPU via lax.map (no CPU round-trip)
+                # Evaluate residuals on GPU, update probabilities
                 all_residuals = eval_pool_jit(model, params, pool_pde, cfg, EVAL_BATCH_SIZE)
-                probs = compute_sampling_probs(all_residuals, ALPHA)
-
-                # Resample active set on GPU; release previous buffers from VRAM
-                old_pts, old_weights = active_pde_pts, active_pde_weights
-                active_pde_pts, active_pde_weights = sample_from_pool(
-                    sample_key, pool_pde, probs, n_pde
-                )
-                del old_pts, old_weights
+                current_probs = compute_sampling_probs(all_residuals, ALPHA)
 
                 print(f"    mean_residual={float(jnp.mean(all_residuals)):.3e}, "
-                      f"max_residual={float(jnp.max(all_residuals)):.3e}, "
-                      f"max_weight={float(jnp.max(active_pde_weights)):.2f}")
+                      f"max_residual={float(jnp.max(all_residuals)):.3e}")
 
-            # --- Shuffle active set and generate epoch data ---
-            shuffled = random.permutation(shuffle_key, n_pde)[:num_batches * batch_size]
+            # --- Draw fresh active set every epoch from current pool + probs ---
+            active_pde_pts, active_pde_weights = sample_from_pool(
+                sample_key, pool_pde, current_probs, n_pde
+            )
             scan_inputs = generate_epoch_data_jit(
-                epoch_key, active_pde_pts[shuffled], active_pde_weights[shuffled]
+                epoch_key, active_pde_pts, active_pde_weights
             )
 
             # --- Training scan ---

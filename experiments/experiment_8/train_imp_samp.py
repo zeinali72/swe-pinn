@@ -406,13 +406,9 @@ def main(config_path: str):
     print(f"Pool Generation Complete. Stored on CPU. Shape: {pool_pde_cpu.shape}")
     del pool_chunks, pts
     
-    # Initial Active Set (Random Selection)
+    # Initial probabilities: uniform — active set redrawn every epoch
     np_rng = np.random.default_rng(42)
-    active_indices = np_rng.choice(POOL_SIZE, size=n_pde, replace=False)
-    
-    active_pde_pts = jnp.array(pool_pde_cpu[active_indices])
-    # Initialize weights to 1.0 (Uniform sampling initially)
-    active_pde_weights = jnp.ones((n_pde,), dtype=get_dtype())
+    current_probs = np.ones(POOL_SIZE) / POOL_SIZE
 
     # --- Optimizer ---
     reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
@@ -489,7 +485,7 @@ def main(config_path: str):
     try:
         for epoch in range(cfg["training"]["epochs"]):
             epoch_start_time = time.time()
-            train_key, epoch_key, shuffle_key = random.split(train_key, 3)
+            train_key, epoch_key = random.split(train_key)
             
             # --- IMPORTANCE SAMPLING UPDATE ---
             if epoch > 0 and epoch % RESAMPLE_FREQ_EPOCHS == 0:
@@ -536,34 +532,23 @@ def main(config_path: str):
                     p_uniform = 1.0 / POOL_SIZE
                     probs = alpha * p_error + (1 - alpha) * p_uniform
                 
-                # 3. Sample indices
-                new_indices = np_rng.choice(POOL_SIZE, size=n_pde, p=probs, replace=False)
+                # 3. Store updated probabilities — active set redrawn every epoch
+                current_probs = probs
 
-                # 4. Compute Importance Weights
-                # w_i = 1 / (N * p_i)
-                selected_probs = probs[new_indices]
-                weights_unnormalized = 1.0 / (POOL_SIZE * selected_probs)
-                
-                # Normalize weights to have mean 1.0
-                weights_normalized = weights_unnormalized / np.mean(weights_unnormalized)
-                
-                # 5. Update Active Set
-                active_pde_pts = jnp.array(pool_pde_cpu[new_indices])
-                active_pde_weights = jnp.array(weights_normalized)
-                
                 mean_res = np.mean(all_residuals)
                 max_res = np.max(all_residuals)
-                print(f"    IS Update Stats: Mean Error={mean_res:.6f}, Max Error={max_res:.6f}, Max Weight={np.max(weights_normalized):.2f}")
-                print(f"    Resampled {n_pde} points.")
+                print(f"    IS Update Stats: Mean Error={mean_res:.6f}, Max Error={max_res:.6f}")
+                print(f"    Pool probabilities updated.")
 
-            # --- Shuffle Active Set ---
-            shuffled_indices = random.permutation(shuffle_key, n_pde)
-            limit = num_batches * batch_size
-            shuffled_indices = shuffled_indices[:limit]
-            
-            current_epoch_pde_pts = active_pde_pts[shuffled_indices]
-            current_epoch_pde_weights = active_pde_weights[shuffled_indices]
-            
+            # --- Draw fresh active set every epoch from current pool + probs ---
+            epoch_indices = np_rng.choice(POOL_SIZE, size=n_pde, p=current_probs, replace=False)
+            selected_probs_epoch = current_probs[epoch_indices]
+            weights_unnorm = 1.0 / (POOL_SIZE * selected_probs_epoch)
+            epoch_weights = weights_unnorm / np.mean(weights_unnorm)
+
+            current_epoch_pde_pts = jnp.array(pool_pde_cpu[epoch_indices])
+            current_epoch_pde_weights = jnp.array(epoch_weights)
+
             # --- Generate Data ---
             scan_inputs = generate_epoch_data_jitted(epoch_key, current_epoch_pde_pts, current_epoch_pde_weights)
             
