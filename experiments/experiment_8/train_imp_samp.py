@@ -62,7 +62,12 @@ from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_dia
 from src.checkpointing import CheckpointManager
 from src.training import train_step_jitted, make_scan_body, maybe_batch_data
 
-from src.physics import SWEPhysics 
+from src.physics import SWEPhysics
+from src.balancing.importance_sampling import (
+    evaluate_pool_residuals,
+    compute_sampling_probs,
+    sample_from_pool,
+)
 
 # ==============================================================================
 # Helper: Shared PDE residual core (single Jacobian computation)
@@ -113,20 +118,6 @@ def _compute_pde_squared_errors(model: nn.Module, params: Dict[str, Any],
     return jnp.sum(final_residual ** 2, axis=1)
 
 
-# ==============================================================================
-# Helper: Vectorized Residual Calculation for Importance Sampling
-# ==============================================================================
-def compute_pde_residual_vector(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray,
-                                config: FrozenDict) -> jnp.ndarray:
-    """
-    Computes the scalar residual error for EACH point in the batch.
-    Used for Importance Sampling evaluation.
-    Returns: (Batch_Size,) array of errors.
-    """
-    return _compute_pde_squared_errors(model, params, pde_batch, config)
-
-# JIT the residual function for fast evaluation
-get_residuals_jitted = jax.jit(compute_pde_residual_vector, static_argnums=(0, 3))
 
 # ==============================================================================
 # Helper: Weighted PDE Loss (Corrected for Importance Sampling)
@@ -386,29 +377,27 @@ def main(config_path: str):
     chunk_size = 1_000_000
     pool_chunks = []
     num_chunks = POOL_SIZE // chunk_size
-    # Handle remainder if POOL_SIZE not div by chunk_size
     if POOL_SIZE % chunk_size != 0: num_chunks += 1
-    
+
     pool_base_key = random.PRNGKey(12345)
-    
+
     for i in range(num_chunks):
         subkey = random.fold_in(pool_base_key, i)
-        # Determine actual size for this chunk
         current_chunk_size = min(chunk_size, POOL_SIZE - (i * chunk_size))
-        
         pts = domain_sampler.sample_interior(subkey, current_chunk_size, (0., domain_cfg["t_final"]))
-        pts_cpu = np.array(pts)
-        pool_chunks.append(pts_cpu)
+        pool_chunks.append(pts)
         if (i+1) % 2 == 0:
             print(f"  Generated {(i+1)*chunk_size} points...")
-            
-    pool_pde_cpu = np.concatenate(pool_chunks, axis=0)
-    print(f"Pool Generation Complete. Stored on CPU. Shape: {pool_pde_cpu.shape}")
-    del pool_chunks, pts
-    
+
+    pool_pde = jnp.concatenate(pool_chunks, axis=0)
+    print(f"Pool ready (GPU): {pool_pde.shape}")
+    del pool_chunks
+
+    # JIT pool residual evaluator (model and config are static; chunk_size is static)
+    eval_pool_jit = jax.jit(evaluate_pool_residuals, static_argnums=(0, 3, 4))
+
     # Initial probabilities: uniform — active set redrawn every epoch
-    np_rng = np.random.default_rng(42)
-    current_probs = np.ones(POOL_SIZE) / POOL_SIZE
+    current_probs = jnp.ones(POOL_SIZE, dtype=get_dtype()) / POOL_SIZE
 
     # --- Optimizer ---
     reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
@@ -485,8 +474,8 @@ def main(config_path: str):
     try:
         for epoch in range(cfg["training"]["epochs"]):
             epoch_start_time = time.time()
-            train_key, epoch_key = random.split(train_key)
-            
+            train_key, epoch_key, sample_key = random.split(train_key, 3)
+
             # --- IMPORTANCE SAMPLING UPDATE ---
             if epoch > 0 and epoch % RESAMPLE_FREQ_EPOCHS == 0:
                 print(f"--- Epoch {epoch}: Updating Importance Sampling Pool ---")
@@ -498,56 +487,24 @@ def main(config_path: str):
                     subkey = random.fold_in(pool_base_key, i)
                     current_chunk_size = min(chunk_size, POOL_SIZE - i * chunk_size)
                     pts = domain_sampler.sample_interior(subkey, current_chunk_size, (0., domain_cfg["t_final"]))
-                    new_pool_chunks.append(np.array(pts))
-                pool_pde_cpu = np.concatenate(new_pool_chunks, axis=0)
+                    new_pool_chunks.append(pts)
+                pool_pde = jnp.concatenate(new_pool_chunks, axis=0)
                 del new_pool_chunks
 
-                # 1. Evaluate residuals on the WHOLE pool
-                num_eval_batches = int(np.ceil(POOL_SIZE / EVAL_BATCH_SIZE))
-                all_residuals_list = []
-                
-                # Enqueue all batches first to avoid serialising GPU work
-                gpu_results = []
-                for i in range(num_eval_batches):
-                    idx_start = i * EVAL_BATCH_SIZE
-                    idx_end = min((i + 1) * EVAL_BATCH_SIZE, POOL_SIZE)
+                # 1. Evaluate residuals on entire pool via lax.map (single JIT, no CPU round-trip)
+                all_residuals = eval_pool_jit(model, params, pool_pde, cfg, EVAL_BATCH_SIZE)
 
-                    batch_pts_gpu = jax.device_put(pool_pde_cpu[idx_start:idx_end])
-                    gpu_results.append(get_residuals_jitted(model, params, batch_pts_gpu, cfg))
+                # 2. Compute sampling probabilities on GPU
+                current_probs = compute_sampling_probs(all_residuals, P_ERROR_WEIGHT)
 
-                # Collect results after all batches have been dispatched
-                for res in gpu_results:
-                    all_residuals_list.append(np.array(res.block_until_ready()))
-                
-                all_residuals = np.concatenate(all_residuals_list, axis=0)
-                
-                # 2. Compute Selection Probabilities (CPU)
-                err_sum = np.sum(all_residuals)
-                if err_sum < 1e-9:
-                    probs = np.ones(POOL_SIZE) / POOL_SIZE
-                else:
-                    # Use configurable alpha
-                    alpha = P_ERROR_WEIGHT 
-                    p_error = all_residuals / err_sum
-                    p_uniform = 1.0 / POOL_SIZE
-                    probs = alpha * p_error + (1 - alpha) * p_uniform
-                
-                # 3. Store updated probabilities — active set redrawn every epoch
-                current_probs = probs
-
-                mean_res = np.mean(all_residuals)
-                max_res = np.max(all_residuals)
-                print(f"    IS Update Stats: Mean Error={mean_res:.6f}, Max Error={max_res:.6f}")
+                print(f"    mean_residual={float(jnp.mean(all_residuals)):.3e}, "
+                      f"max_residual={float(jnp.max(all_residuals)):.3e}")
                 print(f"    Pool probabilities updated.")
 
             # --- Draw fresh active set every epoch from current pool + probs ---
-            epoch_indices = np_rng.choice(POOL_SIZE, size=n_pde, p=current_probs, replace=False)
-            selected_probs_epoch = current_probs[epoch_indices]
-            weights_unnorm = 1.0 / (POOL_SIZE * selected_probs_epoch)
-            epoch_weights = weights_unnorm / np.mean(weights_unnorm)
-
-            current_epoch_pde_pts = jnp.array(pool_pde_cpu[epoch_indices])
-            current_epoch_pde_weights = jnp.array(epoch_weights)
+            current_epoch_pde_pts, current_epoch_pde_weights = sample_from_pool(
+                sample_key, pool_pde, current_probs, n_pde
+            )
 
             # --- Generate Data ---
             scan_inputs = generate_epoch_data_jitted(epoch_key, current_epoch_pde_pts, current_epoch_pde_weights)
