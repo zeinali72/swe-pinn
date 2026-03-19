@@ -197,9 +197,9 @@ def plot_gauge_timeseries(
     results_dir : str
         Directory where the figure is saved.
     aim_tracker : optional
-        If provided, ``aim_tracker.log_image(path, filename, epoch)`` is called.
+        If provided, ``aim_tracker.log_image(path, filename)`` is called.
     epoch : int, optional
-        Epoch index passed to *aim_tracker*.
+        Unused — retained for call-site compatibility.
     full_val_data : ndarray or None, optional
         Full validation dataset (columns: t, x, y, h, ...).  When not None the
         function overlays the baseline (reference) time series for the gauge.
@@ -245,5 +245,5 @@ def plot_gauge_timeseries(
     path = os.path.join(results_dir, filename)
     plt.savefig(path)
     plt.close()
-    if aim_tracker is not None and epoch is not None:
-        aim_tracker.log_image(path, filename, epoch)
+    if aim_tracker is not None:
+        aim_tracker.log_image(path, filename)
