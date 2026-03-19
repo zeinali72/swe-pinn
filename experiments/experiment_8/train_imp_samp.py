@@ -748,7 +748,7 @@ def main(config_path: str):
                     path = os.path.join(results_dir, f"{pname}_timeseries.png")
                     plt.savefig(path)
                     plt.close()
-                    aim_tracker.log_image(path, f"{pname}_timeseries.png", epoch if 'epoch' in locals() else 0)
+                    aim_tracker.log_image(path, f"{pname}_timeseries.png")
 
                 print(f"Plots saved to {results_dir}")
 

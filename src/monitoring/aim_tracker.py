@@ -5,7 +5,7 @@ training monitoring specification. All JAX/NumPy values are sanitised to
 native Python types before being sent to Aim.
 """
 import copy
-from typing import Dict, Optional
+from typing import Optional
 
 
 def _safe_float(val, default=float('nan')):
@@ -36,6 +36,10 @@ class AimTracker:
     """Wraps the Aim SDK with structured metric logging.
 
     If Aim is unavailable or ``enable=False``, all methods become no-ops.
+
+    The ``scenario`` field from the config dict (e.g. ``"experiment_1"``) is
+    used as the Aim ``experiment`` label so all runs for a scenario are grouped
+    together in the UI, and also added as a tag for filtering.
     """
 
     def __init__(self, config: dict, trial_name: str, enable: bool = True):
@@ -54,8 +58,14 @@ class AimTracker:
             aim_repo_path = "aim_repo"
             os.makedirs(aim_repo_path, exist_ok=True)
             self.aim_repo = Repo(path=aim_repo_path, init=True)
-            self.aim_run = Run(repo=self.aim_repo, experiment=trial_name)
+            scenario = config.get('scenario', '')
+            experiment_label = scenario if scenario else trial_name
+            self.aim_run = Run(repo=self.aim_repo, experiment=experiment_label)
             self.run_hash = self.aim_run.hash
+
+            if scenario:
+                self.aim_run.add_tag(scenario)
+            self.aim_run["trial_name"] = trial_name
 
             artifact_path = os.path.join(aim_repo_path, "aim_artifacts")
             os.makedirs(artifact_path, exist_ok=True)
@@ -66,7 +76,7 @@ class AimTracker:
                 copy.deepcopy(dict(config))
             )
             print(
-                f"Aim tracking initialised: {trial_name} ({self.run_hash})"
+                f"Aim tracking initialised: {trial_name} [{experiment_label}] ({self.run_hash})"
             )
         except Exception as e:
             print(
@@ -86,13 +96,13 @@ class AimTracker:
         self,
         epoch: int,
         step: int,
-        losses: Dict[str, float],
+        losses: dict,
         total_loss: float,
-        val_metrics: Dict[str, float],
+        val_metrics: dict,
         lr: float,
         epoch_time: float,
         elapsed_time: float,
-        neg_depth: Optional[Dict[str, float]] = None,
+        neg_depth: Optional[dict] = None,
     ):
         if not self.enabled:
             return
@@ -160,8 +170,8 @@ class AimTracker:
                 step=step, epoch=epoch,
             )
             self.aim_run['best_nse_h_epoch'] = epoch + 1
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: Failed to log best NSE to Aim: {e}")
 
     def log_best_loss(self, loss: float, epoch: int, step: int):
         if not self.enabled:
@@ -172,8 +182,8 @@ class AimTracker:
                 step=step, epoch=epoch,
             )
             self.aim_run['best_loss_epoch'] = epoch + 1
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: Failed to log best loss to Aim: {e}")
 
     # ------------------------------------------------------------------
     # Run-level metadata (F)
@@ -205,111 +215,23 @@ class AimTracker:
         except Exception as e:
             print(f"Warning: Failed to log artifact '{name}': {e}")
 
-    def log_image(self, path: str, name: str, epoch: int):
+    def log_image(self, path: str, name: str):
         if not self.enabled:
             return
         try:
             from aim import Image
-            self.aim_run.track(Image(path), name=name, epoch=epoch)
+            self.aim_run["images", name] = Image(path)
         except Exception as e:
             print(f"Warning: Failed to log image '{name}': {e}")
 
-    # ------------------------------------------------------------------
-    # T1-T4: Structured logging (experimental programme reference)
-    # ------------------------------------------------------------------
-    def log_losses(self, epoch: int, losses: dict) -> None:
-        """T1: Log all loss components at the current epoch.
-
-        Args:
-            epoch:  Current epoch index.
-            losses: Dict with keys like 'total', 'pde', 'bc', 'ic', 'data', etc.
-        """
-        if not self.enabled:
-            return
-        try:
-            ctx = {'subset': 'train'}
-            for key, val in losses.items():
-                self.aim_run.track(
-                    _safe_float(val), name=f'loss/{key}',
-                    step=epoch, epoch=epoch, context=ctx,
-                )
-        except Exception as e:
-            print(f"Warning: Aim log_losses failed at epoch {epoch}: {e}")
-
-    def log_optimisation_state(self, epoch: int, state: dict) -> None:
-        """T2: Log optimisation state (lr, grad_norm, epoch_time_s, clip_count).
-
-        Args:
-            epoch: Current epoch index.
-            state: Dict with keys 'learning_rate', 'grad_norm',
-                   'epoch_time_s', 'clip_count'.
-        """
-        if not self.enabled:
-            return
-        try:
-            ctx_opt = {'subset': 'train'}
-            ctx_sys = {'subset': 'system'}
-            for key, aim_name, ctx in [
-                ('learning_rate',  'optim/lr',               ctx_opt),
-                ('grad_norm',      'optim/grad_norm',         ctx_opt),
-                ('clip_count',     'optim/clip_count',        ctx_opt),
-                ('epoch_time_s',   'optim/epoch_time_sec',    ctx_sys),
-            ]:
-                if key in state:
-                    self.aim_run.track(
-                        _safe_float(state[key]), name=aim_name,
-                        step=epoch, epoch=epoch, context=ctx,
-                    )
-        except Exception as e:
-            print(f"Warning: Aim log_optimisation_state failed at epoch {epoch}: {e}")
-
-    def log_validation(self, epoch: int, metrics: dict) -> None:
-        """T3: Log validation metrics (NSE, RMSE, etc.) evaluated every N epochs.
-
-        Args:
-            epoch:   Current epoch index.
-            metrics: Dict with keys like 'nse_h', 'rmse_h', 'nse_hu', etc.
-        """
-        if not self.enabled:
-            return
-        try:
-            ctx = {'subset': 'validation'}
-            for key, val in metrics.items():
-                default = -float('inf') if 'nse' in key else float('inf')
-                self.aim_run.track(
-                    _safe_float(val, default), name=f'val/{key}',
-                    step=epoch, epoch=epoch, context=ctx,
-                )
-        except Exception as e:
-            print(f"Warning: Aim log_validation failed at epoch {epoch}: {e}")
-
-    def log_hpo_trial(self, trial_number: int, trial_info: dict) -> None:
-        """T4: Log a completed or pruned HPO trial (Optuna).
-
-        Args:
-            trial_number: Optuna trial index.
-            trial_info:   Dict with keys 'nse' (objective), 'total_epochs',
-                          'elapsed_s', 'pruned' (bool), 'params' (dict of HPs).
-        """
-        if not self.enabled:
-            return
-        try:
-            self.aim_run.track(
-                _safe_float(trial_info.get('nse', float('nan'))),
-                name='hpo/trial_nse', step=trial_number,
-            )
-            self.aim_run[f'hpo/trial_{trial_number}'] = sanitize_for_aim(trial_info)
-        except Exception as e:
-            print(f"Warning: Aim log_hpo_trial failed for trial {trial_number}: {e}")
-
-    def log_scalars(self, scalars: dict, step: int, prefix: str = "") -> None:
+    def log_scalars(self, scalars: dict, step: int, epoch: Optional[int] = None, prefix: str = "") -> None:
         """Track a flat dict of scalar values under an optional name prefix."""
         if not self.enabled:
             return
         try:
             for k, v in scalars.items():
                 name = f"{prefix}/{k}" if prefix else k
-                self.aim_run.track(_safe_float(v), name=name, step=step)
+                self.aim_run.track(_safe_float(v), name=name, step=step, epoch=epoch)
         except Exception as e:
             print(f"Warning: Aim log_scalars failed at step {step}: {e}")
 

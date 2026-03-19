@@ -279,7 +279,7 @@ def _run_relobralo_loop(
                 epoch_time=epoch_time, elapsed_time=elapsed_now,
                 neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
             )
-            aim_tracker.log_scalars(relobralo.weights, step=global_step, prefix="relobralo_weights")
+            aim_tracker.log_scalars(relobralo.weights, step=global_step, epoch=epoch, prefix="relobralo_weights")
 
             min_epochs = cfg.get("device", {}).get("early_stop_min_epochs", float('inf'))
             patience = cfg.get("device", {}).get("early_stop_patience", float('inf'))
@@ -642,7 +642,7 @@ def main(config_path: str):
         U_1d = _apply_min_depth(U_1d, min_depth_plot)
         plot_path = os.path.join(results_dir, "final_validation_plot.png")
         plot_h_vs_x(x_plot, U_1d[..., 0], t_const, y_const, ctx["cfg_dict"], plot_path)
-        aim_tracker.log_image(plot_path, 'validation_plot_1D', final_epoch)
+        aim_tracker.log_image(plot_path, 'validation_plot_1D')
         print(f"Plot saved to {plot_path}")
 
     post_training_save(

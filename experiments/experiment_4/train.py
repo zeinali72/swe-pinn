@@ -380,7 +380,7 @@ def main(config_path: str):
             path = os.path.join(results_dir, filename)
             plt.savefig(path)
             plt.close()
-            aim_tracker.log_image(path, filename, final_epoch)
+            aim_tracker.log_image(path, filename)
 
         for px, py, pname in output_points:
             plot_gauge(px, py, pname, f"{pname}_timeseries.png")

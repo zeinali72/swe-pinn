@@ -558,7 +558,7 @@ def main(config_path: str):
                 U_plot = _apply_min_depth(U_plot, min_depth_plot)
                 plot_path = os.path.join(results_dir, "final_validation_plot.png")
                 plot_h_vs_x(x_plot, U_plot[..., 0], t_val, y_const, cfg_dict, plot_path)
-                aim_tracker.log_image(plot_path, 'validation_plot_1D', epoch)
+                aim_tracker.log_image(plot_path, 'validation_plot_1D')
                 print(f"Model and plots saved in {model_dir} / {results_dir}")
 
         aim_tracker.close()
