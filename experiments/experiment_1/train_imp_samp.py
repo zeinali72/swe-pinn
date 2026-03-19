@@ -119,6 +119,211 @@ def compute_losses(model, params, batch, config, data_free):
 
 
 # ---------------------------------------------------------------------------
+# HPO setup
+# ---------------------------------------------------------------------------
+
+def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
+    """Set up all training components for the IS variant.
+
+    Used by the HPO framework via ``train_module: train_imp_samp`` in the
+    HPO config.  The IS pool update requires the current model params each
+    ``resample_freq`` epochs, so this function returns a ``pre_epoch_hook``
+    that the HPO loop calls before each ``generate_epoch_data_jit`` invocation.
+
+    Returns
+    -------
+    dict with all keys expected by ``optimization_train_loop.run_training_trial``
+    plus ``pre_epoch_hook(epoch, params) -> None``.
+    """
+    cfg = FrozenDict(cfg_dict)
+    experiment_name = get_experiment_name(cfg_dict, "experiment_1_is")
+
+    model, params, train_key, val_key = init_model_from_config(cfg)
+    domain_cfg = cfg["domain"]
+
+    # --- IS config ---
+    is_cfg = cfg.get("sampling", {}).get("importance_sampling", {})
+    pool_size = int(is_cfg.get("pool_size", 2_000_000))
+    resample_freq = int(is_cfg.get("resample_freq", 40))
+    eval_batch_size = int(is_cfg.get("eval_batch_size", 100_000))
+    alpha = float(is_cfg.get("alpha", 0.8))
+    print(f"IS config: pool={pool_size}, freq={resample_freq}, eval_batch={eval_batch_size}, alpha={alpha}")
+
+    # --- Loss weights ---
+    static_weights_dict, _ = extract_loss_weights(cfg)
+    data_free, _ = resolve_data_mode(cfg)
+    current_weights_dict = get_active_loss_weights(
+        static_weights_dict, data_free=data_free, excluded_keys={"building_bc"}
+    )
+    active_loss_term_keys = list(current_weights_dict.keys())
+
+    # --- Validation (analytical) ---
+    val_points, h_true_val, hu_true_val, hv_true_val = None, None, None, None
+    validation_data_loaded = False
+    try:
+        val_grid_cfg = cfg["validation_grid"]
+        val_points = sample_domain(
+            val_key, val_grid_cfg["n_points_val"],
+            (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
+        )
+        n_manning = cfg["physics"]["n_manning"]
+        u_const = cfg["physics"]["u_const"]
+        h_true_val = h_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
+        hu_true_val = hu_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
+        hv_true_val = hv_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
+        validation_data_loaded = val_points.shape[0] > 0
+        print(f"Analytical validation set: {val_points.shape[0]} points.")
+    except Exception as e:
+        print(f"Warning: Validation setup failed: {e}")
+
+    # --- Sample counts ---
+    batch_size = cfg["training"]["batch_size"]
+    n_pde = get_sampling_count_from_config(cfg, "n_points_pde") if ('pde' in active_loss_term_keys or 'neg_h' in active_loss_term_keys) else 0
+    n_pde = (n_pde // batch_size) * batch_size
+    n_ic = get_sampling_count_from_config(cfg, "n_points_ic") if 'ic' in active_loss_term_keys else 0
+    n_bc_domain = get_sampling_count_from_config(cfg, "n_points_bc_domain") if 'bc' in active_loss_term_keys else 0
+    n_bc_per_wall = get_boundary_segment_count(cfg, n_bc_domain) if n_bc_domain > 0 else 0
+
+    num_batches = calculate_num_batches(
+        batch_size,
+        [n_pde, n_ic, n_bc_per_wall, n_bc_per_wall, n_bc_per_wall, n_bc_per_wall],
+        None,
+        data_free=True,
+    )
+    if num_batches == 0:
+        raise ValueError(f"Batch size {batch_size} is too large for configured sample counts.")
+
+    # --- Build initial IS pool ---
+    train_key, pool_key, sample_key = random.split(train_key, 3)
+    print(f"Generating IS pool ({pool_size} points)...")
+    pool_pde_init = sample_lhs(
+        pool_key, pool_size,
+        (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
+    )
+    initial_probs = jnp.ones(pool_size, dtype=get_dtype()) / pool_size
+
+    eval_pool_jit = jax.jit(evaluate_pool_residuals, static_argnums=(0, 3, 4))
+
+    # --- Optimizer ---
+    optimiser = create_optimizer(cfg, num_batches=num_batches)
+    opt_state = optimiser.init(params)
+
+    # --- Epoch data generator (3-arg, JIT-compiled inner function) ---
+    def _generate_epoch_data(key, pde_pts, pde_weights):
+        k_ic, k_bc, k_data = random.split(key, 3)
+        x_range = (0., domain_cfg["lx"])
+        y_range = (0., domain_cfg["ly"])
+        t_range = (0., domain_cfg["t_final"])
+        pde_data = pde_pts.reshape((num_batches, batch_size, 3))
+        pde_w = pde_weights.reshape((num_batches, batch_size))
+        l_key, r_key, b_key, t_key = random.split(k_bc, 4)
+        ic_data = sample_and_batch(k_ic, sample_domain, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
+        bc_data = {
+            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (0., 0.), y_range, t_range),
+            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
+            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range),
+            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+        }
+        return {
+            'pde': pde_data,
+            'pde_weights': pde_w,
+            'ic': ic_data,
+            'bc': bc_data,
+            'data': maybe_batch_data(k_data, None, batch_size, num_batches, True),
+            'building_bc': {},
+        }
+
+    _generate_epoch_data_jit = jax.jit(_generate_epoch_data)
+
+    # --- IS state: mutable object that the HPO loop updates via pre_epoch_hook ---
+    class _ISState:
+        """Encapsulates mutable IS pool state for the HPO trial loop."""
+        def __init__(self):
+            self.pool_pde = pool_pde_init
+            self.current_probs = initial_probs
+            self._key = sample_key
+            # Draw initial active set
+            self._key, sub = random.split(self._key)
+            self.active_pde, self.active_weights = sample_from_pool(
+                sub, self.pool_pde, self.current_probs, n_pde
+            )
+
+        def update(self, epoch, params):
+            """Resample pool every resample_freq epochs, always draw new active set."""
+            if epoch > 0 and epoch % resample_freq == 0:
+                self._key, pk = random.split(self._key)
+                self.pool_pde = sample_lhs(
+                    pk, pool_size,
+                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
+                )
+                residuals = eval_pool_jit(model, params, self.pool_pde, cfg, eval_batch_size)
+                self.current_probs = compute_sampling_probs(residuals, alpha)
+            self._key, sub = random.split(self._key)
+            self.active_pde, self.active_weights = sample_from_pool(
+                sub, self.pool_pde, self.current_probs, n_pde
+            )
+
+    is_state = _ISState()
+
+    def generate_epoch_data_jit(key):
+        """Single-arg wrapper used by the HPO loop; IS state updated via hook."""
+        return _generate_epoch_data_jit(key, is_state.active_pde, is_state.active_weights)
+
+    def pre_epoch_hook(epoch, params):
+        is_state.update(epoch, params)
+
+    # --- scan body ---
+    scan_body = make_scan_body(
+        train_step_jitted, model, optimiser, current_weights_dict, cfg, data_free,
+        compute_losses_fn=compute_losses,
+    )
+
+    # --- Validation function ---
+    def validation_fn(model, params):
+        metrics = {}
+        if validation_data_loaded:
+            try:
+                U_pred = model.apply({'params': params['params']}, val_points, train=False)
+                min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
+                U_pred = _apply_min_depth(U_pred, min_depth_val)
+                metrics = {
+                    'nse_h': float(nse(U_pred[..., 0], h_true_val)),
+                    'rmse_h': float(rmse(U_pred[..., 0], h_true_val)),
+                    'rel_l2_h': float(relative_l2(U_pred[..., 0], h_true_val)),
+                    'nse_hu': float(nse(U_pred[..., 1], hu_true_val)),
+                    'rmse_hu': float(rmse(U_pred[..., 1], hu_true_val)),
+                    'nse_hv': float(nse(U_pred[..., 2], hv_true_val)),
+                    'rmse_hv': float(rmse(U_pred[..., 2], hv_true_val)),
+                }
+            except Exception as e:
+                print(f"Warning: Validation failed: {e}")
+        if not metrics:
+            metrics = {'nse_h': float(-jnp.inf), 'rmse_h': float(jnp.inf)}
+        return metrics
+
+    return {
+        "cfg": cfg,
+        "cfg_dict": cfg_dict,
+        "model": model,
+        "params": params,
+        "train_key": train_key,
+        "optimiser": optimiser,
+        "opt_state": opt_state,
+        "generate_epoch_data_jit": generate_epoch_data_jit,
+        "scan_body": scan_body,
+        "num_batches": num_batches,
+        "validation_fn": validation_fn,
+        "pre_epoch_hook": pre_epoch_hook,
+        # Production extras
+        "experiment_name": experiment_name,
+        "validation_data_loaded": validation_data_loaded,
+        "val_points_all": val_points,
+        "h_true_val_all": h_true_val,
+        "val_targets_all": None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 

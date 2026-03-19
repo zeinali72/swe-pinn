@@ -37,9 +37,15 @@ class AimTracker:
 
     If Aim is unavailable or ``enable=False``, all methods become no-ops.
 
-    The ``scenario`` field from the config dict (e.g. ``"experiment_1"``) is
-    used as the Aim ``experiment`` label so all runs for a scenario are grouped
-    together in the UI, and also added as a tag for filtering.
+    Grouping hierarchy in the Aim UI:
+
+    * **Experiment** — ``config["scenario"]`` (e.g. ``"experiment_1"``).
+      All runs for the same scenario appear under one experiment group.
+    * **Run name** — ``trial_name`` (date-time prefixed, e.g.
+      ``"2025-03-19_14-32_experiment_1_fourier"``).
+    * **Tags** — scenario, model architecture, and any variant labels
+      passed via :meth:`log_flags` (e.g. ``"importance_sampling"``,
+      ``"relobralo"``).
     """
 
     def __init__(self, config: dict, trial_name: str, enable: bool = True):
@@ -58,14 +64,22 @@ class AimTracker:
             aim_repo_path = "aim_repo"
             os.makedirs(aim_repo_path, exist_ok=True)
             self.aim_repo = Repo(path=aim_repo_path, init=True)
+
+            # Experiment = scenario (groups runs: experiment_1, experiment_2, …)
             scenario = config.get('scenario', '')
             experiment_label = scenario if scenario else trial_name
             self.aim_run = Run(repo=self.aim_repo, experiment=experiment_label)
             self.run_hash = self.aim_run.hash
 
+            # Run name = trial_name (date-time prefix, visible in Aim UI)
+            self.aim_run.name = trial_name
+
+            # Tags: scenario + model architecture
             if scenario:
                 self.aim_run.add_tag(scenario)
-            self.aim_run["trial_name"] = trial_name
+            model_name = config.get('model', {}).get('name', '')
+            if model_name:
+                self.aim_run.add_tag(model_name)
 
             artifact_path = os.path.join(aim_repo_path, "aim_artifacts")
             os.makedirs(artifact_path, exist_ok=True)
@@ -189,10 +203,19 @@ class AimTracker:
     # Run-level metadata (F)
     # ------------------------------------------------------------------
     def log_flags(self, flags: dict):
+        """Store flags as run metadata and add variant labels as tags.
+
+        String values in *flags* are added as tags so that runs can be
+        filtered by variant within an experiment group (e.g. tag
+        ``"relobralo"`` from ``loss_weighting`` flag).
+        """
         if not self.enabled:
             return
         try:
             self.aim_run['flags'] = sanitize_for_aim(flags)
+            for val in flags.values():
+                if isinstance(val, str) and val:
+                    self.aim_run.add_tag(val)
         except Exception:
             pass
 

@@ -22,13 +22,14 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
         trial_cfg_dict = trial_cfg
 
     scenario = trial_cfg_dict.get("scenario", "experiment_1")
+    train_module = trial_cfg_dict.get("train_module", "train")
 
     # 1. Dynamically import the experiment's setup_trial function
     try:
-        mod = importlib.import_module(f"experiments.{scenario}.train")
+        mod = importlib.import_module(f"experiments.{scenario}.{train_module}")
         setup_trial = mod.setup_trial
     except (ImportError, AttributeError) as e:
-        print(f"Trial {trial.number}: Cannot import experiments.{scenario}.train.setup_trial: {e}")
+        print(f"Trial {trial.number}: Cannot import experiments.{scenario}.{train_module}.setup_trial: {e}")
         return float("nan")
 
     # 2. Run experiment-specific setup (model init, terrain, closures, etc.)
@@ -60,8 +61,12 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     params = ctx["params"]
     opt_state = ctx["opt_state"]
 
+    pre_epoch_hook = ctx.get("pre_epoch_hook")
+
     for epoch in range(epochs):
         train_key, epoch_key = random.split(train_key)
+        if pre_epoch_hook is not None:
+            pre_epoch_hook(epoch, params)
         scan_inputs = ctx["generate_epoch_data_jit"](epoch_key)
         (params, opt_state), (batch_terms, batch_totals) = lax.scan(
             ctx["scan_body"], (params, opt_state), scan_inputs,
