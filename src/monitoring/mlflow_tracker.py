@@ -217,8 +217,10 @@ class MLflowTracker:
             ) as f:
                 json.dump(safe, f, indent=2)
                 summary_path = f.name
-            mlflow.log_artifact(summary_path, artifact_path="summary")
-            os.unlink(summary_path)
+            try:
+                mlflow.log_artifact(summary_path, artifact_path="summary")
+            finally:
+                os.unlink(summary_path)
             # Also surface scalar leaves as metrics for dashboard visibility.
             flat = _flatten_dict(safe)
             scalar_metrics = {}
