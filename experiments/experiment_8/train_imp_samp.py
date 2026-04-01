@@ -21,10 +21,6 @@ import jax
 import jax.numpy as jnp
 from jax import random, lax
 import optax
-try:
-    from aim import Image
-except ImportError:
-    Image = None
 from flax.core import FrozenDict
 import flax.linen as nn
 import numpy as np 

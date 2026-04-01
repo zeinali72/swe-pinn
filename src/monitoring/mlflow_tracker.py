@@ -7,7 +7,12 @@ native Python types before being sent to MLflow.
 import copy
 import json
 import os
+import tempfile
 from typing import Optional
+
+# MLflow backend limits
+_PARAM_KEY_MAX = 250
+_PARAM_VAL_MAX = 500
 
 
 def _safe_float(val, default=float('nan')):
@@ -34,11 +39,11 @@ def sanitize_params(obj):
         return obj
 
 
-def _flatten_dict(d: dict, prefix: str = "", sep: str = "/") -> dict:
+def _flatten_dict(d: dict, prefix: str = "", sep: str = ".") -> dict:
     """Flatten a nested dict to dot-separated keys for MLflow params."""
     out = {}
     for k, v in d.items():
-        key = f"{prefix}{sep}{k}" if prefix else k
+        key = f"{prefix}{sep}{k}" if prefix else str(k)
         if isinstance(v, dict):
             out.update(_flatten_dict(v, key, sep))
         else:
@@ -74,6 +79,10 @@ class MLflowTracker:
             import mlflow
 
             tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "mlflow_repo")
+            # Resolve to absolute path so scripts run from any directory write
+            # to the same store.
+            if not tracking_uri.startswith(("http://", "https://", "file://")):
+                tracking_uri = os.path.abspath(tracking_uri)
             os.makedirs(tracking_uri, exist_ok=True)
             self._tracking_uri = tracking_uri
             mlflow.set_tracking_uri(tracking_uri)
@@ -94,11 +103,14 @@ class MLflowTracker:
                 tags["model"] = model_name
             mlflow.set_tags(tags)
 
-            # Log hyperparameters as flattened params (MLflow has 500-char limit)
+            # Log hyperparameters as flattened params.
+            # MLflow limits: key ≤ 250 chars, value ≤ 500 chars.
             try:
                 flat = _flatten_dict(sanitize_params(copy.deepcopy(dict(config))))
-                # MLflow param values must be strings ≤ 500 chars
-                str_params = {k: str(v)[:500] for k, v in flat.items()}
+                str_params = {
+                    k[:_PARAM_KEY_MAX]: str(v)[:_PARAM_VAL_MAX]
+                    for k, v in flat.items()
+                }
                 mlflow.log_params(str_params)
             except Exception as e:
                 print(f"Warning: Failed to log hparams to MLflow: {e}")
@@ -198,12 +210,16 @@ class MLflowTracker:
         try:
             import mlflow
             safe = sanitize_params(summary)
-            # Log as a JSON artifact for full fidelity
-            summary_path = "/tmp/mlflow_summary.json"
-            with open(summary_path, "w") as f:
+            # Write to a per-run temp file to avoid races during parallel HPO.
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.json', prefix=f'mlflow_summary_{self.run_id}_',
+                delete=False
+            ) as f:
                 json.dump(safe, f, indent=2)
+                summary_path = f.name
             mlflow.log_artifact(summary_path, artifact_path="summary")
-            # Also surface top-level scalar leaves as metrics
+            os.unlink(summary_path)
+            # Also surface scalar leaves as metrics for dashboard visibility.
             flat = _flatten_dict(safe)
             scalar_metrics = {}
             for k, v in flat.items():
@@ -217,6 +233,11 @@ class MLflowTracker:
             print(f"Warning: Failed to log summary to MLflow: {e}")
 
     def log_artifact(self, path: str, name: str):
+        """Log a file artifact.
+
+        ``name`` is accepted for API compatibility but MLflow stores the file
+        under its original filename inside the ``artifacts/`` directory.
+        """
         if not self.enabled:
             return
         try:
@@ -226,6 +247,11 @@ class MLflowTracker:
             print(f"Warning: Failed to log artifact '{name}': {e}")
 
     def log_image(self, path: str, name: str):
+        """Log an image file artifact.
+
+        ``name`` is accepted for API compatibility but MLflow stores the file
+        under its original filename inside the ``images/`` directory.
+        """
         if not self.enabled:
             return
         try:
@@ -235,7 +261,11 @@ class MLflowTracker:
             print(f"Warning: Failed to log image '{name}': {e}")
 
     def log_scalars(self, scalars: dict, step: int, epoch: Optional[int] = None, prefix: str = "") -> None:
-        """Track a flat dict of scalar values under an optional name prefix."""
+        """Track a flat dict of scalar values under an optional name prefix.
+
+        ``epoch`` is accepted for API compatibility but is not used — MLflow
+        tracks time via ``step`` only.
+        """
         if not self.enabled:
             return
         try:
@@ -252,11 +282,16 @@ class MLflowTracker:
     # Cleanup
     # ------------------------------------------------------------------
     def delete_run(self):
+        """End and soft-delete the active run."""
         if not self.run_id:
             return
         try:
             import mlflow
+            # End the run before deleting so MLflow's active-run context is
+            # cleared; prevents close() from attempting a double end_run.
+            mlflow.end_run()
             mlflow.delete_run(self.run_id)
+            self.run = None
             print("MLflow run deleted.")
         except Exception as e:
             print(f"Warning: Failed to delete MLflow run: {e}")
@@ -266,6 +301,7 @@ class MLflowTracker:
             try:
                 import mlflow
                 mlflow.end_run()
+                self.run = None
                 print("MLflow run closed.")
             except Exception as e:
                 print(f"Warning: Error closing MLflow run: {e}")
