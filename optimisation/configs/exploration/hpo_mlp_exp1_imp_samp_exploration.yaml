@@ -1,4 +1,4 @@
-# HPO exploration — Experiment 1, FourierPINN, Importance Sampling variant.
+# HPO exploration — Experiment 1, MLP, Importance Sampling variant.
 #
 # Uses train_imp_samp.py::setup_trial via the train_module override.
 # IS pool params (pool_size, resample_freq, eval_batch_size, alpha) are fixed
@@ -8,7 +8,7 @@
 hpo_settings:
   data_free: true
   objective_key: nse_h
-  study_name: exp1-fourier-imp-samp-exploration
+  study_name: exp1-mlp-imp-samp-exploration
   storage_backend: local
 
 scenario: experiment_1
@@ -36,10 +36,6 @@ hpo_hyperparameters:
     min: 3
     max: 6
     type: int
-  ff_dims: [128, 256, 512]
-  fourier_scale:
-    min: 1.0
-    max: 30.0
 
   sampling:
     n_points_pde:
@@ -75,14 +71,12 @@ hpo_hyperparameters:
 
 # --- Fixed values ---
 model:
-  name: "FourierPINN"
+  name: "MLP"
   output_dim: 3
   kernel_init: "glorot_uniform"
   bias_init: 0.0
   width: 256
   depth: 4
-  ff_dims: 256
-  fourier_scale: 10.0
 
 domain:
   lx: 1200.0
@@ -122,4 +116,4 @@ validation_grid:
   n_points_val: 42000
 
 reporting:
-  epoch_freq: 1
+  epoch_freq: 10

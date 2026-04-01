@@ -202,7 +202,10 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     )
     initial_probs = jnp.ones(pool_size, dtype=get_dtype()) / pool_size
 
-    eval_pool_jit = jax.jit(evaluate_pool_residuals, static_argnums=(0, 3, 4))
+    # Closure-based JIT: captures model/cfg/eval_batch_size to avoid hashing them
+    @jax.jit
+    def _eval_pool(params, pool_pts):
+        return evaluate_pool_residuals(model, params, pool_pts, cfg, eval_batch_size)
 
     # --- Optimizer ---
     optimiser = create_optimizer(cfg, num_batches=num_batches)
@@ -256,7 +259,7 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
                     pk, pool_size,
                     (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
                 )
-                residuals = eval_pool_jit(model, params, self.pool_pde, cfg, eval_batch_size)
+                residuals = _eval_pool(params, self.pool_pde)
                 self.current_probs = compute_sampling_probs(residuals, alpha)
             self._key, sub = random.split(self._key)
             self.active_pde, self.active_weights = sample_from_pool(

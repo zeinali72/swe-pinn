@@ -49,7 +49,7 @@ def run_training_trial(trial: optuna.trial.Trial, trial_cfg: FrozenDict) -> floa
     report_interval = trial_cfg_dict.get("training", {}).get("hpo_report_interval", 1)
     # Warmup: no early-stopping or pruning during first N epochs (min 20% of trial epochs)
     warmup = trial_cfg_dict.get("training", {}).get("hpo_warmup_epochs", max(100, epochs // 5))
-    log_freq = max(1, epochs // 5)
+    log_freq = max(1, trial_cfg_dict.get("reporting", {}).get("epoch_freq", epochs // 5))
 
     # 4. Determine optimisation direction from the objective metric
     minimize = objective_key in ("rmse_h", "rmse_hu", "rmse_hv",

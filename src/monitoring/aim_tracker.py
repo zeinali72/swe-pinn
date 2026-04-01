@@ -61,7 +61,7 @@ class AimTracker:
             from aim import Repo, Run
             import os
 
-            aim_repo_path = "aim_repo"
+            aim_repo_path = os.environ.get("AIM_REPO_PATH", "aim_repo")
             os.makedirs(aim_repo_path, exist_ok=True)
             self.aim_repo = Repo(path=aim_repo_path, init=True)
 
@@ -242,8 +242,10 @@ class AimTracker:
         if not self.enabled:
             return
         try:
-            from aim import Image
-            self.aim_run["images", name] = Image(path)
+            # Avoid storing Aim Image/BLOB objects in run tree, which can
+            # trigger UI stream serialization failures in some Aim setups.
+            self.aim_run.log_artifact(path, name=f"images/{name}")
+            self.aim_run["image_paths", name] = str(path)
         except Exception as e:
             print(f"Warning: Failed to log image '{name}': {e}")
 
