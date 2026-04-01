@@ -94,12 +94,16 @@ class MLflowTracker:
         try:
             import mlflow
 
-            tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "mlflow_repo")
-            # Resolve to absolute path so scripts run from any directory write
-            # to the same store.
-            if not tracking_uri.startswith(("http://", "https://", "file://")):
-                tracking_uri = os.path.abspath(tracking_uri)
-            os.makedirs(tracking_uri, exist_ok=True)
+            tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+            if not tracking_uri:
+                # Default: SQLite backend — single .db file instead of
+                # thousands of small files per run.
+                db_path = os.path.abspath("mlflow_repo/mlflow.db")
+                os.makedirs(os.path.dirname(db_path), exist_ok=True)
+                tracking_uri = f"sqlite:///{db_path}"
+            elif not tracking_uri.startswith(("http://", "https://", "sqlite://", "postgresql://", "mysql://")):
+                # Plain directory path — resolve to absolute for file backend.
+                tracking_uri = f"file://{os.path.abspath(tracking_uri)}"
             self._tracking_uri = tracking_uri
             mlflow.set_tracking_uri(tracking_uri)
 
