@@ -387,6 +387,10 @@ def post_training_save(
                 try:
                     tracker.log_artifact(saved_model_path, 'model_weights.pkl')
                     print("Logged model artifact to MLflow.")
+                    # Register in the Model Registry — one versioned entry per
+                    # trial so the best checkpoint for each scenario/arch is
+                    # tracked and comparable over time.
+                    tracker.register_model("artifacts/model_weights.pkl", trial_name)
                 except Exception as e_mod:
                     print(f"Warning: Failed to log model artifact: {e_mod}")
 

@@ -4,17 +4,21 @@ Provides structured metric logging using the key hierarchy defined in the
 training monitoring specification. All JAX/NumPy values are sanitised to
 native Python types before being sent to MLflow.
 
-Logged metrics (x-axis = epoch):
-  loss/total, loss/<component>   — training losses
-  val/nse_h, val/rmse_h, ...     — validation metrics
-  optim/lr                       — learning rate
-  best/nse_h_value               — best NSE seen so far
-  best/loss_value                — best total loss seen so far
-  diagnostics/negative_h_*      — negative-depth stats (at report freq only)
-  relobralo_weights/*            — adaptive loss weights (ReLoBRaLo only)
+X-axis options in the MLflow UI chart view:
+  - "Step"          → epoch number  (primary, passed as MLflow step)
+  - "Relative Time" → wall-clock seconds since run start  (automatic)
+  - "Wall Time"     → absolute timestamp  (automatic)
+  - Custom metric   → select "x.global_step" in the compare chart to plot
+                      against total batch updates instead of epochs
 
-Summary (logged once as params at end of training, not as time-series):
-  summary.*                      — best model stats, total time, etc.
+Experiment grouping:
+  Experiment = scenario name  (experiment_1, experiment_2, …)
+  Run name   = trial_name     (date-time + arch, e.g. 2025-03-19_14-32_fourier)
+  Tags       = scenario, model, variant flags
+
+Model registry:
+  Call register_model(model_uri, name) after saving to promote a run's
+  checkpoint into the registry with a versioned, named entry.
 """
 import copy
 import json
@@ -141,7 +145,7 @@ class MLflowTracker:
         return self._enabled and self.run is not None
 
     # ------------------------------------------------------------------
-    # Per-epoch structured logging  (x-axis = epoch number)
+    # Per-epoch structured logging
     # ------------------------------------------------------------------
     def log_epoch(
         self,
@@ -155,14 +159,26 @@ class MLflowTracker:
         elapsed_time: float,
         neg_depth: Optional[dict] = None,
     ):
+        """Log per-epoch metrics.
+
+        MLflow step = epoch, so the default x-axis reads "epoch 0 … N".
+        ``x.global_step`` is logged as a metric so the compare chart can be
+        switched to batch-step x-axis by selecting it as the custom x metric.
+        Relative time and wall time are available automatically in the UI.
+        """
         if not self.enabled:
             return
         try:
             import mlflow
 
-            # Core training metrics — epoch is the x-axis so charts read
-            # "epoch 0 … N" rather than raw batch-step counts.
-            metrics = {"loss/total": _safe_float(total_loss)}
+            metrics: dict = {}
+
+            # x-axis alternatives: global_step lets the UI compare view use
+            # batch steps as a custom x-axis instead of epochs.
+            metrics["x.global_step"] = float(step)
+
+            # Training losses
+            metrics["loss/total"] = _safe_float(total_loss)
             for key, val in losses.items():
                 metrics[f"loss/{key}"] = _safe_float(val)
 
@@ -171,11 +187,10 @@ class MLflowTracker:
                 default = -float('inf') if 'nse' in key else float('inf')
                 metrics[f"val/{key}"] = _safe_float(val, default)
 
-            # Learning rate (useful for scheduler debugging)
+            # Learning rate
             metrics["optim/lr"] = _safe_float(lr)
 
-            # Negative-depth diagnostics — only logged at report frequency,
-            # so neg_depth is None on non-reporting epochs.
+            # Negative-depth diagnostics (only at report frequency)
             if neg_depth:
                 for key, val in neg_depth.items():
                     metrics[f"diagnostics/negative_h_{key}"] = _safe_float(val)
@@ -228,11 +243,10 @@ class MLflowTracker:
     def log_summary(self, summary: dict):
         """Log end-of-training summary.
 
-        Summary values are stored as:
-        - A JSON artifact (full fidelity, nested structure preserved).
-        - Flattened scalar leaves as run *params* (not metrics), so they
-          appear as single values in the UI rather than single-point time
-          series / vectors.
+        Stored as:
+        - A JSON artifact for full fidelity.
+        - Flattened scalar leaves as run *params* (static single values, not
+          time-series), so they appear cleanly in the runs comparison table.
         """
         if not self.enabled:
             return
@@ -240,7 +254,7 @@ class MLflowTracker:
             import mlflow
             safe = sanitize_params(summary)
 
-            # JSON artifact for full fidelity
+            # JSON artifact
             with tempfile.NamedTemporaryFile(
                 mode='w', suffix='.json', prefix=f'mlflow_summary_{self.run_id}_',
                 delete=False
@@ -312,6 +326,36 @@ class MLflowTracker:
             print(f"Warning: MLflow log_scalars failed at step {step}: {e}")
 
     # ------------------------------------------------------------------
+    # Model registry
+    # ------------------------------------------------------------------
+    def register_model(self, artifact_path: str, model_name: str) -> Optional[str]:
+        """Register a logged artifact in the MLflow Model Registry.
+
+        Parameters
+        ----------
+        artifact_path : str
+            Path within the run's artifact store, e.g. ``"artifacts/model.pkl"``.
+        model_name : str
+            Registry name, e.g. ``"experiment_1_fourier"``.
+
+        Returns
+        -------
+        str or None
+            The registered model version string, or None on failure.
+        """
+        if not self.enabled:
+            return None
+        try:
+            import mlflow
+            model_uri = f"runs:/{self.run_id}/{artifact_path}"
+            result = mlflow.register_model(model_uri=model_uri, name=model_name)
+            print(f"Model registered: {model_name} v{result.version}")
+            return result.version
+        except Exception as e:
+            print(f"Warning: Failed to register model '{model_name}': {e}")
+            return None
+
+    # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
     def delete_run(self):
@@ -320,8 +364,6 @@ class MLflowTracker:
             return
         try:
             import mlflow
-            # End the run before deleting so MLflow's active-run context is
-            # cleared; prevents close() from attempting a double end_run.
             mlflow.end_run()
             mlflow.delete_run(self.run_id)
             self.run = None
