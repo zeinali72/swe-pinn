@@ -58,7 +58,7 @@ from src.losses import (
 from src.utils import (
     nse, rmse, generate_trial_name, save_model, ask_for_confirmation
 )
-from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, MLflowTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.training import train_step_jitted, make_scan_body, maybe_batch_data
 
@@ -327,13 +327,13 @@ def main(config_path: str):
             val_pts_batch = None
 
     # --- 7. Initialize Aim & Console Logger ---
-    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
-    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
-    aim_tracker.log_flags({"scenario_type": "experiment_8_importance_sampling"})
-    if aim_enabled:
+    tracking_enabled = cfg_dict.get('mlflow', {}).get('enable', True)
+    tracker = MLflowTracker(cfg_dict, trial_name, enable=tracking_enabled)
+    tracker.log_flags({"scenario_type": "experiment_8_importance_sampling"})
+    if tracking_enabled:
         try:
-            aim_tracker.log_artifact(config_path, 'run_config.yaml')
-            aim_tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
+            tracker.log_artifact(config_path, 'run_config.yaml')
+            tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
         except Exception:
             pass
 
@@ -596,10 +596,10 @@ def main(config_path: str):
                 event_type, value, ep, prev_value, prev_epoch = event
                 if event_type == 'best_nse':
                     console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_nse(value, ep, step=global_step)
+                    tracker.log_best_nse(value, ep, step=global_step)
                 elif event_type == 'best_loss':
                     console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_loss(value, ep, step=global_step)
+                    tracker.log_best_loss(value, ep, step=global_step)
 
             # --- Reporting ---
             if (epoch + 1) % freq == 0:
@@ -610,7 +610,7 @@ def main(config_path: str):
                     val_metrics, neg_depth.get('fraction', 0.0), epoch_time
                 )
 
-            aim_tracker.log_epoch(
+            tracker.log_epoch(
                 epoch=epoch, step=global_step,
                 losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
                 val_metrics=val_metrics, lr=current_lr,
@@ -697,14 +697,14 @@ def main(config_path: str):
         }
         if all_physics_losses:
             summary_metrics['all_physics_losses'] = all_physics_losses
-        aim_tracker.log_summary(summary_metrics)
+        tracker.log_summary(summary_metrics)
 
         if ask_for_confirmation():
             if final_params is not None:
                 saved_model_path = save_model(final_params, model_dir, trial_name)
 
-                if aim_tracker.enabled and saved_model_path:
-                    aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
+                if tracker.enabled and saved_model_path:
+                    tracker.log_artifact(saved_model_path, 'model_weights.pkl')
 
                 print("Generating plots...")
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
@@ -748,11 +748,11 @@ def main(config_path: str):
                     path = os.path.join(results_dir, f"{pname}_timeseries.png")
                     plt.savefig(path)
                     plt.close()
-                    aim_tracker.log_image(path, f"{pname}_timeseries.png")
+                    tracker.log_image(path, f"{pname}_timeseries.png")
 
                 print(f"Plots saved to {results_dir}")
 
-        aim_tracker.close()
+        tracker.close()
 
     return best_nse_stats['combined_nse']
 

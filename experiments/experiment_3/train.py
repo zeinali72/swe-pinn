@@ -324,7 +324,7 @@ def main(config_path: str):
     def plot_fn(final_params):
         print("Generating Experiment 3 plots...")
         t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
-        aim_tracker = loop_result["aim_tracker"]
+        tracker = loop_result["tracker"]
         final_epoch = loop_result["epoch"]
 
         def plot_gauge(x, y, name, color, filename):
@@ -351,7 +351,7 @@ def main(config_path: str):
             path = os.path.join(results_dir, filename)
             plt.savefig(path)
             plt.close()
-            aim_tracker.log_image(path, filename)
+            tracker.log_image(path, filename)
 
         plot_gauge(3.9587225e+02, 4.9646515e+01, "Point 1", "blue", "P1_timeseries.png")
         plot_gauge(6.0435474e+02, 5.0565735e+01, "Point 2", "red", "P2_timeseries.png")

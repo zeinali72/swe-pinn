@@ -401,7 +401,7 @@ def main(config_path: str):
 
     def plot_fn(final_params):
         print("  Generating 1D validation plot...")
-        aim_tracker = loop_result["aim_tracker"]
+        tracker = loop_result["tracker"]
         final_epoch = loop_result["epoch"]
         plot_cfg = cfg.get("plotting", {})
         min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
@@ -419,7 +419,7 @@ def main(config_path: str):
         h_plot_pred_1d = U_plot_pred_1d[..., 0]
         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
         plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, ctx["cfg_dict"], plot_path_1d)
-        aim_tracker.log_image(plot_path_1d, 'validation_plot_1D')
+        tracker.log_image(plot_path_1d, 'validation_plot_1D')
         print(f"Model and plot saved in {model_dir} and {results_dir} (and logged to Aim)")
 
     post_training_save(

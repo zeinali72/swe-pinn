@@ -168,7 +168,7 @@ def plot_gauge_timeseries(
     t_plot: jnp.ndarray,
     cfg: Dict[str, Any],
     results_dir: str,
-    aim_tracker=None,
+    tracker=None,
     epoch: Optional[int] = None,
     full_val_data=None,
     color: Optional[str] = None,
@@ -196,8 +196,8 @@ def plot_gauge_timeseries(
         Experiment configuration — uses ``numerics.min_depth`` if present.
     results_dir : str
         Directory where the figure is saved.
-    aim_tracker : optional
-        If provided, ``aim_tracker.log_image(path, filename)`` is called.
+    tracker : optional
+        If provided, ``tracker.log_image(path, filename)`` is called.
     epoch : int, optional
         Unused — retained for call-site compatibility.
     full_val_data : ndarray or None, optional
@@ -245,5 +245,5 @@ def plot_gauge_timeseries(
     path = os.path.join(results_dir, filename)
     plt.savefig(path)
     plt.close()
-    if aim_tracker is not None:
-        aim_tracker.log_image(path, filename)
+    if tracker is not None:
+        tracker.log_image(path, filename)

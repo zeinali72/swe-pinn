@@ -406,7 +406,7 @@ def main(config_path: str):
 
     def plot_fn(final_params):
         print("  Generating 2D comparison plots...")
-        aim_tracker = loop_result["aim_tracker"]
+        tracker = loop_result["tracker"]
         final_epoch = loop_result["epoch"]
         plot_cfg = cfg.get("plotting", {})
         eps_plot = cfg.get("numerics", {}).get("eps", 1e-6)
@@ -441,9 +441,9 @@ def main(config_path: str):
         plot_comparison_scatter_2d(x_coords_plot, y_coords_plot, h_pred_plot, h_true_plot, 'h', ctx["cfg_dict"], plot_path_h)
         plot_comparison_scatter_2d(x_coords_plot, y_coords_plot, hu_pred_plot, hu_true_plot, 'hu', ctx["cfg_dict"], plot_path_hu)
         plot_comparison_scatter_2d(x_coords_plot, y_coords_plot, hv_pred_plot, hv_true_plot, 'hv', ctx["cfg_dict"], plot_path_hv)
-        aim_tracker.log_image(plot_path_h, 'validation_plot_h')
-        aim_tracker.log_image(plot_path_hu, 'validation_plot_hu')
-        aim_tracker.log_image(plot_path_hv, 'validation_plot_hv')
+        tracker.log_image(plot_path_h, 'validation_plot_h')
+        tracker.log_image(plot_path_hu, 'validation_plot_hu')
+        tracker.log_image(plot_path_hv, 'validation_plot_hv')
         print(f"Model and plot saved in {model_dir} and {results_dir} (and logged to Aim)")
 
     post_training_save(

@@ -390,7 +390,7 @@ def main(config_path: str):
     def plot_fn(final_params):
         print("Generating Experiment 8 plots...")
         t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
-        aim_tracker = loop_result["aim_tracker"]
+        tracker = loop_result["tracker"]
         final_epoch = loop_result["epoch"]
         output_csv_path = resolve_configured_asset_path(
             cfg, base_data_path, scenario_name, "output_reference", required=False
@@ -418,7 +418,7 @@ def main(config_path: str):
 
         gauge_kwargs = dict(
             model=model, params=final_params, t_plot=t_plot, cfg=cfg,
-            results_dir=results_dir, aim_tracker=aim_tracker, epoch=final_epoch,
+            results_dir=results_dir, tracker=tracker, epoch=final_epoch,
         )
         for px, py, pname in output_points:
             plot_gauge_timeseries(px, py, pname, f"{pname}_timeseries.png", **gauge_kwargs)

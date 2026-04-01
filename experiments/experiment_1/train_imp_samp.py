@@ -60,7 +60,7 @@ from src.training import (
     maybe_batch_data,
     resolve_data_mode,
 )
-from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, MLflowTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.balancing.importance_sampling import (
     compute_weighted_pde_loss,
@@ -482,13 +482,13 @@ def main(config_path: str):
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
-    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
-    aim_tracker.log_flags({"scenario_type": "experiment_1_importance_sampling"})
-    if aim_enabled:
+    tracking_enabled = cfg_dict.get('mlflow', {}).get('enable', True)
+    tracker = MLflowTracker(cfg_dict, trial_name, enable=tracking_enabled)
+    tracker.log_flags({"scenario_type": "experiment_1_importance_sampling"})
+    if tracking_enabled:
         try:
-            aim_tracker.log_artifact(config_path, 'run_config.yaml')
-            aim_tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
+            tracker.log_artifact(config_path, 'run_config.yaml')
+            tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
         except Exception:
             pass
 
@@ -627,10 +627,10 @@ def main(config_path: str):
                 event_type, value, ep, prev_value, prev_epoch = event
                 if event_type == 'best_nse':
                     console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_nse(value, ep, step=global_step)
+                    tracker.log_best_nse(value, ep, step=global_step)
                 elif event_type == 'best_loss':
                     console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_loss(value, ep, step=global_step)
+                    tracker.log_best_loss(value, ep, step=global_step)
 
             if (epoch + 1) % freq == 0:
                 console.print_epoch(
@@ -639,7 +639,7 @@ def main(config_path: str):
                     current_lr, val_metrics, neg_depth.get('fraction', 0.0), epoch_time
                 )
 
-            aim_tracker.log_epoch(
+            tracker.log_epoch(
                 epoch=epoch, step=global_step,
                 losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
                 val_metrics=val_metrics, lr=current_lr,
@@ -719,9 +719,9 @@ def main(config_path: str):
             final_lr=current_lr,
         )
 
-        if aim_tracker.enabled:
+        if tracker.enabled:
             try:
-                aim_tracker.log_summary({
+                tracker.log_summary({
                     'best_validation_model': best_nse_stats,
                     'best_loss_model': best_loss_stats,
                     'final_system': {
@@ -743,9 +743,9 @@ def main(config_path: str):
         if ask_for_confirmation():
             if final_params is not None:
                 saved_model_path = save_model(final_params, model_dir, trial_name)
-                if aim_tracker.enabled and saved_model_path:
+                if tracker.enabled and saved_model_path:
                     try:
-                        aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
+                        tracker.log_artifact(saved_model_path, 'model_weights.pkl')
                     except Exception:
                         pass
 
@@ -766,10 +766,10 @@ def main(config_path: str):
                 U_plot = _apply_min_depth(U_plot, min_depth_plot)
                 plot_path = os.path.join(results_dir, "final_validation_plot.png")
                 plot_h_vs_x(x_plot, U_plot[..., 0], t_val, y_const, cfg_dict, plot_path)
-                aim_tracker.log_image(plot_path, 'validation_plot_1D')
+                tracker.log_image(plot_path, 'validation_plot_1D')
                 print(f"Model and plots saved in {model_dir} / {results_dir}")
 
-        aim_tracker.close()
+        tracker.close()
 
     return best_nse_stats['nse'] if best_nse_stats['nse'] > -jnp.inf else -1.0
 

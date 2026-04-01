@@ -24,11 +24,11 @@ class TestTrain(unittest.TestCase):
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
         # Also clean up the results and models directories created during the test
-        for dir_name in ["results", "models", "aim_repo"]:
+        for dir_name in ["results", "models", "mlflow_repo"]:
             if os.path.exists(dir_name):
                 # Be more careful with cleanup to avoid deleting the whole folder
                 for item in os.listdir(dir_name):
-                    if "test_config" in item or ".aim" in dir_name:
+                    if "test_config" in item or "mlflow_repo" in dir_name:
                         item_path = os.path.join(dir_name, item)
                         if os.path.isdir(item_path):
                             shutil.rmtree(item_path)

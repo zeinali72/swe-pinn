@@ -50,7 +50,7 @@ from src.training import (
     post_training_save, resolve_data_mode, create_output_dirs,
 )
 from src.training.loop import extract_lr
-from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, MLflowTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.balancing import ReLoBRaLo, make_scan_body_relobralo
 
@@ -123,14 +123,14 @@ def _run_relobralo_loop(
     :meth:`ReLoBRaLo.update` is called with the average unweighted MSE losses
     to produce new ``loss_weights`` for the next epoch.
     """
-    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
-    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
-    aim_tracker.log_flags({"scenario_type": experiment_name, "loss_weighting": "relobralo"})
-    if aim_enabled:
+    tracking_enabled = cfg_dict.get('mlflow', {}).get('enable', True)
+    tracker = MLflowTracker(cfg_dict, trial_name, enable=tracking_enabled)
+    tracker.log_flags({"scenario_type": experiment_name, "loss_weighting": "relobralo"})
+    if tracking_enabled:
         try:
-            aim_tracker.log_artifact(config_path, 'run_config.yaml')
+            tracker.log_artifact(config_path, 'run_config.yaml')
             if source_script_path is not None:
-                aim_tracker.log_artifact(os.path.abspath(source_script_path), 'source_script.py')
+                tracker.log_artifact(os.path.abspath(source_script_path), 'source_script.py')
         except Exception:
             pass
 
@@ -244,10 +244,10 @@ def _run_relobralo_loop(
                 event_type, value, ep, prev_value, prev_epoch = event
                 if event_type == 'best_nse':
                     console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_nse(value, ep, step=global_step)
+                    tracker.log_best_nse(value, ep, step=global_step)
                 elif event_type == 'best_loss':
                     console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_loss(value, ep, step=global_step)
+                    tracker.log_best_loss(value, ep, step=global_step)
 
             if (epoch + 1) % freq == 0:
                 console.print_epoch(
@@ -272,14 +272,14 @@ def _run_relobralo_loop(
                 'elapsed_time_s': float(elapsed_now),
             })
 
-            aim_tracker.log_epoch(
+            tracker.log_epoch(
                 epoch=epoch, step=global_step,
                 losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
                 val_metrics=val_metrics, lr=current_lr,
                 epoch_time=epoch_time, elapsed_time=elapsed_now,
                 neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
             )
-            aim_tracker.log_scalars(relobralo.weights, step=global_step, epoch=epoch, prefix="relobralo_weights")
+            tracker.log_scalars(relobralo.weights, step=global_step, epoch=epoch, prefix="relobralo_weights")
 
             min_epochs = cfg.get("device", {}).get("early_stop_min_epochs", float('inf'))
             patience = cfg.get("device", {}).get("early_stop_patience", float('inf'))
@@ -345,9 +345,9 @@ def _run_relobralo_loop(
             final_lr=current_lr,
         )
 
-        if aim_tracker.enabled:
+        if tracker.enabled:
             try:
-                aim_tracker.log_summary({
+                tracker.log_summary({
                     'best_validation_model': {**best_nse_stats, 'epoch': best_nse_stats.get('epoch', 0) + 1},
                     'best_loss_model': {**best_loss_stats, 'epoch': best_loss_stats.get('epoch', 0) + 1},
                     'final_system': {
@@ -366,7 +366,7 @@ def _run_relobralo_loop(
         "best_params_loss": best_params_loss,
         "params": params,
         "opt_state": opt_state,
-        "aim_tracker": aim_tracker,
+        "tracker": tracker,
         "epoch": epoch,
         "total_time": total_time,
     }
@@ -625,7 +625,7 @@ def main(config_path: str):
 
     def plot_fn(final_params):
         print("  Generating 1D validation plot...")
-        aim_tracker = loop_result["aim_tracker"]
+        tracker = loop_result["tracker"]
         final_epoch = loop_result["epoch"]
         plot_cfg = cfg.get("plotting", {})
         min_depth_plot = cfg.get("numerics", {}).get("min_depth", 0.0)
@@ -642,7 +642,7 @@ def main(config_path: str):
         U_1d = _apply_min_depth(U_1d, min_depth_plot)
         plot_path = os.path.join(results_dir, "final_validation_plot.png")
         plot_h_vs_x(x_plot, U_1d[..., 0], t_const, y_const, ctx["cfg_dict"], plot_path)
-        aim_tracker.log_image(plot_path, 'validation_plot_1D')
+        tracker.log_image(plot_path, 'validation_plot_1D')
         print(f"Plot saved to {plot_path}")
 
     post_training_save(

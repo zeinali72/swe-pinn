@@ -10,7 +10,7 @@ from jax import lax
 
 from src.utils import nse, rmse, relative_l2, save_model, ask_for_confirmation
 from src.utils.profiling import EpochTimer, log_memory_usage
-from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, MLflowTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.predict.predictor import _apply_min_depth
 
@@ -73,14 +73,14 @@ def run_training_loop(
     """
     from jax import random
 
-    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
-    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
-    aim_tracker.log_flags({"scenario_type": experiment_name})
-    if aim_enabled:
+    tracking_enabled = cfg_dict.get('mlflow', {}).get('enable', True)
+    tracker = MLflowTracker(cfg_dict, trial_name, enable=tracking_enabled)
+    tracker.log_flags({"scenario_type": experiment_name})
+    if tracking_enabled:
         try:
-            aim_tracker.log_artifact(config_path, 'run_config.yaml')
+            tracker.log_artifact(config_path, 'run_config.yaml')
             if source_script_path is not None:
-                aim_tracker.log_artifact(os.path.abspath(source_script_path), 'source_script.py')
+                tracker.log_artifact(os.path.abspath(source_script_path), 'source_script.py')
         except Exception:
             pass
 
@@ -217,10 +217,10 @@ def run_training_loop(
                 event_type, value, ep, prev_value, prev_epoch = event
                 if event_type == 'best_nse':
                     console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_nse(value, ep, step=global_step)
+                    tracker.log_best_nse(value, ep, step=global_step)
                 elif event_type == 'best_loss':
                     console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_loss(value, ep, step=global_step)
+                    tracker.log_best_loss(value, ep, step=global_step)
 
             if (epoch + 1) % freq == 0:
                 console.print_epoch(
@@ -241,7 +241,7 @@ def run_training_loop(
                 'elapsed_time_s': float(elapsed_now),
             })
 
-            aim_tracker.log_epoch(
+            tracker.log_epoch(
                 epoch=epoch, step=global_step,
                 losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
                 val_metrics=val_metrics, lr=current_lr,
@@ -321,7 +321,7 @@ def run_training_loop(
             final_lr=current_lr,
         )
 
-        if aim_tracker.enabled:
+        if tracker.enabled:
             try:
                 summary_metrics = {
                     'best_validation_model': {**best_nse_stats, 'epoch': best_nse_stats.get('epoch', 0) + 1},
@@ -334,10 +334,10 @@ def run_training_loop(
                 }
                 if all_physics_losses:
                     summary_metrics['all_physics_losses'] = all_physics_losses
-                aim_tracker.log_summary(summary_metrics)
-                print("Summary metrics logged to Aim.")
+                tracker.log_summary(summary_metrics)
+                print("Summary metrics logged to MLflow.")
             except Exception as e:
-                print(f"Warning: Error logging summary metrics to Aim: {e}")
+                print(f"Warning: Error logging summary metrics to MLflow: {e}")
 
     return {
         "best_nse_stats": best_nse_stats,
@@ -346,7 +346,7 @@ def run_training_loop(
         "best_params_loss": best_params_loss,
         "params": params,
         "opt_state": opt_state,
-        "aim_tracker": aim_tracker,
+        "tracker": tracker,
         "epoch": epoch,
         "total_time": total_time,
     }
@@ -370,7 +370,7 @@ def post_training_save(
     prefer_loss_model : bool
         If True, prefer best-loss params over best-NSE (used by some experiments).
     """
-    aim_tracker = loop_result["aim_tracker"]
+    tracker = loop_result["tracker"]
     best_params_nse = loop_result["best_params_nse"]
     best_params_loss = loop_result["best_params_loss"]
 
@@ -383,10 +383,10 @@ def post_training_save(
         if final_params is not None:
             saved_model_path = save_model(final_params, model_dir, trial_name)
 
-            if aim_tracker.enabled and saved_model_path:
+            if tracker.enabled and saved_model_path:
                 try:
-                    aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
-                    print("Logged model artifact to Aim.")
+                    tracker.log_artifact(saved_model_path, 'model_weights.pkl')
+                    print("Logged model artifact to MLflow.")
                 except Exception as e_mod:
                     print(f"Warning: Failed to log model artifact: {e_mod}")
 
@@ -397,21 +397,16 @@ def post_training_save(
     else:
         print("Save aborted by user. Deleting artifacts...")
         try:
-            aim_tracker.delete_run()
+            tracker.delete_run()
             if os.path.exists(results_dir):
                 shutil.rmtree(results_dir)
                 print(f"Deleted results directory: {results_dir}")
             if os.path.exists(model_dir):
                 shutil.rmtree(model_dir)
                 print(f"Deleted model directory: {model_dir}")
-            if aim_tracker.run_hash:
-                run_artifact_dir = os.path.join("aim_repo", "aim_artifacts", aim_tracker.run_hash)
-                if os.path.exists(run_artifact_dir):
-                    shutil.rmtree(run_artifact_dir)
-                    print(f"Deleted run artifact directory: {run_artifact_dir}")
             print("Cleanup complete.")
         except Exception as e:
             print(f"Error during cleanup: {e}")
 
-    aim_tracker.close()
+    tracker.close()
     return final_params

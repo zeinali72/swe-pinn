@@ -12,7 +12,7 @@ dependencies = [
     "flax",
     "optax",
     "optuna",
-    "aim",
+    "mlflow",
     "numpy",
     "pyyaml",
     "matplotlib",

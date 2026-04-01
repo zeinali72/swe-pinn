@@ -34,7 +34,7 @@ inference:
   skip_plots: false
 
 # ---------------------------------------------------------------------------
-# Aim postprocessing tracking (Issue #3)
+# MLflow postprocessing tracking
 # ---------------------------------------------------------------------------
-aim:
-  postprocess_tracking: false  # set true to log results as a named Aim run
+mlflow:
+  postprocess_tracking: false  # set true to log results as a named MLflow run
