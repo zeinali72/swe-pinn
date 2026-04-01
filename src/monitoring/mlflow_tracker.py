@@ -3,6 +3,18 @@
 Provides structured metric logging using the key hierarchy defined in the
 training monitoring specification. All JAX/NumPy values are sanitised to
 native Python types before being sent to MLflow.
+
+Logged metrics (x-axis = epoch):
+  loss/total, loss/<component>   — training losses
+  val/nse_h, val/rmse_h, ...     — validation metrics
+  optim/lr                       — learning rate
+  best/nse_h_value               — best NSE seen so far
+  best/loss_value                — best total loss seen so far
+  diagnostics/negative_h_*      — negative-depth stats (at report freq only)
+  relobralo_weights/*            — adaptive loss weights (ReLoBRaLo only)
+
+Summary (logged once as params at end of training, not as time-series):
+  summary.*                      — best model stats, total time, etc.
 """
 import copy
 import json
@@ -40,7 +52,7 @@ def sanitize_params(obj):
 
 
 def _flatten_dict(d: dict, prefix: str = "", sep: str = ".") -> dict:
-    """Flatten a nested dict to dot-separated keys for MLflow params."""
+    """Flatten a nested dict to dot-separated keys."""
     out = {}
     for k, v in d.items():
         key = f"{prefix}{sep}{k}" if prefix else str(k)
@@ -129,7 +141,7 @@ class MLflowTracker:
         return self._enabled and self.run is not None
 
     # ------------------------------------------------------------------
-    # Per-epoch structured logging
+    # Per-epoch structured logging  (x-axis = epoch number)
     # ------------------------------------------------------------------
     def log_epoch(
         self,
@@ -147,31 +159,40 @@ class MLflowTracker:
             return
         try:
             import mlflow
+
+            # Core training metrics — epoch is the x-axis so charts read
+            # "epoch 0 … N" rather than raw batch-step counts.
             metrics = {"loss/total": _safe_float(total_loss)}
             for key, val in losses.items():
                 metrics[f"loss/{key}"] = _safe_float(val)
-            metrics["optim/lr"] = _safe_float(lr)
-            metrics["optim/epoch_time_sec"] = _safe_float(epoch_time)
-            metrics["system/elapsed_time"] = _safe_float(elapsed_time)
+
+            # Validation metrics
             for key, val in val_metrics.items():
                 default = -float('inf') if 'nse' in key else float('inf')
                 metrics[f"val/{key}"] = _safe_float(val, default)
+
+            # Learning rate (useful for scheduler debugging)
+            metrics["optim/lr"] = _safe_float(lr)
+
+            # Negative-depth diagnostics — only logged at report frequency,
+            # so neg_depth is None on non-reporting epochs.
             if neg_depth:
                 for key, val in neg_depth.items():
                     metrics[f"diagnostics/negative_h_{key}"] = _safe_float(val)
-            mlflow.log_metrics(metrics, step=step)
+
+            mlflow.log_metrics(metrics, step=epoch)
         except Exception as e:
             print(f"Warning: MLflow logging failed at epoch {epoch}: {e}")
 
     # ------------------------------------------------------------------
-    # Best-model tracking
+    # Best-model tracking  (x-axis = epoch)
     # ------------------------------------------------------------------
     def log_best_nse(self, nse_h: float, epoch: int, step: int):
         if not self.enabled:
             return
         try:
             import mlflow
-            mlflow.log_metric("best/nse_h_value", _safe_float(nse_h), step=step)
+            mlflow.log_metric("best/nse_h_value", _safe_float(nse_h), step=epoch)
             mlflow.set_tag("best_nse_h_epoch", str(epoch + 1))
         except Exception as e:
             print(f"Warning: Failed to log best NSE to MLflow: {e}")
@@ -181,7 +202,7 @@ class MLflowTracker:
             return
         try:
             import mlflow
-            mlflow.log_metric("best/loss_value", _safe_float(loss), step=step)
+            mlflow.log_metric("best/loss_value", _safe_float(loss), step=epoch)
             mlflow.set_tag("best_loss_epoch", str(epoch + 1))
         except Exception as e:
             print(f"Warning: Failed to log best loss to MLflow: {e}")
@@ -190,7 +211,7 @@ class MLflowTracker:
     # Run-level metadata
     # ------------------------------------------------------------------
     def log_flags(self, flags: dict):
-        """Store flags as run tags. String values are added as individual tags."""
+        """Store flags as run tags."""
         if not self.enabled:
             return
         try:
@@ -205,12 +226,21 @@ class MLflowTracker:
     # Summary and artifact logging
     # ------------------------------------------------------------------
     def log_summary(self, summary: dict):
+        """Log end-of-training summary.
+
+        Summary values are stored as:
+        - A JSON artifact (full fidelity, nested structure preserved).
+        - Flattened scalar leaves as run *params* (not metrics), so they
+          appear as single values in the UI rather than single-point time
+          series / vectors.
+        """
         if not self.enabled:
             return
         try:
             import mlflow
             safe = sanitize_params(summary)
-            # Write to a per-run temp file to avoid races during parallel HPO.
+
+            # JSON artifact for full fidelity
             with tempfile.NamedTemporaryFile(
                 mode='w', suffix='.json', prefix=f'mlflow_summary_{self.run_id}_',
                 delete=False
@@ -221,16 +251,17 @@ class MLflowTracker:
                 mlflow.log_artifact(summary_path, artifact_path="summary")
             finally:
                 os.unlink(summary_path)
-            # Also surface scalar leaves as metrics for dashboard visibility.
+
+            # Scalar leaves as params — single values, not time-series.
             flat = _flatten_dict(safe)
-            scalar_metrics = {}
+            summary_params = {}
             for k, v in flat.items():
                 try:
-                    scalar_metrics[f"summary/{k}"] = float(v)
+                    summary_params[f"summary.{k}"[:_PARAM_KEY_MAX]] = str(round(float(v), 6))[:_PARAM_VAL_MAX]
                 except (TypeError, ValueError):
                     pass
-            if scalar_metrics:
-                mlflow.log_metrics(scalar_metrics)
+            if summary_params:
+                mlflow.log_params(summary_params)
         except Exception as e:
             print(f"Warning: Failed to log summary to MLflow: {e}")
 
@@ -265,8 +296,8 @@ class MLflowTracker:
     def log_scalars(self, scalars: dict, step: int, epoch: Optional[int] = None, prefix: str = "") -> None:
         """Track a flat dict of scalar values under an optional name prefix.
 
-        ``epoch`` is accepted for API compatibility but is not used — MLflow
-        tracks time via ``step`` only.
+        Uses ``epoch`` as the x-axis step when provided, otherwise falls back
+        to ``step`` (global batch count).
         """
         if not self.enabled:
             return
@@ -276,7 +307,7 @@ class MLflowTracker:
             for k, v in scalars.items():
                 key = f"{prefix}/{k}" if prefix else k
                 metrics[key] = _safe_float(v)
-            mlflow.log_metrics(metrics, step=step)
+            mlflow.log_metrics(metrics, step=epoch if epoch is not None else step)
         except Exception as e:
             print(f"Warning: MLflow log_scalars failed at step {step}: {e}")
 
