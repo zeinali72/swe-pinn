@@ -475,10 +475,11 @@ def main(config_path: str):
     )
 
     # --- Output dirs and logging ---
-    config_base = os.path.splitext(os.path.basename(config_path))[0]
-    trial_name = generate_trial_name(config_base + "_IS")
-    results_dir = os.path.join("results", trial_name)
-    model_dir = os.path.join("models", trial_name)
+    cfg_dict['scenario'] = cfg_dict.get('scenario', 'experiment_1')
+    arch_name = cfg_dict.get('model', {}).get('name', '')
+    trial_name = generate_trial_name(cfg_dict['scenario'], arch_name, variant="IS")
+    results_dir = os.path.join("results", cfg_dict['scenario'], trial_name)
+    model_dir = os.path.join("models", cfg_dict['scenario'], trial_name)
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
@@ -491,8 +492,6 @@ def main(config_path: str):
             tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
         except Exception:
             pass
-
-    cfg_dict['scenario'] = cfg_dict.get('scenario', 'experiment_1')
     console = ConsoleLogger(cfg_dict)
     console.print_header()
 

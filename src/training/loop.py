@@ -73,6 +73,8 @@ def run_training_loop(
     """
     from jax import random
 
+    cfg_dict['scenario'] = cfg_dict.get('scenario', experiment_name)
+
     tracking_enabled = cfg_dict.get('mlflow', {}).get('enable', True)
     tracker = MLflowTracker(cfg_dict, trial_name, enable=tracking_enabled)
     tracker.log_flags({"scenario_type": experiment_name})
@@ -83,8 +85,6 @@ def run_training_loop(
                 tracker.log_artifact(os.path.abspath(source_script_path), 'source_script.py')
         except Exception:
             pass
-
-    cfg_dict['scenario'] = cfg_dict.get('scenario', experiment_name)
     console = ConsoleLogger(cfg_dict)
     console.print_header()
 
@@ -97,6 +97,8 @@ def run_training_loop(
     global_step = 0
     current_lr = cfg["training"]["learning_rate"]
     epoch_history: list = []  # per-epoch records for training_history.json
+    _run_status = "completed"
+    _early_stopped = False
 
     best_nse_stats = {
         'nse': -jnp.inf, 'rmse': jnp.inf, 'epoch': 0, 'global_step': 0,
@@ -255,14 +257,17 @@ def run_training_loop(
             if epoch >= min_epochs and (epoch - best_nse_stats['epoch']) >= patience:
                 print(f"--- Early stopping triggered at epoch {epoch+1} ---")
                 print(f"Best NSE {best_nse_stats['nse']:.6f} achieved at epoch {best_nse_stats['epoch']+1}.")
+                _early_stopped = True
                 break
 
     except KeyboardInterrupt:
         print("\n--- Training interrupted ---")
+        _run_status = "interrupted"
     except Exception as e:
         print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
+        _run_status = "error"
 
     finally:
         total_time = time.time() - start_time
@@ -295,16 +300,28 @@ def run_training_loop(
                             training_time_s=total_time)
 
         # Write per-epoch history for postprocessing / P1.3–P1.4 plots
+        history_path = os.path.join(model_dir, 'training_history.json')
+        _history_written = False
         try:
-            history_path = os.path.join(model_dir, 'training_history.json')
             with open(history_path, 'w') as _hf:
                 json.dump({
                     'total_training_time_s': float(total_time),
                     'total_epochs': int(epoch + 1),
                     'epochs': epoch_history,
                 }, _hf, indent=2)
+            _history_written = True
         except Exception as _he:
             print(f"Warning: Failed to write training_history.json: {_he}")
+        if _history_written and tracker.enabled:
+            try:
+                tracker.log_artifact(history_path, 'training_history.json')
+            except Exception as _he:
+                print(f"Warning: Failed to upload training_history.json to MLflow: {_he}")
+
+        if tracker.enabled:
+            if _early_stopped:
+                tracker.log_early_stopping(epoch, best_nse_stats['nse'])
+            tracker.log_run_status(_run_status)
         best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
         best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
 
@@ -387,10 +404,9 @@ def post_training_save(
                 try:
                     tracker.log_artifact(saved_model_path, 'model_weights.pkl')
                     print("Logged model artifact to MLflow.")
-                    # Register in the Model Registry — one versioned entry per
-                    # trial so the best checkpoint for each scenario/arch is
-                    # tracked and comparable over time.
-                    tracker.register_model("artifacts/model_weights.pkl", trial_name)
+                    # Register in the Model Registry — versions accumulate under
+                    # one entry per scenario+arch (e.g. "experiment_1_mlp").
+                    tracker.register_best_model("artifacts/model_weights.pkl")
                 except Exception as e_mod:
                     print(f"Warning: Failed to log model artifact: {e_mod}")
 

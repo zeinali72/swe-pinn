@@ -22,3 +22,6 @@ scikit-learn
 # Cupy and Cudf
 cudf-cu12==25.10.*
 cupy-cuda12x
+
+# LSP
+python-lsp-server

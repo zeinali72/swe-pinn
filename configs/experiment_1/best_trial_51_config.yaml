@@ -5,11 +5,11 @@ training:
   batch_size: 256
   reduce_on_plateau:
     factor: 0.5                    # Factor by which the learning rate will be reduced (
-    patience: 5                 # Number of steps with no improvement after which learning rate will be reduced
-    rtol: 1e-4                     # Relative tolerance for measuring new optimum
+    patience: 10                 # Number of steps with no improvement after which learning rate will be reduced
+    rtol: 1e-3                     # Relative tolerance for measuring new optimum
     atol: 0.0                      # Absolute tolerance for measuring new optimum
-    cooldown: 1                  # Number of steps to wait before resuming normal operation after lr has been reduced
-    accumulation_factor: 4          # Absolute step count (HPO-optimized); overrides accumulation_factor
+    cooldown: 5                  # Number of steps to wait before resuming normal operation after lr has been reduced
+    accumulation_factor: 1          # Check every epoch (no accumulation)
     min_scale: 1e-4                # Minimum scaling factor allowed
 model:
   name: MLP

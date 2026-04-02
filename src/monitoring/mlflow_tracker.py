@@ -23,8 +23,14 @@ Model registry:
 import copy
 import json
 import os
+import re
 import tempfile
 from typing import Optional
+
+try:
+    import jax as _jax
+except Exception:
+    _jax = None  # type: ignore[assignment]
 
 # MLflow backend limits
 _PARAM_KEY_MAX = 250
@@ -87,6 +93,7 @@ class MLflowTracker:
         self.run_id = None
         self._enabled = enable
         self._tracking_uri = None
+        self._registry_name = None
 
         if not enable:
             return
@@ -109,18 +116,69 @@ class MLflowTracker:
 
             scenario = config.get('scenario', '')
             experiment_label = scenario if scenario else trial_name
+
+            # Ensure experiment exists with artifact root co-located under
+            # mlflow_repo/artifacts/ so everything stays in one directory.
+            # For remote tracking URIs (DagsHub, MLflow server) the server
+            # manages artifact storage, so we only set artifact_location for
+            # local SQLite/file backends.
+            is_local = tracking_uri.startswith(("sqlite://", "file://"))
+            artifact_root = f"file://{os.path.abspath('mlflow_repo/artifacts')}"
+            experiment = mlflow.get_experiment_by_name(experiment_label)
+            if experiment is None and is_local:
+                mlflow.create_experiment(experiment_label, artifact_location=artifact_root)
+            elif experiment is not None and is_local:
+                if experiment.artifact_location and experiment.artifact_location != artifact_root:
+                    print(
+                        f"Warning: Experiment '{experiment_label}' has artifact location "
+                        f"'{experiment.artifact_location}', expected '{artifact_root}'. "
+                        "Artifacts may be stored in a different directory."
+                    )
             mlflow.set_experiment(experiment_label)
 
             self.run = mlflow.start_run(run_name=trial_name)
             self.run_id = self.run.info.run_id
 
-            # Tags: scenario + model architecture + variant info
-            tags = {"trial_name": trial_name}
+            # Build registry name: one entry per scenario+arch, versions accumulate
+            # across runs (e.g. "experiment_1_mlp", "experiment_2_fourierpinn").
+            arch_name = config.get('model', {}).get('name', '')
+            if scenario and arch_name:
+                self._registry_name = f"{scenario}_{arch_name.lower()}"
+            elif scenario:
+                self._registry_name = scenario
+
+            # Tags for filtering / grouping in the UI
+            data_weight = float(config.get('loss_weights', {}).get('data_weight', 0) or 0)
+            data_mode = 'data_driven' if data_weight > 0 else 'data_free'
+
+            phase = ''
+            m = re.search(r'experiment_(\d+)', scenario)
+            if m:
+                n = int(m.group(1))
+                phase = '1' if n <= 2 else ('2' if n <= 6 else '3')
+
+            # Resolve JAX backend at run time so CPU-override envvars set
+            # after import (e.g. JAX_PLATFORM_NAME=cpu in tests) are respected.
+            try:
+                jax_backend = _jax.default_backend() if _jax is not None else 'unknown'
+                jax_device_count = str(len(_jax.devices())) if _jax is not None else '0'
+            except Exception:
+                jax_backend = 'unknown'
+                jax_device_count = '0'
+
+            tags = {
+                "trial_name": trial_name,
+                "data_mode": data_mode,
+                "jax_backend": jax_backend,
+                "jax_device_count": jax_device_count,
+            }
             if scenario:
                 tags["scenario"] = scenario
-            model_name = config.get('model', {}).get('name', '')
-            if model_name:
-                tags["model"] = model_name
+            if arch_name:
+                tags["arch"] = arch_name.lower()
+                tags["model"] = arch_name
+            if phase:
+                tags["phase"] = phase
             mlflow.set_tags(tags)
 
             # Log hyperparameters as flattened params.
@@ -330,8 +388,49 @@ class MLflowTracker:
             print(f"Warning: MLflow log_scalars failed at step {step}: {e}")
 
     # ------------------------------------------------------------------
+    # Run lifecycle
+    # ------------------------------------------------------------------
+    def log_run_status(self, status: str):
+        """Set a terminal status tag: ``'completed'``, ``'interrupted'``, or ``'error'``."""
+        if not self.enabled:
+            return
+        try:
+            import mlflow
+            mlflow.set_tag("run_status", status)
+        except Exception:
+            pass
+
+    def log_early_stopping(self, epoch: int, best_nse: float):
+        """Record that early stopping fired, for quick filtering in the UI."""
+        if not self.enabled:
+            return
+        try:
+            import mlflow
+            mlflow.set_tags({
+                "early_stopped": "true",
+                "early_stop_epoch": str(epoch + 1),
+                "early_stop_best_nse": f"{best_nse:.6f}",
+            })
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
     # Model registry
     # ------------------------------------------------------------------
+    def register_best_model(self, artifact_path: str) -> Optional[str]:
+        """Register the best checkpoint under the canonical ``scenario_arch`` name.
+
+        Versions accumulate across runs, e.g. ``experiment_1_mlp`` v1, v2, v3 …
+        Falls back to a no-op when no registry name could be derived at init.
+        """
+        if not self.enabled:
+            return None
+        if not self._registry_name:
+            print("Warning: register_best_model skipped — registry name could not be derived "
+                  "(scenario or arch missing from config).")
+            return None
+        return self.register_model(artifact_path, self._registry_name)
+
     def register_model(self, artifact_path: str, model_name: str) -> Optional[str]:
         """Register a logged artifact in the MLflow Model Registry.
 

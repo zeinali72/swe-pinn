@@ -192,7 +192,8 @@ def main(config_path: str):
     print("Info: Running Experiment 8 (Importance Sampling) training...")
 
     # --- 2. SETUP DATA & COMPUTE DOMAIN EXTENT ---
-    scenario_name = cfg_dict.get('scenario', 'experiment_8')
+    cfg_dict['scenario'] = cfg_dict.get('scenario', 'experiment_8')
+    scenario_name = cfg_dict['scenario']
     base_data_path = os.path.join("data", scenario_name)
 
     try:
@@ -251,10 +252,10 @@ def main(config_path: str):
     model, params = init_model(model_class, model_key, cfg)
 
     # --- 4. Setup Directories ---
-    config_base = os.path.splitext(os.path.basename(cfg['CONFIG_PATH']))[0]
-    trial_name = generate_trial_name(config_base + "_IS_Weighted")
-    results_dir = os.path.join("results", trial_name)
-    model_dir = os.path.join("models", trial_name)
+    arch_name = cfg_dict.get('model', {}).get('name', '')
+    trial_name = generate_trial_name(scenario_name, arch_name, variant="IS_Weighted")
+    results_dir = os.path.join("results", scenario_name, trial_name)
+    model_dir = os.path.join("models", scenario_name, trial_name)
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
@@ -332,8 +333,6 @@ def main(config_path: str):
             tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
         except Exception:
             pass
-
-    cfg_dict['scenario'] = cfg_dict.get('scenario', 'experiment_8')
     console = ConsoleLogger(cfg_dict)
     console.print_header()
 
