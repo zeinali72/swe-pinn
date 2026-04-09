@@ -94,7 +94,7 @@ def make_compute_losses(bc_fn_static):
     return compute_losses
 
 
-def setup_trial(cfg_dict: dict) -> dict:
+def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     """Set up all training components for Experiment 4 from a config dict.
 
     Args:
@@ -329,7 +329,7 @@ def main(config_path: str):
     def plot_fn(final_params):
         print("Generating Experiment 4 plots...")
         t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
-        aim_tracker = loop_result["aim_tracker"]
+        tracker = loop_result["tracker"]
         final_epoch = loop_result["epoch"]
         output_csv_path = resolve_configured_asset_path(
             cfg, base_data_path, scenario_name, "output_reference", required=False
@@ -380,7 +380,7 @@ def main(config_path: str):
             path = os.path.join(results_dir, filename)
             plt.savefig(path)
             plt.close()
-            aim_tracker.log_image(path, filename, final_epoch)
+            tracker.log_image(path, filename)
 
         for px, py, pname in output_points:
             plot_gauge(px, py, pname, f"{pname}_timeseries.png")

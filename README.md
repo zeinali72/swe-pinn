@@ -87,136 +87,61 @@ where $g$ is gravity, $R$ is external source (if provided), and Manning-type fri
 
 ## Repository Structure
 
-Current structure on this branch:
-
 ```text
 swe-pinn/
-├── CLAUDE.md
-├── README.md
-├── WORKSPACE_STRUCTURE.md
-├── analysis.md
-├── pyproject.toml
-├── configs/
-│   ├── experiment_1.yaml
-│   ├── experiment_1_dgm_static.yaml
-│   ├── experiment_1_fourier.yaml
-│   ├── experiment_3.yaml
-│   ├── experiment_4.yaml
-│   ├── experiment_5.yaml
-│   ├── experiment_6.yaml
-│   ├── experiment_7.yaml
-│   ├── experiment_8.yaml
-│   └── train/
-│       ├── experiment_1_dgm_final.yaml
-│       ├── experiment_1_fourier_final.yaml
-│       ├── experiment_1_mlp_final.yaml
-│       ├── experiment_2_dgm_final.yaml
-│       └── experiment_2_fourier_final.yaml
-├── experiments/
-│   ├── experiment_1/train.py
-│   ├── experiment_2/train.py
-│   ├── experiment_3/train.py
-│   ├── experiment_4/train.py
-│   ├── experiment_5/train.py
-│   ├── experiment_6/train.py
-│   ├── experiment_7/train.py
-│   └── experiment_8/
+├── src/                              # Core source package
+│   ├── config.py                     # YAML configuration loading
+│   ├── balancing/                    # Importance sampling, Relobralo
+│   ├── checkpointing/               # Model checkpoint save/load
+│   ├── data/                        # Batching, sampling, loading, bathymetry
+│   ├── inference/                   # Post-training inference pipeline
+│   ├── losses/                      # PDE, BC, IC, data, composite losses
+│   ├── metrics/                     # NSE, RMSE, conservation, flood extent, etc.
+│   ├── models/                      # FourierPINN, MLP, DGM, DeepONet, NTK
+│   ├── monitoring/                  # W&B tracker, console logger, diagnostics
+│   ├── physics/                     # SWE equations, analytical solutions
+│   ├── plots/                       # Time series, spatial maps, comparisons
+│   ├── predict/                     # Batched prediction wrapper
+│   ├── training/                    # Training loop, epoch, step, optimizer
+│   └── utils/                       # Domain, I/O, naming, plotting, profiling
+├── experiments/                      # Per-experiment training scripts
+│   ├── experiment_1/                # Phase 1: analytical dam-break
+│   │   ├── train.py
+│   │   ├── train_imp_samp.py        # Importance sampling variant
+│   │   ├── train_relobralo.py       # Relobralo variant
+│   │   └── postprocess.py
+│   ├── experiment_2/                # Phase 1: building obstacle
+│   ├── experiment_3/ – experiment_6/ # Phase 2: topographic complexity
+│   ├── experiment_7/                # Phase 3: irregular boundaries
+│   └── experiment_8/                # Phase 3: real urban domain (Eastbourne)
 │       ├── train.py
 │       └── train_imp_samp.py
-├── optimisation/
-│   ├── objective_function.py
-│   ├── optimization_train_loop.py
+├── configs/                          # Experiment YAML configurations
+│   ├── experiment_1/                # Experiment 1 configs
+│   ├── train/                       # Final HPO-optimised configs
+│   └── postprocess/                 # Post-processing configs
+├── optimisation/                     # Hyperparameter optimisation (Optuna)
 │   ├── run_optimization.py
-│   ├── run_sensitivity_analysis.py
-│   ├── extract_best_params.py
-│   └── utils.py
-├── scripts/
-│   ├── infer.py
-│   ├── render_video.py
-│   ├── generate_training_data.py
-│   ├── preprocess_irregular.py
-│   ├── binary_to_numpy.py
-│   ├── process_gauge_csvs.py
-│   ├── filter_by_time.py
-│   ├── extract_gauge_timeseries.py
-│   ├── lidar_download.py
-│   ├── benchmark_*.py
-│   ├── jobs/
-│   └── cpp/
-├── src/
-│   ├── config.py
-│   ├── checkpointing/
-│   │   ├── loader.py
-│   │   └── saver.py
-│   ├── data/
-│   │   ├── batching.py
-│   │   ├── bathymetry.py
-│   │   ├── irregular.py
-│   │   ├── loading.py
-│   │   ├── paths.py
-│   │   └── sampling.py
-│   ├── inference/
-│   │   ├── context.py
-│   │   ├── experiment_registry.py
-│   │   ├── reporting.py
-│   │   └── runner.py
-│   ├── losses/
-│   │   ├── boundary.py
-│   │   ├── composite.py
-│   │   ├── data_loss.py
-│   │   └── pde.py
-│   ├── metrics/
-│   │   ├── accuracy.py
-│   │   ├── boundary.py
-│   │   ├── conservation.py
-│   │   ├── decomposition.py
-│   │   ├── flood_extent.py
-│   │   ├── negative_depth.py
-│   │   └── peak.py
-│   ├── models/
-│   │   ├── deeponet.py
-│   │   ├── factory.py
-│   │   ├── layers.py
-│   │   ├── ntk.py
-│   │   └── pinn.py
-│   ├── monitoring/
-│   │   ├── aim_tracker.py
-│   │   ├── console_logger.py
-│   │   └── diagnostics.py
-│   ├── physics/
-│   │   ├── analytical.py
-│   │   └── swe.py
-│   ├── predict/
-│   │   └── predictor.py
-│   ├── training/
-│   │   ├── data_loading.py
-│   │   ├── epoch.py
-│   │   ├── loop.py
-│   │   ├── optimizer.py
-│   │   ├── setup.py
-│   │   └── step.py
-│   └── utils/
-│       ├── domain.py
-│       ├── io.py
-│       ├── naming.py
-│       ├── plotting.py
-│       ├── profiling.py
-│       └── ui.py
-├── test/
-│   ├── test_batching.py
-│   ├── test_checkpointing.py
-│   ├── test_data_paths.py
-│   ├── test_hpo.py
-│   ├── test_hpo_utils.py
-│   ├── test_inference.py
-│   ├── test_losses.py
-│   ├── test_models.py
-│   ├── test_physics.py
-│   └── test_train.py
-└── data/, models/, results/, aim_repo/, notebook/, notes/
+│   ├── objective_function.py
+│   ├── configs/                     # Exploration + exploitation configs
+│   ├── database/                    # Optuna study databases
+│   └── results/                     # Best trial configs
+├── scripts/                          # Data processing, inference, benchmarks
+│   ├── infer.py                     # Inference CLI wrapper
+│   ├── render_video.py              # Solution animation renderer
+│   ├── generate_training_data.py    # Training data generation
+│   ├── benchmark_*.py               # Performance benchmarks
+│   ├── jobs/                        # HPC job scripts
+│   └── cpp/                         # C++ CSV → binary converter
+├── test/                             # Unit tests (unittest)
+├── docs/                             # Documentation
+├── notebook/                         # Jupyter notebooks
+├── .devcontainer/                    # Docker dev container (NVIDIA JAX + CUDA)
+├── .github/workflows/                # CI/CD: Docker image build/publish
+└── pyproject.toml                    # Package metadata and dependencies
 ```
 
-Note: `data/`, `models/`, and `results/` contain large/generated artifacts and are intentionally not expanded here.
+Note: `data/`, `models/`, and `results/` contain large/generated artifacts and are gitignored.
 
 ## Installation
 
@@ -236,10 +161,10 @@ Open the repository in VS Code and reopen in the provided dev container.
 
 ## Quick Start
 
-Example: train Experiment 1 using the Fourier configuration.
+Example: train Experiment 1 using the default configuration.
 
 ```bash
-python -m experiments.experiment_1.train --config configs/experiment_1_fourier.yaml
+python -m experiments.experiment_1.train --config configs/experiment_1/experiment_1.yaml
 ```
 
 Example: train Experiment 3.
@@ -261,6 +186,10 @@ python -m experiments.experiment_5.train --config <config>
 python -m experiments.experiment_6.train --config <config>
 python -m experiments.experiment_7.train --config <config>
 python -m experiments.experiment_8.train --config <config>
+
+# Variants
+python -m experiments.experiment_1.train_imp_samp --config <config>
+python -m experiments.experiment_1.train_relobralo --config <config>
 python -m experiments.experiment_8.train_imp_samp --config <config>
 ```
 

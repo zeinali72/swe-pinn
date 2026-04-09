@@ -1,0 +1,35 @@
+# Postprocessing configuration for Experiment 1 — analytical dam-break verification.
+#
+# These parameters control the postprocessing pipeline independently of the model
+# training config. Pass alongside the model config:
+#
+#   python -m experiments.experiment_1.postprocess \
+#       --config configs/experiment_1.yaml \
+#       --postprocess-config configs/postprocess/experiment_1_postprocess.yaml \
+#       --checkpoint models/experiment_1/best_nse
+
+# ---------------------------------------------------------------------------
+# Validation grid
+# ---------------------------------------------------------------------------
+validation:
+  nx: 101              # x-axis grid points (y derived from domain aspect ratio)
+  nt: 21               # number of time snapshots uniformly in [0, t_final]
+  n_boundary_pts: 500  # points per boundary segment for C1-C4 metrics
+
+# ---------------------------------------------------------------------------
+# Plot settings
+# ---------------------------------------------------------------------------
+plots:
+  dpi: 300
+  t_const_val: 1800.0          # representative time (s) for P2.2 depth map
+  y_const_plot: 0.0            # y-slice (m) for 1D h vs x plot (P1.1 / analytical)
+  t_snapshot_fracs: [0.1, 0.25, 0.5, 0.75, 1.0]  # fractional times for P2.1 error maps
+
+# ---------------------------------------------------------------------------
+# Inference
+# ---------------------------------------------------------------------------
+inference:
+  batch_size: 50000    # prediction chunk size (reduce if GPU OOM)
+  skip_conservation: false
+  skip_plots: false
+

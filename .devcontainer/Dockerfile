@@ -33,4 +33,11 @@ RUN chmod +x install_dependencies.sh install_requirements.sh && \
     ./install_requirements.sh && \
     rm -rf /var/lib/apt/lists/*
 
+# ---------- RTK-AI (token compression proxy for Claude Code) ----------
+RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh \
+    && ln -sf /root/.local/bin/rtk /usr/local/bin/rtk
+
+# ---------- Gemini CLI ----------
+RUN npm install -g @google/gemini-cli
+
 CMD ["bash"]

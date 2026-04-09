@@ -30,76 +30,175 @@ The codebase is built in Python with JAX and Flax, using Optuna for hyperparamet
 
 ```
 swe-pinn/
-├── src/                            # Core source code
-│   ├── train.py                    # Unified training script (main entry point)
-│   ├── models.py                   # Neural network architectures (FourierPINN, MLP, DGMNetwork)
-│   ├── losses.py                   # PDE, IC, BC loss functions for SWE
-│   ├── physics.py                  # SWE physics computations and Jacobians
-│   ├── softadapt.py                # SoftAdapt adaptive loss weighting
-│   ├── ntk.py                      # Neural Tangent Kernel trace computation
-│   ├── data.py                     # Data sampling, batching, and validation loading
-│   ├── config.py                   # YAML configuration loading
-│   ├── utils.py                    # Metrics (NSE, RMSE), plotting, model saving
-│   ├── reporting.py                # Training stats logging and Aim integration
-│   └── scenarios/                  # Per-experiment training scripts
-│       ├── experiment_1/           # Phase 1: analytical dam-break, flat domain
-│       │   ├── experiment_1.py
-│       │   ├── analytical_ntk.py
-│       │   └── experiment_1_lbfgs_finetune.py
-│       ├── experiment_2/           # Phase 1: building obstacle
-│       │   └── experiment_2.py
-│       ├── experiment_3/           # Phase 2: x-direction terrain slope
-│       │   └── experiment_3.py
-│       ├── experiment_4/           # Phase 2: x+y terrain slope
-│       │   └── experiment_4.py
-│       ├── experiment_5/           # Phase 2: synthetic complexity
-│       │   └── experiment_5.py
-│       ├── experiment_6/           # Phase 2: synthetic complexity stage 2
-│       │   └── experiment_6.py
-│       ├── experiment_7/           # Phase 3: irregular boundaries, mesh-based sampling
-│       │   └── experiment_7.py
-│       └── experiment_8/           # Phase 3: real urban domain (Eastbourne)
-│           ├── experiment_8.py
-│           └── experiment_8_imp_samp.py    # Importance sampling variant
-├── configs/                        # Experiment configuration YAML files
-│   ├── experiment_<N>.yaml             # Per-experiment configs (3–8)
-│   ├── experiment_<N>_<arch>.yaml      # Per-architecture variant configs
-│   └── train/                          # Final HPO-optimized configs for production runs
-│       └── experiment_<N>_<arch>_final.yaml
-├── test/                           # Unit tests
-│   ├── test_train.py               # Main training script validation
-│   └── test_assets/
-│       └── test_config.yaml        # Minimal test configuration
-├── scripts/                        # Data processing and utility scripts
-│   ├── run_preprocess.sh           # Stage 1: Build & run C++ CSV→binary converter
-│   ├── binary_to_numpy.py          # Stage 2: Binary→.npy conversion
-│   ├── generate_training_data.py   # Stage 3: .npy→training/validation/plotting datasets
-│   ├── process_gauge_csvs.py       # Gauge CSV processing (depth/angle/speed→.npy)
-│   ├── extract_gauge_timeseries.py # Extract gauge time series from tensor
-│   ├── filter_by_time.py           # Filter .npy by maximum time
-│   ├── preprocess_irregular.py     # Mesh preprocessing for irregular domains (Exp 7/8)
-│   ├── render_video.py             # Render solution animations (CLI-driven)
-│   ├── infer.py                    # Post-training inference CLI wrapper
-│   ├── lidar_download.py           # Download LIDAR elevation data from UK gov WCS
-│   └── cpp/                        # C++ CSV→binary converter
-│       └── preprocess.cpp
-├── optimisation/                   # Hyperparameter optimisation (Optuna)
+├── src/                              # Core source code (package)
+│   ├── config.py                     # YAML configuration loading
+│   ├── balancing/                    # Training data balancing strategies
+│   │   ├── importance_sampling.py    # Importance sampling
+│   │   └── relobralo.py             # Relobralo adaptive balancing
+│   ├── checkpointing/               # Model checkpoint management
+│   │   ├── loader.py                # Checkpoint loading
+│   │   └── saver.py                 # Checkpoint saving
+│   ├── data/                        # Data handling
+│   │   ├── batching.py              # Batch construction
+│   │   ├── bathymetry.py            # DEM / terrain loading
+│   │   ├── irregular.py             # Irregular domain support
+│   │   ├── loading.py               # Data loading utilities
+│   │   ├── paths.py                 # Data path resolution
+│   │   └── sampling.py             # Collocation point sampling
+│   ├── inference/                   # Post-training inference
+│   │   ├── context.py              # Inference context setup
+│   │   ├── experiment_registry.py  # Experiment-specific inference configs
+│   │   ├── reporting.py            # Inference result reporting
+│   │   └── runner.py               # Inference execution
+│   ├── losses/                      # Loss functions
+│   │   ├── boundary.py             # BC losses (inflow, no-flux, zero-gradient)
+│   │   ├── composite.py            # Weighted composite loss
+│   │   ├── data_loss.py            # Data-driven loss
+│   │   └── pde.py                  # PDE residual loss
+│   ├── metrics/                     # Evaluation metrics
+│   │   ├── accuracy.py             # NSE, RMSE, MAE, Relative L2
+│   │   ├── boundary.py             # BC violation metrics
+│   │   ├── conservation.py         # Volume balance, continuity residual
+│   │   ├── cost.py                 # Computational cost metrics
+│   │   ├── data_efficiency.py      # Data efficiency ratios
+│   │   ├── decomposition.py        # Spatial/temporal decomposition
+│   │   ├── flood_extent.py         # Flood extent agreement
+│   │   ├── negative_depth.py       # Negative depth statistics
+│   │   └── peak.py                 # Peak depth/timing errors
+│   ├── models/                      # Neural network architectures
+│   │   ├── deeponet.py             # DeepONet architecture
+│   │   ├── factory.py              # Model factory (name → class)
+│   │   ├── layers.py               # Custom layers
+│   │   ├── ntk.py                  # Neural Tangent Kernel computation
+│   │   └── pinn.py                 # FourierPINN, MLP, DGMNetwork
+│   ├── monitoring/                  # Experiment tracking
+│   │   ├── console_logger.py       # Console output logger
+│   │   ├── diagnostics.py          # Training diagnostics
+│   │   └── wandb_tracker.py        # Weights & Biases integration
+│   ├── physics/                     # SWE physics
+│   │   ├── analytical.py           # Analytical dam-break solutions
+│   │   └── swe.py                  # SWE flux Jacobians and source terms
+│   ├── plots/                       # Visualisation
+│   │   ├── comparisons.py          # Architecture/experiment comparisons
+│   │   ├── hpo_plots.py            # HPO analysis plots
+│   │   ├── spatial_maps.py         # 2D spatial field plots
+│   │   └── time_series.py          # Time series plots
+│   ├── predict/                     # Prediction utilities
+│   │   └── predictor.py            # Batched prediction wrapper
+│   ├── training/                    # Training loop
+│   │   ├── data_loading.py         # Training data preparation
+│   │   ├── epoch.py                # Single epoch logic
+│   │   ├── loop.py                 # Main training loop
+│   │   ├── optimizer.py            # Optimizer creation
+│   │   ├── setup.py                # Trial/run setup
+│   │   └── step.py                 # Single gradient step
+│   └── utils/                       # Utilities
+│       ├── domain.py               # Domain geometry helpers
+│       ├── io.py                   # File I/O utilities
+│       ├── naming.py               # Run/trial naming conventions
+│       ├── plotting.py             # Shared plotting helpers
+│       ├── profiling.py            # Performance profiling
+│       └── ui.py                   # Terminal UI helpers
+├── experiments/                     # Per-experiment training scripts
+│   ├── experiment_1/               # Phase 1: analytical dam-break
+│   │   ├── train.py                # Standard training
+│   │   ├── train_imp_samp.py       # Importance sampling variant
+│   │   ├── train_relobralo.py      # Relobralo variant
+│   │   └── postprocess.py          # Post-training analysis
+│   ├── experiment_2/               # Phase 1: building obstacle
+│   │   └── train.py
+│   ├── experiment_3/               # Phase 2: x-direction slope
+│   │   └── train.py
+│   ├── experiment_4/               # Phase 2: x+y slope
+│   │   └── train.py
+│   ├── experiment_5/               # Phase 2: synthetic complexity
+│   │   └── train.py
+│   ├── experiment_6/               # Phase 2: synthetic complexity stage 2
+│   │   └── train.py
+│   ├── experiment_7/               # Phase 3: irregular boundaries
+│   │   └── train.py
+│   └── experiment_8/               # Phase 3: real urban domain (Eastbourne)
+│       ├── train.py
+│       └── train_imp_samp.py       # Importance sampling variant
+├── configs/                         # Experiment configuration YAML files
+│   ├── experiment_1/               # Experiment 1 configs
+│   │   ├── experiment_1.yaml
+│   │   ├── experiment_1_imp_samp.yaml
+│   │   ├── experiment_1_relobralo.yaml
+│   │   └── best_trial_51_config.yaml
+│   ├── train/                      # Final HPO-optimised configs
+│   │   ├── experiment_1_dgm_final.yaml
+│   │   ├── experiment_1_fourier_final.yaml
+│   │   ├── experiment_1_mlp_final.yaml
+│   │   ├── experiment_2_dgm_final.yaml
+│   │   └── experiment_2_fourier_final.yaml
+│   ├── postprocess/                # Post-processing configs
+│   │   └── experiment_1_postprocess.yaml
+│   ├── experiment_3.yaml
+│   ├── experiment_4.yaml
+│   ├── experiment_5.yaml
+│   ├── experiment_6.yaml
+│   ├── experiment_7.yaml
+│   └── experiment_8.yaml
+├── test/                            # Unit tests
+│   ├── test_train.py               # Training script validation
+│   ├── test_batching.py            # Batch construction tests
+│   ├── test_checkpointing.py       # Checkpoint save/load tests
+│   ├── test_data_paths.py          # Data path resolution tests
+│   ├── test_hpo.py                 # HPO objective tests
+│   ├── test_hpo_utils.py           # HPO utility tests
+│   ├── test_inference.py           # Inference pipeline tests
+│   ├── test_losses.py              # Loss function tests
+│   ├── test_models.py              # Architecture tests
+│   ├── test_physics.py             # SWE physics tests
+│   └── test_setup_trial.py         # Trial setup tests
+├── scripts/                         # Data processing and utility scripts
+│   ├── infer.py                    # Post-training inference CLI
+│   ├── render_video.py             # Solution animation renderer
+│   ├── generate_training_data.py   # .npy training/validation dataset generation
+│   ├── binary_to_numpy.py          # Binary → .npy conversion
+│   ├── preprocess_irregular.py     # Mesh preprocessing for irregular domains
+│   ├── process_gauge_csvs.py       # Gauge CSV processing
+│   ├── extract_gauge_timeseries.py # Gauge time series extraction
+│   ├── filter_by_time.py           # Filter .npy by time
+│   ├── lidar_download.py           # LIDAR elevation data download
+│   ├── benchmark_*.py              # Performance benchmarks
+│   ├── profile_training.py         # Training profiler
+│   ├── jobs/                       # HPC job scripts
+│   │   ├── run_job.sh
+│   │   └── run_job_L40.sh
+│   └── cpp/                        # C++ CSV → binary converter
+│       ├── preprocess.cpp
+│       └── CMakeLists.txt
+├── optimisation/                    # Hyperparameter optimisation (Optuna)
 │   ├── run_optimization.py         # Main HPO entry point
-│   ├── run_sensitivity_analysis.py
-│   ├── extract_best_params.py
-│   ├── objective_function.py       # Optuna objective
-│   ├── optimization_train_loop.py
-│   ├── configs/                    # HPO-specific config files
-│   │   ├── exploration/            # Sobol exploration configs
-│   │   └── exploitation/           # TPE exploitation configs
-│   └── sensitivity_analysis_output/  # Importance reports + best params
-├── data/                           # Reference simulation data (InfoWorks ICM output)
-│   └── experiment_N/               # Per-experiment data folders
-├── notebook/                       # Jupyter notebooks for analysis
-├── .devcontainer/                  # Docker dev container setup (NVIDIA JAX + CUDA)
-├── .github/workflows/              # CI/CD: Docker image build/publish to GHCR
-├── pyproject.toml                  # Package metadata and dependencies
-└── README.md                       # Project documentation
+│   ├── run_sensitivity_analysis.py # Parameter importance analysis
+│   ├── extract_best_params.py      # Extract best trial parameters
+│   ├── objective_function.py       # Optuna objective function
+│   ├── optimization_train_loop.py  # HPO training loop
+│   ├── utils.py                    # HPO utilities
+│   ├── configs/                    # HPO-specific configs
+│   │   ├── exploration/            # Sobol exploration phase configs
+│   │   └── exploitation/           # TPE exploitation phase configs
+│   ├── database/                   # Optuna study databases (SQLite)
+│   ├── results/                    # HPO results and best trial configs
+│   ├── sensitivity_analysis_output/ # Importance reports
+│   └── legacy/                     # Archived HPO configs and databases
+├── docs/                            # Documentation
+│   └── experimental_programme_reference.md  # Authoritative experiment spec
+├── notebook/                        # Jupyter notebooks for analysis
+├── data/                            # Reference simulation data (gitignored)
+├── models/                          # Trained model checkpoints (gitignored)
+├── results/                         # Experiment outputs (gitignored)
+├── .devcontainer/                   # Docker dev container setup
+│   ├── Dockerfile
+│   ├── devcontainer.json
+│   ├── requirements.txt
+│   ├── install_dependencies.sh
+│   └── install_requirements.sh
+├── .github/workflows/               # CI/CD: Docker image build/publish
+│   └── docker-publish.yml
+└── pyproject.toml                   # Package metadata and dependencies
 ```
 
 ## Tech Stack
@@ -108,7 +207,7 @@ swe-pinn/
 - **Language**: Python 3.8+
 - **GPU**: CUDA via NVIDIA JAX Docker image (`nvcr.io/nvidia/jax:25.01-py3`)
 - **Hyperparameter Optimization**: Optuna
-- **Experiment Tracking**: Aim
+- **Experiment Tracking**: Weights & Biases (W&B)
 - **Visualization**: Matplotlib, Seaborn
 - **Configuration**: YAML files loaded via `src/config.py`
 - **Build System**: setuptools (via `pyproject.toml`)
@@ -118,13 +217,18 @@ swe-pinn/
 ### Running Training
 
 ```bash
-# Main unified training script (takes config path as argument)
-python src/train.py <config_path>
+# Per-experiment training scripts (run as modules)
+python -m experiments.experiment_1.train --config configs/experiment_1/experiment_1.yaml
+python -m experiments.experiment_2.train --config configs/train/experiment_2_fourier_final.yaml
+python -m experiments.experiment_3.train --config configs/experiment_3.yaml
+# ... same pattern for experiments 4–8
 
-# Scenario-specific scripts (run as modules)
-python -m src.scenarios.experiment_1.experiment_1 <config_path>
-python -m src.scenarios.experiment_2.experiment_2 <config_path>
-# ... same pattern for experiments 3–8
+# Experiment 1 variants
+python -m experiments.experiment_1.train_imp_samp --config configs/experiment_1/experiment_1_imp_samp.yaml
+python -m experiments.experiment_1.train_relobralo --config configs/experiment_1/experiment_1_relobralo.yaml
+
+# Experiment 8 importance sampling
+python -m experiments.experiment_8.train_imp_samp --config <config>
 ```
 
 ### Running Tests
@@ -135,6 +239,8 @@ python -m unittest discover test
 
 # Run specific test files
 python -m unittest test.test_train
+python -m unittest test.test_losses
+python -m unittest test.test_models
 ```
 
 Tests force JAX to CPU (`JAX_PLATFORM_NAME=cpu`) for reproducibility, use mock data and file I/O, and clean up temporary directories in teardown.
@@ -147,10 +253,13 @@ python optimisation/run_sensitivity_analysis.py
 python optimisation/extract_best_params.py
 ```
 
-### Experiment Tracking
+### Inference
 
 ```bash
-aim up
+python scripts/infer.py \
+  --config configs/experiment_3.yaml \
+  --checkpoint models/experiment_3/<trial>/checkpoints/best_nse \
+  --checkpoints best_nse
 ```
 
 ### Installing Dependencies
@@ -176,7 +285,7 @@ All hyperparameters are specified in YAML config files. The config structure inc
 | `device` | `dtype` (float32/float64), early stopping parameters |
 | `numerics` | `eps` (machine epsilon) |
 
-### Neural Network Architectures (`src/models.py`)
+### Neural Network Architectures (`src/models/pinn.py`)
 
 1. **FourierPINN** - Fourier feature encoding + dense layers with tanh activation
 2. **MLP** - Standard multi-layer perceptron
@@ -185,13 +294,13 @@ All hyperparameters are specified in YAML config files. The config structure inc
 ### Loss Weighting Strategies
 
 - **Static**: Fixed weights from config
-- **SoftAdapt** (`src/softadapt.py`): Rate-of-change-based adaptive weighting
-- **NTK** (`src/ntk.py`): Weights based on Neural Tangent Kernel traces
+- **Importance Sampling** (`src/balancing/importance_sampling.py`): Adaptive point weighting based on loss magnitude
+- **Relobralo** (`src/balancing/relobralo.py`): Relative loss balancing with random lookback
 
 ### Physics Implementation
 
-- `src/physics.py`: `SWEPhysics` class computes flux Jacobians and source terms for the 2D SWE
-- `src/losses.py`: PDE residual losses, initial condition losses, boundary condition losses (inflow, zero-gradient, no-flux)
+- `src/physics/swe.py`: SWE flux Jacobians and source terms for the 2D SWE
+- `src/losses/`: PDE residual losses, initial condition losses, boundary condition losses (inflow, zero-gradient, no-flux)
 - Supports Manning friction, gravity, and inflow conditions
 - Water depth is masked with h >= eps for numerical stability
 
@@ -215,7 +324,6 @@ All hyperparameters are specified in YAML config files. The config structure inc
 
 - Test framework: Python `unittest`
 - Tests located in `test/` directory
-- Test configs in `test/test_assets/`
 - Force CPU execution: `os.environ["JAX_PLATFORM_NAME"] = "cpu"` at top of test files
 - Use `unittest.mock` for mocking file I/O and data
 - setUp/tearDown for temporary directory management
@@ -235,47 +343,23 @@ All hyperparameters are specified in YAML config files. The config structure inc
 - **Memory**: Large validation datasets (multi-GB) use memory-mapped numpy arrays. Use `np.load(..., mmap_mode='r')` for big files.
 - **Float precision**: Some physics computations require `float64`. Set via `config.device.dtype`.
 
+## Experimental Programme
 
-# Experimental Programme
-This project runs 11 experiments across 3 phases. The authoritative specification for all metrics, plots, tracked values, and module structure lives in:
-docs/experimental_programme_reference.md
+This project runs experiments across 3 phases. The authoritative specification for all metrics, plots, tracked values, and module structure lives in:
+`docs/experimental_programme_reference.md`
+
 Always consult this file when:
+- Implementing any evaluation metric (definitions, formulas, units, which experiments use it)
+- Creating any inference plot (plot type, axes, colour conventions, which experiments need it)
+- Setting up W&B tracking for a training run (what to log, at what frequency)
+- Building or modifying any module in `src/metrics/` or `src/plots/`
+- Planning what outputs an experiment run should produce
 
-Implementing any evaluation metric (definitions, formulas, units, which experiments use it)
-Creating any inference plot (plot type, axes, colour conventions, which experiments need it)
-Setting up Aim tracking for a training run (what to log, at what frequency)
-Building or modifying any module in evaluation/
-Planning what outputs an experiment run should produce
+### Key conventions from that document
 
-## Key conventions from that document
-
-All accuracy metrics (NSE, RMSE, MAE, Rel L2) reported separately for h, hu, hv
-Metrics are grouped: A (accuracy), B (conservation), C (boundary), D (cost), E (HPO), F (data)
-Plots are grouped: P1 (time series), P2 (spatial maps), P3 (comparisons), P4 (HPO)
-Tracked values grouped: T1 (losses), T2 (optimisation state), T3 (validation), T4 (HPO trials)
-The experiment-to-module mapping table shows exactly which modules each experiment needs
-Colour palette: Exeter (Deep Green #003C3C, Teal #007D69, Mint #00C896) + Blue Heart (Navy #0D2B45, Ocean #1B5E8A, Sky #4FA3D1). Arial. 300 DPI.
-
-## Subagent Orchestration
-
-Use specialised subagents for tasks matching their domain. Prefer parallel launches when tasks are independent.
-
-| Agent | Use for |
-|-------|---------|
-| `ai-engineer` | Architecture decisions, JAX optimisation, model design, training strategy |
-| `ml-engineer` | JAX/Flax training pipelines, loss functions, Optuna HPO, model optimisation |
-| `debugger` | JAX tracing errors, NaN propagation, shape mismatches, JIT issues |
-| `code-reviewer` | Code quality reviews, JIT safety, physics correctness, loss implementations |
-| `python-pro` | Python refactoring, type safety, idiomatic patterns |
-| `data-scientist` | Statistical analysis of training metrics (NSE, RMSE), experiment interpretation |
-| `data-analyst` | Data exploration, visualisation, training log analysis, plotting |
-| `docker-expert` | Dockerfile, NVIDIA JAX devcontainer, GPU containers, CI/CD |
-| `scientific-literature-researcher` | PINN methods, SWE solvers, spectral bias, adaptive loss weighting |
-| `senior-orchestrator` | Multi-step tasks spanning multiple specialist agents |
-
-**Guidelines:**
-- For multi-file refactors or new features, start with `ai-engineer` or `senior-orchestrator` to plan, then delegate to specialists.
-- After writing code, use `code-reviewer` to check JIT safety and physics correctness.
-- For debugging training failures (NaN losses, shape errors), use `debugger` first.
-- Use `scientific-literature-researcher` when implementing new PINN techniques or loss formulations.
-- Run `data-scientist` and `data-analyst` in parallel when analysing experiment results.
+- All accuracy metrics (NSE, RMSE, MAE, Rel L2) reported separately for h, hu, hv
+- Metrics are grouped: A (accuracy), B (conservation), C (boundary), D (cost), E (HPO), F (data)
+- Plots are grouped: P1 (time series), P2 (spatial maps), P3 (comparisons), P4 (HPO)
+- Tracked values grouped: T1 (losses), T2 (optimisation state), T3 (validation), T4 (HPO trials)
+- The experiment-to-module mapping table shows exactly which modules each experiment needs
+- Colour palette: Exeter (Deep Green #003C3C, Teal #007D69, Mint #00C896) + Blue Heart (Navy #0D2B45, Ocean #1B5E8A, Sky #4FA3D1). Arial. 300 DPI.

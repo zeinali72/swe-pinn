@@ -2,6 +2,7 @@
 
 hpo_settings:
   data_free: true
+  storage_backend: local  # "local" = SQLite, "remote" = PostgreSQL (credentials from .env)
 
 training:
   epochs: 2000

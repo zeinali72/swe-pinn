@@ -1,7 +1,35 @@
+# Large data and generated artifacts
 data/
 models/
 results/
+
+# Git and IDE
 .git/
 .vscode/
+.idea/
+
+# Experiment tracking
 aim_repo/
+wandb/
+mlruns/
+
+# Logs and temporary
 optimisation_logs/
+logs/
+.temp/
+temp_tiles/
+*.log
+
+# Cache
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+*.py[cod]
+
+# Notes and analysis (not needed in container)
+notes/
+analysis.md
+
+# Databases
+*.sqlite3
+*.db

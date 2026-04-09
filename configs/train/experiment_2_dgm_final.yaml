@@ -56,3 +56,5 @@ loss_weights:
   building_bc_weight: 216.73921695684155
   data_weight: 0.0
 data_free: true
+reporting:
+  epoch_freq: 100

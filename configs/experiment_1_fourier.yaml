@@ -71,3 +71,5 @@ device:
 numerics:
   eps: 1e-6                      # Small epsilon for numerical
   min_depth: 0.005               # Minimum acceptable water depth (m)
+reporting:
+  epoch_freq: 100

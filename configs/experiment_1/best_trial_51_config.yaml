@@ -1,0 +1,51 @@
+training:
+  seed: 42
+  epochs: 2000
+  learning_rate: 0.0020535250264571477
+  batch_size: 256
+  reduce_on_plateau:
+    factor: 0.5                    # Factor by which the learning rate will be reduced (
+    patience: 10                 # Number of steps with no improvement after which learning rate will be reduced
+    rtol: 1e-3                     # Relative tolerance for measuring new optimum
+    atol: 0.0                      # Absolute tolerance for measuring new optimum
+    cooldown: 5                  # Number of steps to wait before resuming normal operation after lr has been reduced
+    accumulation_factor: 1          # Check every epoch (no accumulation)
+    min_scale: 1e-4                # Minimum scaling factor allowed
+model:
+  name: MLP
+  output_dim: 3
+  width: 1024
+  depth: 4
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+physics:
+  u_const: 0.29
+  n_manning: 0.03
+  inflow: null
+  g: 1.0
+loss_weights:
+  pde_weight: 93057.20409296978
+  ic_weight: 0.011970850304957308
+  bc_weight: 32.78121151393455
+  neg_h_weight: 0.2128751661796373
+  data_weight: 0.0
+plotting:
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 0
+  plot_resolution: 150
+device:
+  dtype: float32
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+numerics:
+  eps: 1.0e-06
+validation_grid:
+  n_points_val: 45000
+CONFIG_PATH: optimisation/configs/hpo_mlp_datafree_static_NOBUILDING.yaml
+sampling:
+  n_points_pde: 35226
+  n_points_ic: 3222
+  n_points_bc_domain: 7483

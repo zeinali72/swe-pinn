@@ -94,12 +94,13 @@ def make_compute_losses(bc_fn_static):
     return compute_losses
 
 
-def setup_trial(cfg_dict: dict) -> dict:
+def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     """Set up all training components for Experiment 3 from a config dict.
 
     Args:
         cfg_dict: Mutable configuration dictionary (not a file path). This is the
             interface used by HPO to pass trial-specific configs directly.
+        hpo_mode: If True, suppress verbose setup logging for HPO runs.
 
     Returns:
         Dictionary containing all objects needed to call run_training_loop, plus
@@ -110,7 +111,8 @@ def setup_trial(cfg_dict: dict) -> dict:
 
     model, params, train_key, val_key = init_model_from_config(cfg)
 
-    print("Info: Running Experiment 3 Scenario model training...")
+    if not hpo_mode:
+        print("Info: Running Experiment 3 Scenario model training...")
 
     # --- Prepare Loss Weights ---
     static_weights_dict, current_weights_dict = extract_loss_weights(cfg)
@@ -129,7 +131,8 @@ def setup_trial(cfg_dict: dict) -> dict:
         dem_path = resolve_configured_asset_path(cfg, base_data_path, scenario_name, "dem")
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"DEM asset not found: {exc}") from exc
-    print(f"Loading Bathymetry from {dem_path}...")
+    if not hpo_mode:
+        print(f"Loading Bathymetry from {dem_path}...")
     load_bathymetry(dem_path)
 
     # B. Load Boundary Condition Function
@@ -141,18 +144,20 @@ def setup_trial(cfg_dict: dict) -> dict:
 
     # --- Load Validation and Training Data ---
     data_points_full = None
-    data_free, has_data_loss = resolve_data_mode(cfg)
+    data_free, has_data_loss = resolve_data_mode(cfg, verbose=not hpo_mode)
     data_points_full, has_data_loss, data_free = load_training_data(
         base_data_path,
         has_data_loss,
         static_weights_dict,
         filename=get_data_filename(cfg, "training_file", "training_dataset_sample.npy"),
+        verbose=not hpo_mode,
     )
 
     # C. Load Validation Data (Optional)
     validation = load_validation_from_file(
         base_data_path,
         get_data_filename(cfg, "validation_file", "validation_gauges.npy"),
+        verbose=not hpo_mode,
     )
     validation_data_loaded = validation["loaded"]
     full_val_data = validation["full_val_data"]
@@ -180,7 +185,8 @@ def setup_trial(cfg_dict: dict) -> dict:
         raise ValueError(
             f"Batch size {batch_size} is too large for configured sample counts or data."
         )
-    print(f"Batches per epoch: {num_batches}")
+    if not hpo_mode:
+        print(f"Batches per epoch: {num_batches}")
 
     # --- Setup Optimizer ---
     optimiser = create_optimizer(cfg, num_batches=num_batches)
@@ -318,7 +324,7 @@ def main(config_path: str):
     def plot_fn(final_params):
         print("Generating Experiment 3 plots...")
         t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
-        aim_tracker = loop_result["aim_tracker"]
+        tracker = loop_result["tracker"]
         final_epoch = loop_result["epoch"]
 
         def plot_gauge(x, y, name, color, filename):
@@ -345,7 +351,7 @@ def main(config_path: str):
             path = os.path.join(results_dir, filename)
             plt.savefig(path)
             plt.close()
-            aim_tracker.log_image(path, filename, final_epoch)
+            tracker.log_image(path, filename)
 
         plot_gauge(3.9587225e+02, 4.9646515e+01, "Point 1", "blue", "P1_timeseries.png")
         plot_gauge(6.0435474e+02, 5.0565735e+01, "Point 2", "red", "P2_timeseries.png")

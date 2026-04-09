@@ -55,3 +55,5 @@ loss_weights:
   neg_h_weight: 1.0
   data_weight: 10.0
 data_free: true
+reporting:
+  epoch_freq: 100

@@ -35,8 +35,8 @@ def init_model_from_config(cfg):
 
 def create_output_dirs(cfg, experiment_name: str):
     """Create experiment-scoped results and model directories."""
-    config_base = os.path.splitext(os.path.basename(cfg['CONFIG_PATH']))[0]
-    trial_name = generate_trial_name(config_base)
+    arch_name = cfg.get('model', {}).get('name', '')
+    trial_name = generate_trial_name(experiment_name, arch_name)
     results_dir = os.path.join("results", experiment_name, trial_name)
     model_dir = os.path.join("models", experiment_name, trial_name)
     os.makedirs(results_dir, exist_ok=True)

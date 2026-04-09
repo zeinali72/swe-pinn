@@ -1,0 +1,119 @@
+# HPO exploration — Experiment 1, MLP, Importance Sampling variant.
+#
+# Uses train_imp_samp.py::setup_trial via the train_module override.
+# IS pool params (pool_size, resample_freq, eval_batch_size, alpha) are fixed
+# during HPO — only architecture, LR, loss weights, and sampling counts are tuned.
+# IS is computationally heavier per epoch, so trial budget is reduced accordingly.
+
+hpo_settings:
+  data_free: true
+  objective_key: nse_h
+  study_name: exp1-mlp-imp-samp-exploration
+  storage_backend: local
+
+scenario: experiment_1
+train_module: train_imp_samp
+
+training:
+  epochs: 1000
+  seed: 42
+  hpo_warmup_epochs: 200
+  hpo_patience: 400
+  hpo_report_interval: 10
+  validation_freq: 1
+
+# --- Hyperparameter search spaces ---
+# Scalars = fixed, {min, max} = Optuna float/int range, [list] = categorical
+hpo_hyperparameters:
+  learning_rate:
+    min: 1.0e-5
+    max: 1.0e-2
+    log: true
+  batch_size: [128, 256, 512]
+
+  model_width: [128, 256, 512]
+  model_depth:
+    min: 3
+    max: 6
+    type: int
+
+  sampling:
+    n_points_pde:
+      min: 20000
+      max: 100000
+      log: true
+      type: int
+    n_points_ic:
+      min: 500
+      max: 5000
+      log: true
+      type: int
+    n_points_bc_domain:
+      min: 1000
+      max: 10000
+      log: true
+      type: int
+
+  loss_weights:
+    pde_weight: 1.0       # fixed anchor
+    ic_weight:
+      min: 1.0e-5
+      max: 1.0e-2
+      log: true
+    bc_weight:
+      min: 1.0e-2
+      max: 1.0e+2
+      log: true
+    neg_h_weight:
+      min: 1.0e-6
+      max: 1.0
+      log: true
+
+# --- Fixed values ---
+model:
+  name: "MLP"
+  output_dim: 3
+  kernel_init: "glorot_uniform"
+  bias_init: 0.0
+  width: 256
+  depth: 4
+
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+
+sampling:
+  n_points_pde: 100000
+  n_points_ic: 2000
+  n_points_bc_domain: 5000
+  importance_sampling:
+    pool_size: 2000000
+    resample_freq: 40
+    eval_batch_size: 100000
+    alpha: 0.8
+
+physics:
+  u_const: 0.29
+  n_manning: 0.03
+  inflow: null
+  g: 9.81
+
+loss_weights:
+  pde_weight: 1.0
+  ic_weight: 0.0005
+  bc_weight: 1.0
+  neg_h_weight: 1.0
+  data_weight: 0.0
+
+device:
+  dtype: "float32"
+
+numerics:
+  eps: 1.0e-6
+
+validation_grid:
+  n_points_val: 42000
+
+reporting:
+  epoch_freq: 10

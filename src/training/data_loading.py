@@ -9,7 +9,7 @@ from src.data import load_validation_data, load_bathymetry, load_boundary_condit
 from src.training.setup import resolve_configured_asset_path
 
 
-def resolve_data_mode(cfg):
+def resolve_data_mode(cfg, verbose=True):
     """Determine whether training is data-free or data-driven.
 
     Returns
@@ -21,18 +21,20 @@ def resolve_data_mode(cfg):
     data_free_flag = cfg.get("data_free")
 
     if data_free_flag is False:
-        print("Info: 'data_free: false' found in config. Activating data-driven mode.")
+        if verbose:
+            print("Info: 'data_free: false' found in config. Activating data-driven mode.")
         return False, True
     else:
-        if data_free_flag is None:
-            print("Warning: 'data_free' flag not specified in config. Defaulting to 'data_free: true'.")
-        else:
-            print("Info: 'data_free: true' found in config. Data loss term will be disabled.")
+        if verbose:
+            if data_free_flag is None:
+                print("Warning: 'data_free' flag not specified in config. Defaulting to 'data_free: true'.")
+            else:
+                print("Info: 'data_free: true' found in config. Data loss term will be disabled.")
         return True, False
 
 
 def load_training_data(base_data_path, has_data_loss, static_weights_dict,
-                       filename="training_dataset_sample.npy"):
+                       filename="training_dataset_sample.npy", verbose=True):
     """Load the training data .npy file if data-driven mode is active.
 
     Returns
@@ -47,32 +49,37 @@ def load_training_data(base_data_path, has_data_loss, static_weights_dict,
     if has_data_loss:
         if os.path.exists(training_data_file):
             try:
-                print(f"Loading TRAINING data from: {training_data_file}")
+                if verbose:
+                    print(f"Loading TRAINING data from: {training_data_file}")
                 data_points_full = jnp.load(training_data_file).astype(get_dtype())
                 if data_points_full.shape[0] == 0:
-                    print("Warning: Training data file is empty. Disabling data loss.")
+                    if verbose:
+                        print("Warning: Training data file is empty. Disabling data loss.")
                     data_points_full = None
                     has_data_loss = False
                 else:
-                    data_weight = static_weights_dict.get('data', 0.0)
-                    print(f"Using {data_points_full.shape[0]} points for data loss term (weight={data_weight:.2e}).")
-                    if data_weight == 0.0:
-                        print("Warning: 'data_free: false' but 'data_weight' is 0. Data will be loaded but loss term will be 0.")
+                    if verbose:
+                        data_weight = static_weights_dict.get('data', 0.0)
+                        print(f"Using {data_points_full.shape[0]} points for data loss term (weight={data_weight:.2e}).")
+                        if data_weight == 0.0:
+                            print("Warning: 'data_free: false' but 'data_weight' is 0. Data will be loaded but loss term will be 0.")
             except Exception as e:
-                print(f"Error loading training data file {training_data_file}: {e}")
-                print("Disabling data loss term due to loading error.")
+                if verbose:
+                    print(f"Error loading training data file {training_data_file}: {e}")
+                    print("Disabling data loss term due to loading error.")
                 data_points_full = None
                 has_data_loss = False
         else:
-            print(f"Warning: Training data file not found at {training_data_file}.")
-            print("Data loss term cannot be computed and will be disabled.")
+            if verbose:
+                print(f"Warning: Training data file not found at {training_data_file}.")
+                print("Data loss term cannot be computed and will be disabled.")
             has_data_loss = False
 
     data_free = not has_data_loss
     return data_points_full, has_data_loss, data_free
 
 
-def load_validation_from_file(base_data_path, filename="validation_gauges.npy"):
+def load_validation_from_file(base_data_path, filename="validation_gauges.npy", verbose=True):
     """Load validation gauge data if it exists.
 
     Returns
@@ -87,11 +94,13 @@ def load_validation_from_file(base_data_path, filename="validation_gauges.npy"):
     validation_data_file = os.path.join(base_data_path, filename)
 
     if not os.path.exists(validation_data_file):
-        print(f"Warning: Validation data not found at {validation_data_file}. Skipping dense validation.")
+        if verbose:
+            print(f"Warning: Validation data not found at {validation_data_file}. Skipping dense validation.")
         return result
 
     try:
-        print(f"Loading VALIDATION data from: {validation_data_file}")
+        if verbose:
+            print(f"Loading VALIDATION data from: {validation_data_file}")
         full_val_data, val_points, val_targets = load_validation_data(validation_data_file, dtype=get_dtype())
         h_true_val = val_targets[:, 0]
         if val_points.shape[0] > 0:
@@ -103,15 +112,17 @@ def load_validation_from_file(base_data_path, filename="validation_gauges.npy"):
                 "val_targets": val_targets,
             })
         else:
-            print("Warning: No validation points remaining after masking. NSE/RMSE calculation will be skipped.")
+            if verbose:
+                print("Warning: No validation points remaining after masking. NSE/RMSE calculation will be skipped.")
     except Exception as e:
-        print(f"Error loading or processing validation data file {validation_data_file}: {e}")
-        print("NSE/RMSE calculation using loaded data will be skipped.")
+        if verbose:
+            print(f"Error loading or processing validation data file {validation_data_file}: {e}")
+            print("NSE/RMSE calculation using loaded data will be skipped.")
 
     return result
 
 
-def load_terrain_assets(cfg, base_data_path, scenario_name, *, load_dem=True):
+def load_terrain_assets(cfg, base_data_path, scenario_name, *, load_dem=True, verbose=True):
     """Load DEM (bathymetry) and boundary-condition CSV assets for terrain experiments.
 
     This consolidates the repeated asset-loading pattern used across experiments 3-7.
@@ -130,6 +141,8 @@ def load_terrain_assets(cfg, base_data_path, scenario_name, *, load_dem=True):
     load_dem : bool, optional
         If True (default), load bathymetry from DEM file.  Set to False for
         experiments that do not use terrain data (e.g. Experiment 6).
+    verbose : bool, optional
+        If False, suppress informational print statements (useful for HPO runs).
 
     Returns
     -------
@@ -145,7 +158,8 @@ def load_terrain_assets(cfg, base_data_path, scenario_name, *, load_dem=True):
         except FileNotFoundError as exc:
             print(f"Error: {exc}")
             sys.exit(1)
-        print(f"Loading Bathymetry from {dem_path}...")
+        if verbose:
+            print(f"Loading Bathymetry from {dem_path}...")
         load_bathymetry(dem_path)
 
     try:

@@ -19,7 +19,7 @@ if project_root not in sys.path:
 
 try:
     from optimisation.objective_function import objective
-    from optimisation.utils import sanitize_for_yaml, setup_study_storage, create_storage
+    from optimisation.utils import sanitize_for_yaml, setup_study_storage, create_storage, get_direction
     from src.config import load_config
 except ImportError as e:
     print("Error: Could not import necessary modules.")
@@ -36,13 +36,17 @@ def main():
                         help="Optuna storage URL.")
     parser.add_argument("--study_name", type=str, default="swe-pinn-hpo",
                         help="Name for the Optuna study.")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Delete existing study and start fresh (overrides --resume).")
+    parser.add_argument("--resume", action="store_true",
+                        help="Explicitly continue an existing study (default behavior; opposite of --fresh).")
 
     args = parser.parse_args()
 
     # --- Load Base Configuration ---
     try:
         base_config_dict = load_config(args.config)
-        print(f"Loaded HPO base configuration from: {args.config}")
+        print(f"Loaded HPO config: {args.config}")
     except Exception as e:
         print(f"Error loading HPO base config file: {e}")
         sys.exit(1)
@@ -50,32 +54,49 @@ def main():
     # --- Get HPO Settings from Config ---
     hpo_settings = base_config_dict.get("hpo_settings", {})
     opt_epochs = base_config_dict.get("training", {}).get("epochs", 5000)
+    data_free = hpo_settings.get("data_free", True)
+    objective_key = hpo_settings.get("objective_key", "nse_h")
+    direction = get_direction(objective_key)
 
-    print(f"Mode: DATA-FREE (Physics Only)")
-    print(f"Optimization trials will run for {opt_epochs} epochs each.")
-
-    # --- Setup Optuna Study ---
-    storage_url = setup_study_storage(args.storage, project_root)
+    # --- Setup Storage ---
+    storage_backend = hpo_settings.get("storage_backend", "local")
+    storage_url = setup_study_storage(storage_backend, project_root, cli_storage=args.storage)
     storage = create_storage(storage_url)
 
+    study_name = args.study_name if args.study_name != "swe-pinn-hpo" else \
+        hpo_settings.get("study_name", args.study_name)
+
+    # --- Fresh start: delete old study if requested ---
+    if args.fresh:
+        try:
+            optuna.delete_study(study_name=study_name, storage=storage)
+            print(f"Deleted existing study '{study_name}'.")
+        except KeyError:
+            pass  # Study didn't exist
+
     study = optuna.create_study(
-        study_name=args.study_name,
+        study_name=study_name,
         storage=storage,
-        direction="maximize",
+        direction=direction,
         load_if_exists=True,
         pruner=optuna.pruners.MedianPruner(n_startup_trials=20, n_warmup_steps=200, interval_steps=50)
     )
+
+    existing = len(study.trials)
 
     # Use partial to pass static args
     objective_with_config = partial(objective, base_config_dict=base_config_dict)
 
     # --- Run Optimization ---
-    print(f"\n--- Starting Optuna Optimization ---")
-    print(f"Study Name    : {args.study_name}")
+    mode = "DATA-FREE" if data_free else "DATA-DRIVEN"
+    print(f"\n--- Optuna HPO ---")
+    print(f"Study         : {study_name} ({'continuing' if existing else 'new'})")
+    print(f"Existing      : {existing} trials")
+    print(f"New trials    : {args.n_trials}")
+    print(f"Objective     : {direction} {objective_key}")
+    print(f"Mode          : {mode}")
+    print(f"Epochs/trial  : {opt_epochs}")
     print(f"Storage       : {storage_url}")
-    print(f"# Trials      : {args.n_trials}")
-    print(f"Objective     : Maximize NSE")
-    print(f"Trial Epochs  : {opt_epochs}")
     print("-" * 40)
 
     start_time_opt = time.time()
@@ -90,10 +111,9 @@ def main():
         traceback.print_exc()
     finally:
          total_time_opt = time.time() - start_time_opt
-         print(f"\nOptimization process finished in {total_time_opt:.2f} seconds.")
+         print(f"\nFinished in {total_time_opt:.2f}s.")
 
     # --- Report Best Results & Save Best Config ---
-    print("\n--- Optimization Finished ---")
     try:
         complete_trials = study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.COMPLETE])
 
@@ -101,13 +121,11 @@ def main():
              print("\nNo trials completed successfully.")
         else:
             best_trial = study.best_trial
-            print("\n--- Best Trial Summary ---")
-            print(f"Best Trial Number      : {best_trial.number}")
-            print(f"Best NSE Value         : {best_trial.value}")
-            print("Best Hyperparameters:")
+            print(f"\n--- Best Trial ---")
+            print(f"Trial #{best_trial.number}  {objective_key} = {best_trial.value}")
             for key, value in sorted(best_trial.params.items()):
                  print(f"  {key:<25}: {value}")
-            
+
             if 'full_config' in best_trial.user_attrs:
                 best_trial_config_dict = best_trial.user_attrs['full_config']
 
@@ -116,15 +134,15 @@ def main():
 
                 best_trial_config_dict = sanitize_for_yaml(best_trial_config_dict)
                 best_trial_config_dict.pop('hpo_settings', None)
-                best_trial_config_dict['training']['epochs'] = base_config_dict.get('training', {}).get('epochs', 20000)
+                best_trial_config_dict.pop('hpo_hyperparameters', None)
 
-                save_dir = os.path.join(project_root, "optimisation", "results", args.study_name)
+                save_dir = os.path.join(project_root, "optimisation", "results", study_name)
                 os.makedirs(save_dir, exist_ok=True)
                 save_path = os.path.join(save_dir, f"best_trial_{best_trial.number}_config.yaml")
 
                 with open(save_path, 'w') as f:
                     yaml.dump(best_trial_config_dict, f, default_flow_style=False, sort_keys=False)
-                print(f"\n✅ Best trial's configuration saved to: {save_path}")
+                print(f"Config saved: {save_path}")
 
     except Exception as e:
         print(f"Error reporting results: {e}")

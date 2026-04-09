@@ -1,4 +1,5 @@
 """Shared training-loop body and post-training routines."""
+import json
 import os
 import time
 import shutil
@@ -9,7 +10,7 @@ from jax import lax
 
 from src.utils import nse, rmse, relative_l2, save_model, ask_for_confirmation
 from src.utils.profiling import EpochTimer, log_memory_usage
-from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, WandbTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.predict.predictor import _apply_min_depth
 
@@ -72,18 +73,18 @@ def run_training_loop(
     """
     from jax import random
 
-    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
-    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
-    aim_tracker.log_flags({"scenario_type": experiment_name})
-    if aim_enabled:
+    cfg_dict['scenario'] = cfg_dict.get('scenario', experiment_name)
+
+    wandb_enabled = cfg_dict.get('wandb', {}).get('enable', True)
+    tracker = WandbTracker(cfg_dict, trial_name, enable=wandb_enabled)
+    tracker.log_flags({"scenario_type": experiment_name})
+    if wandb_enabled:
         try:
-            aim_tracker.log_artifact(config_path, 'run_config.yaml')
+            tracker.log_artifact(config_path, 'run_config.yaml')
             if source_script_path is not None:
-                aim_tracker.log_artifact(os.path.abspath(source_script_path), 'source_script.py')
+                tracker.log_artifact(os.path.abspath(source_script_path), 'source_script.py')
         except Exception:
             pass
-
-    cfg_dict['scenario'] = cfg_dict.get('scenario', experiment_name)
     console = ConsoleLogger(cfg_dict)
     console.print_header()
 
@@ -95,6 +96,9 @@ def run_training_loop(
     avg_total_weighted_loss = 0.0
     global_step = 0
     current_lr = cfg["training"]["learning_rate"]
+    epoch_history: list = []  # per-epoch records for training_history.json
+    _run_status = "completed"
+    _early_stopped = False
 
     best_nse_stats = {
         'nse': -jnp.inf, 'rmse': jnp.inf, 'epoch': 0, 'global_step': 0,
@@ -205,18 +209,20 @@ def run_training_loop(
                 except Exception:
                     pass
 
+            elapsed_now = time.time() - start_time
             saved_events = ckpt_mgr.update(
                 epoch, params, opt_state, val_metrics,
-                avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth
+                avg_losses_unweighted, avg_total_weighted_loss, cfg_dict, neg_depth,
+                elapsed_time_s=elapsed_now,
             )
             for event in saved_events:
                 event_type, value, ep, prev_value, prev_epoch = event
                 if event_type == 'best_nse':
                     console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_nse(value, ep, step=global_step)
+                    tracker.log_best_nse(value, ep, step=global_step)
                 elif event_type == 'best_loss':
                     console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_loss(value, ep, step=global_step)
+                    tracker.log_best_loss(value, ep, step=global_step)
 
             if (epoch + 1) % freq == 0:
                 console.print_epoch(
@@ -226,11 +232,22 @@ def run_training_loop(
                     val_metrics, neg_depth.get('fraction', 0.0), epoch_time
                 )
 
-            aim_tracker.log_epoch(
+            elapsed_now = time.time() - start_time
+            epoch_history.append({
+                'epoch': int(epoch),
+                'total_loss': float(avg_total_weighted_loss),
+                'losses': {k: float(v) for k, v in avg_losses_unweighted.items()},
+                'val_metrics': {k: float(v) for k, v in val_metrics.items()},
+                'lr': float(current_lr),
+                'epoch_time_s': float(epoch_time),
+                'elapsed_time_s': float(elapsed_now),
+            })
+
+            tracker.log_epoch(
                 epoch=epoch, step=global_step,
                 losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
                 val_metrics=val_metrics, lr=current_lr,
-                epoch_time=epoch_time, elapsed_time=time.time() - start_time,
+                epoch_time=epoch_time, elapsed_time=elapsed_now,
                 neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
             )
 
@@ -240,14 +257,17 @@ def run_training_loop(
             if epoch >= min_epochs and (epoch - best_nse_stats['epoch']) >= patience:
                 print(f"--- Early stopping triggered at epoch {epoch+1} ---")
                 print(f"Best NSE {best_nse_stats['nse']:.6f} achieved at epoch {best_nse_stats['epoch']+1}.")
+                _early_stopped = True
                 break
 
     except KeyboardInterrupt:
         print("\n--- Training interrupted ---")
+        _run_status = "interrupted"
     except Exception as e:
         print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
+        _run_status = "error"
 
     finally:
         total_time = time.time() - start_time
@@ -276,7 +296,32 @@ def run_training_loop(
                 final_losses_for_ckpt[k] = v
 
         ckpt_mgr.save_final(epoch, params, opt_state, val_metrics,
-                            final_losses_for_ckpt, avg_total_weighted_loss, cfg_dict, neg_depth)
+                            final_losses_for_ckpt, avg_total_weighted_loss, cfg_dict, neg_depth,
+                            training_time_s=total_time)
+
+        # Write per-epoch history for postprocessing / P1.3–P1.4 plots
+        history_path = os.path.join(model_dir, 'training_history.json')
+        _history_written = False
+        try:
+            with open(history_path, 'w') as _hf:
+                json.dump({
+                    'total_training_time_s': float(total_time),
+                    'total_epochs': int(epoch + 1),
+                    'epochs': epoch_history,
+                }, _hf, indent=2)
+            _history_written = True
+        except Exception as _he:
+            print(f"Warning: Failed to write training_history.json: {_he}")
+        if _history_written and tracker.enabled:
+            try:
+                tracker.log_artifact(history_path, 'training_history.json')
+            except Exception as _he:
+                print(f"Warning: Failed to upload training_history.json to W&B: {_he}")
+
+        if tracker.enabled:
+            if _early_stopped:
+                tracker.log_early_stopping(epoch, best_nse_stats['nse'])
+            tracker.log_run_status(_run_status)
         best_nse_ckpt = ckpt_mgr.get_best_nse_stats()
         best_loss_ckpt = ckpt_mgr.get_best_loss_stats()
 
@@ -293,23 +338,24 @@ def run_training_loop(
             final_lr=current_lr,
         )
 
-        if aim_tracker.enabled:
+        summary_metrics = {
+            'best_validation_model': {**best_nse_stats, 'epoch': best_nse_stats.get('epoch', 0) + 1},
+            'best_loss_model': {**best_loss_stats, 'epoch': best_loss_stats.get('epoch', 0) + 1},
+            'final_system': {
+                'total_training_time_seconds': total_time,
+                'total_epochs_run': epoch + 1,
+                'total_steps_run': global_step,
+            }
+        }
+        if all_physics_losses:
+            summary_metrics['all_physics_losses'] = all_physics_losses
+
+        if tracker.enabled:
             try:
-                summary_metrics = {
-                    'best_validation_model': {**best_nse_stats, 'epoch': best_nse_stats.get('epoch', 0) + 1},
-                    'best_loss_model': {**best_loss_stats, 'epoch': best_loss_stats.get('epoch', 0) + 1},
-                    'final_system': {
-                        'total_training_time_seconds': total_time,
-                        'total_epochs_run': epoch + 1,
-                        'total_steps_run': global_step,
-                    }
-                }
-                if all_physics_losses:
-                    summary_metrics['all_physics_losses'] = all_physics_losses
-                aim_tracker.log_summary(summary_metrics)
-                print("Summary metrics logged to Aim.")
+                tracker.log_summary(summary_metrics)
+                print("Summary metrics logged to W&B.")
             except Exception as e:
-                print(f"Warning: Error logging summary metrics to Aim: {e}")
+                print(f"Warning: Error logging summary metrics to W&B: {e}")
 
     return {
         "best_nse_stats": best_nse_stats,
@@ -318,7 +364,8 @@ def run_training_loop(
         "best_params_loss": best_params_loss,
         "params": params,
         "opt_state": opt_state,
-        "aim_tracker": aim_tracker,
+        "tracker": tracker,
+        "cfg_dict": cfg_dict,
         "epoch": epoch,
         "total_time": total_time,
     }
@@ -342,7 +389,7 @@ def post_training_save(
     prefer_loss_model : bool
         If True, prefer best-loss params over best-NSE (used by some experiments).
     """
-    aim_tracker = loop_result["aim_tracker"]
+    tracker = loop_result["tracker"]
     best_params_nse = loop_result["best_params_nse"]
     best_params_loss = loop_result["best_params_loss"]
 
@@ -355,12 +402,11 @@ def post_training_save(
         if final_params is not None:
             saved_model_path = save_model(final_params, model_dir, trial_name)
 
-            if aim_tracker.enabled and saved_model_path:
+            if tracker.enabled and saved_model_path:
                 try:
-                    aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
-                    print("Logged model artifact to Aim.")
+                    tracker.register_best_model(saved_model_path)
                 except Exception as e_mod:
-                    print(f"Warning: Failed to log model artifact: {e_mod}")
+                    print(f"Warning: Failed to log model artifact to W&B: {e_mod}")
 
             if plot_fn is not None:
                 plot_fn(final_params)
@@ -369,21 +415,16 @@ def post_training_save(
     else:
         print("Save aborted by user. Deleting artifacts...")
         try:
-            aim_tracker.delete_run()
+            tracker.delete_run()
             if os.path.exists(results_dir):
                 shutil.rmtree(results_dir)
                 print(f"Deleted results directory: {results_dir}")
             if os.path.exists(model_dir):
                 shutil.rmtree(model_dir)
                 print(f"Deleted model directory: {model_dir}")
-            if aim_tracker.run_hash:
-                run_artifact_dir = os.path.join("aim_repo", "aim_artifacts", aim_tracker.run_hash)
-                if os.path.exists(run_artifact_dir):
-                    shutil.rmtree(run_artifact_dir)
-                    print(f"Deleted run artifact directory: {run_artifact_dir}")
             print("Cleanup complete.")
         except Exception as e:
             print(f"Error during cleanup: {e}")
 
-    aim_tracker.close()
+    tracker.close()
     return final_params

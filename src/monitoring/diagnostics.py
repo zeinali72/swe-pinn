@@ -20,12 +20,15 @@ def compute_negative_depth_diagnostics(
     U_pred = model.apply({'params': params['params']}, pde_points, train=False)
     h_pred = U_pred[..., 0]
 
-    neg_mask = h_pred < 0.0
+    # Use a small tolerance so IEEE -0.0 and tiny float-noise are not
+    # counted as genuine negative predictions.
+    _NEG_TOL = 1e-10
+    neg_mask = h_pred < -_NEG_TOL
     n_neg = int(jnp.sum(neg_mask))
     n_total = h_pred.shape[0]
 
     if n_neg == 0:
-        return {'count': 0, 'fraction': 0.0, 'min': float(jnp.min(h_pred)), 'mean': 0.0}
+        return {'count': 0, 'fraction': 0.0, 'min': 0.0, 'mean': 0.0}
 
     neg_values = h_pred[neg_mask]
     return {

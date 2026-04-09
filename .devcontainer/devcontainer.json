@@ -10,14 +10,16 @@
 
   "envFile": ["devcontainer.env"],
 
-  "features": {
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
-  },
+  // REMOVED: "ghcr.io/anthropics/devcontainer-features/claude-code:1.0"
+  // That feature installs via npm, which causes the "Interrupted" bug.
 
   "containerEnv": {
     "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:${containerEnv:LD_LIBRARY_PATH}",
     "CLAUDE_CONFIG_DIR": "/root/.claude",
-    "NODE_OPTIONS": "--max-old-space-size=4096"
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "GEMINI_API_KEY": "${localEnv:GEMINI_API_KEY}",
+    "GH_TOKEN": "${localEnv:GH_TOKEN}",
+    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
   },
 
   "runArgs": [
@@ -34,8 +36,7 @@
     }
   ],
 
-  "postCreateCommand": "mkdir -p /root/.claude && echo '{\"hasCompletedOnboarding\":true,\"installMethod\":\"native\"}' > /root/.claude/.claude.json && ln -sf /root/.claude/.claude.json /root/.claude.json || true",
-
+  "postCreateCommand": "mkdir -p /root/.claude && [ -f /root/.claude/.claude.json ] || echo '{\"hasCompletedOnboarding\":true,\"installMethod\":\"native\"}' > /root/.claude/.claude.json && ln -sf /root/.claude/.claude.json /root/.claude.json && curl -fsSL https://claude.ai/install.sh | bash && ln -sf /root/.local/bin/claude /usr/local/bin/claude && rtk init -g --auto-patch || true && WANDB_KEY=$(python3 -c \"import json; c=json.load(open('/root/.claude/.claude.json')); print(c.get('mcpServers',{}).get('wandb',{}).get('headers',{}).get('Authorization','').replace('Bearer ',''))\" 2>/dev/null) && [ -n \"$WANDB_KEY\" ] && echo \"export WANDB_API_KEY=$WANDB_KEY\" >> /root/.bashrc || true",
   "postAttachCommand": "cp /root/.claude/.credentials.json /root/.claude/.credentials.json.bak 2>/dev/null || true",
 
   "workspaceFolder": "/workspace",
@@ -52,7 +53,8 @@
         "ms-toolsai.jupyter-renderers"
       ],
       "settings": {
-        "terminal.integrated.defaultProfile.linux": "bash"
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "terminal.integrated.shellIntegration.enabled": false
       }
     }
   }

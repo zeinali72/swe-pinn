@@ -12,7 +12,7 @@ dependencies = [
     "flax",
     "optax",
     "optuna",
-    "aim",
+    "wandb",
     "numpy",
     "pyyaml",
     "matplotlib",
@@ -20,7 +20,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-postgres = ["psycopg2-binary>=2.9"]
 profile = [
     "tensorboard>=2.14",
     "tensorboard-plugin-profile>=2.14",

@@ -16,7 +16,9 @@ def nse(pred: jnp.ndarray, true: jnp.ndarray) -> float:
     num = jnp.sum((true - pred) ** 2)
     den = jnp.sum((true - jnp.mean(true)) ** 2)
     if den < 1e-9:
-        return -jnp.inf
+        # True series is constant — NSE undefined.
+        # Perfect prediction → 1.0; non-zero error → nan.
+        return 1.0 if num < 1e-9 else float('nan')
     return 1 - num / den
 
 
@@ -35,7 +37,9 @@ def relative_l2(pred: jnp.ndarray, true: jnp.ndarray) -> float:
     num = jnp.sqrt(jnp.sum((pred - true) ** 2))
     den = jnp.sqrt(jnp.sum(true ** 2))
     if den < 1e-9:
-        return jnp.inf
+        # True is zero everywhere — rel L2 undefined.
+        # Perfect prediction → 0.0; non-zero error → nan.
+        return 0.0 if num < 1e-9 else float('nan')
     return num / den
 
 
@@ -51,6 +55,22 @@ def compute_all_metrics(pred: jnp.ndarray, true: jnp.ndarray) -> dict:
         'mae': float(mae(pred, true)),
         'rel_l2': float(relative_l2(pred, true)),
     }
+
+
+def compute_all_accuracy(
+    y_pred: dict,
+    y_ref: dict,
+) -> dict:
+    """Compute all accuracy metrics for each variable using a dict interface.
+
+    Args:
+        y_pred: Dict keyed by variable name, e.g. {'h': ..., 'hu': ..., 'hv': ...}.
+        y_ref:  Dict keyed by variable name, same keys as y_pred.
+
+    Returns:
+        Dict of dicts: {'h': {'nse': ..., 'rmse': ..., 'mae': ..., 'rel_l2': ...}, ...}
+    """
+    return {var: compute_all_metrics(y_pred[var], y_ref[var]) for var in y_pred}
 
 
 def compute_validation_metrics(U_pred: jnp.ndarray, U_true: jnp.ndarray) -> dict:

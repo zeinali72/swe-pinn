@@ -1,38 +1,37 @@
 # optimisation/objective_function.py
-import jax
 import optuna
 from flax.core import FrozenDict, unfreeze
 import numpy as np
 import jax.numpy as jnp
 from typing import Dict, Any
 import copy
-import yaml
 
 # Import the training loop function
 from optimisation.optimization_train_loop import run_training_trial
 
-def get_hpo_value(trial: optuna.trial.Trial, 
-                  param_name: str, 
-                  config_val: Any, 
-                  default_fn: callable = None):
+
+def get_hpo_value(trial: optuna.trial.Trial,
+                  param_name: str,
+                  config_val: Any):
     """
     Parses the config value to decide whether to Fix, Suggest Range, or Suggest Category.
+    All search spaces MUST be defined in the config — no hardcoded fallbacks.
     """
-    # 1. If not in config, use the hardcoded default fallback (Exploration/Sensitivity)
     if config_val is None:
-        if default_fn is None:
-            raise ValueError(f"Parameter '{param_name}' not found in config and no default provided.")
-        return default_fn()
+        raise ValueError(
+            f"Hyperparameter '{param_name}' not found in hpo_hyperparameters config. "
+            "All tunable parameters must be explicitly defined."
+        )
 
-    # 2. Fixed Value (Scalar) -> Exploitation (Fixed)
+    # Fixed Value (Scalar)
     if isinstance(config_val, (int, float, str, bool)):
         return config_val
 
-    # 3. Categorical Choice (List) -> Exploration (Categorical)
+    # Categorical Choice (List)
     if isinstance(config_val, list):
         return trial.suggest_categorical(param_name, config_val)
 
-    # 4. Range (Dictionary with min/max) -> Exploration (Range)
+    # Range (Dictionary with min/max)
     if isinstance(config_val, dict):
         val_type = config_val.get("type", "float")
         low = config_val["min"]
@@ -45,7 +44,8 @@ def get_hpo_value(trial: optuna.trial.Trial,
         else:
             return trial.suggest_float(param_name, float(low), float(high), step=step, log=log)
 
-    return default_fn()
+    raise ValueError(f"Cannot parse hpo_hyperparameters.{param_name}: {config_val!r}")
+
 
 def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
     """
@@ -55,139 +55,112 @@ def objective(trial: optuna.trial.Trial, base_config_dict: Dict) -> float:
     base_cfg = FrozenDict(base_config_dict)
     model_name = base_cfg["model"]["name"]
     has_building = "building" in base_cfg
-    
-    # Load the HPO configuration section
+
     hpo_cfg = base_config_dict.get("hpo_hyperparameters", {})
-    
-    # Helper to simplify calls
-    def suggest(name, section=hpo_cfg, default=None):
-        val = section.get(name)
-        return get_hpo_value(trial, name, val, default)
-
-    # --- 1. Define Hyperparameters ---
-    trial_params = {}
-
-    # === Training ===
-    trial_params["learning_rate"] = suggest("learning_rate", hpo_cfg, 
-        lambda: trial.suggest_float("learning_rate", 1e-6, 1e-2, log=True))
-    
-    trial_params["batch_size"] = suggest("batch_size", hpo_cfg,
-        lambda: trial.suggest_categorical("batch_size", [256, 512, 1024]))
-
-    # === Model ===
-    trial_params["model_width"] = suggest("model_width", hpo_cfg,
-        lambda: trial.suggest_categorical("model_width", [128, 256, 512, 1024]))
-    
-    trial_params["model_depth"] = suggest("model_depth", hpo_cfg,
-        lambda: trial.suggest_int("model_depth", 3, 6))
-    
-    if model_name == "FourierPINN":
-        trial_params["ff_dims"] = suggest("ff_dims", hpo_cfg,
-            lambda: trial.suggest_categorical("ff_dims", [128, 256, 512]))
-        trial_params["fourier_scale"] = suggest("fourier_scale", hpo_cfg,
-            lambda: trial.suggest_float("fourier_scale", 5.0, 30.0))
-
-    # === Sampling ===
-    samp_cfg = hpo_cfg.get("sampling", hpo_cfg)
-    trial_params["sampling"] = {}
-    
-    trial_params["sampling"]["n_points_pde"] = suggest("n_points_pde", samp_cfg,
-        lambda: trial.suggest_int("n_points_pde", 10000, 120000, log=True))
-        
-    trial_params["sampling"]["n_points_ic"] = suggest("n_points_ic", samp_cfg,
-        lambda: trial.suggest_int("n_points_ic", 1000, 20000, log=True))
-        
-    trial_params["sampling"]["n_points_bc_domain"] = suggest("n_points_bc_domain", samp_cfg,
-        lambda: trial.suggest_int("n_points_bc_domain", 4000, 40000, log=True))
-
-    if has_building:
-        trial_params["sampling"]["n_points_bc_building"] = suggest("n_points_bc_building", samp_cfg,
-            lambda: trial.suggest_int("n_points_bc_building", 1000, 20000, log=True))
-
-    # === Loss Weights ===
-    weights_cfg = hpo_cfg.get("loss_weights", hpo_cfg)
-    trial_params["loss_weights"] = {}
-    
-    for w in ["pde_weight", "ic_weight", "bc_weight", "neg_h_weight", "building_bc_weight"]:
-        if w == "building_bc_weight" and not has_building: continue
-        
-        min_w, max_w = (1.0, 1e6) if w == "pde_weight" else (1e-2, 1e3)
-        trial_params["loss_weights"][w] = suggest(w, weights_cfg,
-            lambda w=w, min_w=min_w, max_w=max_w: trial.suggest_float(w, min_w, max_w, log=True))
-
-    # Data weight: include in search space when data-driven, else 0.0
     hpo_settings = base_config_dict.get("hpo_settings", {})
     data_free = hpo_settings.get("data_free", True)
-    if not data_free:
-        trial_params["loss_weights"]["data_weight"] = suggest("data_weight", weights_cfg,
-            lambda: trial.suggest_float("data_weight", 1e-2, 1e4, log=True))
-    else:
+    objective_key = hpo_settings.get("objective_key", "nse_h")
+
+    # Helper
+    def suggest(name, section=hpo_cfg):
+        return get_hpo_value(trial, name, section.get(name))
+
+    # --- 1. Suggest Hyperparameters ---
+    trial_params = {}
+
+    # Training
+    trial_params["learning_rate"] = suggest("learning_rate")
+    trial_params["batch_size"] = suggest("batch_size")
+
+    # Model
+    trial_params["model_width"] = suggest("model_width")
+    trial_params["model_depth"] = suggest("model_depth")
+
+    if model_name == "FourierPINN":
+        trial_params["ff_dims"] = suggest("ff_dims")
+        trial_params["fourier_scale"] = suggest("fourier_scale")
+
+    # Sampling
+    samp_cfg = hpo_cfg.get("sampling", {})
+    trial_params["sampling"] = {}
+    for key in ["n_points_pde", "n_points_ic", "n_points_bc_domain"]:
+        if key in samp_cfg:
+            trial_params["sampling"][key] = get_hpo_value(trial, key, samp_cfg[key])
+    if has_building and "n_points_bc_building" in samp_cfg:
+        trial_params["sampling"]["n_points_bc_building"] = get_hpo_value(
+            trial, "n_points_bc_building", samp_cfg["n_points_bc_building"])
+
+    # Loss Weights
+    weights_cfg = hpo_cfg.get("loss_weights", {})
+    trial_params["loss_weights"] = {}
+    for w in ["pde_weight", "ic_weight", "bc_weight", "neg_h_weight"]:
+        if w in weights_cfg:
+            trial_params["loss_weights"][w] = get_hpo_value(trial, w, weights_cfg[w])
+    if has_building and "building_bc_weight" in weights_cfg:
+        trial_params["loss_weights"]["building_bc_weight"] = get_hpo_value(
+            trial, "building_bc_weight", weights_cfg["building_bc_weight"])
+    if not data_free and "data_weight" in weights_cfg:
+        trial_params["loss_weights"]["data_weight"] = get_hpo_value(
+            trial, "data_weight", weights_cfg["data_weight"])
+    elif data_free:
         trial_params["loss_weights"]["data_weight"] = 0.0
 
-    # === Construct Configuration ===
+    # --- 2. Build trial config ---
     trial_config_dict = copy.deepcopy(base_config_dict)
 
-    # Update Training
     trial_config_dict["training"]["learning_rate"] = trial_params["learning_rate"]
     trial_config_dict["training"]["batch_size"] = trial_params["batch_size"]
 
-    # Update Model
     trial_config_dict["model"]["width"] = trial_params["model_width"]
     trial_config_dict["model"]["depth"] = trial_params["model_depth"]
     if model_name == "FourierPINN":
         trial_config_dict["model"]["ff_dims"] = trial_params["ff_dims"]
         trial_config_dict["model"]["fourier_scale"] = trial_params["fourier_scale"]
 
-    # Update Sampling & Weights — merge so experiment-specific keys are preserved
     trial_config_dict.setdefault("sampling", {}).update(trial_params["sampling"])
     trial_config_dict.setdefault("loss_weights", {}).update(trial_params["loss_weights"])
-    
-    # Flags from config (hpo_settings is the source of truth)
-    hpo_settings = base_config_dict.get("hpo_settings", {})
-    trial_config_dict["data_free"] = hpo_settings.get("data_free", True)
+    trial_config_dict["data_free"] = data_free
 
-    # Store
+    # Store full config as user attr
     config_to_store = unfreeze(trial_config_dict)
     trial.set_user_attr('full_config', config_to_store)
     trial_cfg_frozen = FrozenDict(trial_config_dict)
 
-    # --- Logging (Restored User's Format) ---
-    # We flatten the params to log so we see EVERYTHING (Fixed + Tuned)
-    params_to_log = {}
+    # --- 3. Log (concise) ---
+    flat = {}
     for k, v in trial_params.items():
-        if not isinstance(v, dict): params_to_log[k] = v
-    if "sampling" in trial_params: params_to_log.update(trial_params["sampling"])
-    if "loss_weights" in trial_params: params_to_log.update(trial_params["loss_weights"])
+        if isinstance(v, dict):
+            flat.update(v)
+        else:
+            flat[k] = v
 
-    print("-" * 50)
-    print(f"Starting Trial {trial.number}")
-    print("Suggested Hyperparameters (Fixed + Tuned):")
-    for key in sorted(params_to_log.keys()):
-        value = params_to_log[key]
-        if value is not None:
-             if isinstance(value, (float, np.floating)):
-                  # Check bounds to decide formatting
-                  print(f"  {key:<25}: {value:.6e}" if abs(value) < 1e-2 or abs(value) > 1e3 else f"  {key:<25}: {value:.6f}")
-             else:
-                  print(f"  {key:<25}: {value}")
+    lines = []
+    for k in sorted(flat):
+        v = flat[k]
+        if isinstance(v, (float, np.floating)):
+            lines.append(f"  {k:<25}: {v:.6e}" if abs(v) < 1e-2 or abs(v) > 1e3 else f"  {k:<25}: {v:.6f}")
+        else:
+            lines.append(f"  {k:<25}: {v}")
+    print(f"\n{'='*50}\nTrial {trial.number} | {model_name} | {objective_key}\n" + "\n".join(lines) + f"\n{'='*50}")
 
-    print("\nFull Configuration for this Trial:")
-    print(yaml.dump(config_to_store, default_flow_style=False, sort_keys=False, indent=2))
-    print("-" * 50)
+    # --- 4. Run ---
+    minimize = objective_key in ("rmse_h", "rmse_hu", "rmse_hv",
+                                  "mae_h", "mae_hu", "mae_hv",
+                                  "rel_l2_h", "rel_l2_hu", "rel_l2_hv")
+    fail_value = float("inf") if minimize else -1.0
 
-    # --- Run ---
     try:
-        best_nse = run_training_trial(trial, trial_cfg_frozen)
-        
-        if hasattr(best_nse, 'item'): best_nse = best_nse.item()
-        if jnp.isnan(best_nse) or best_nse <= -float('inf'):
-             print(f"Trial {trial.number}: Invalid NSE ({best_nse}). Returning -1.0.")
-             return -1.0
-        return float(best_nse)
+        best_metric = run_training_trial(trial, trial_cfg_frozen)
+
+        if hasattr(best_metric, 'item'): best_metric = best_metric.item()
+        if jnp.isnan(best_metric):
+             print(f"Trial {trial.number}: Invalid {objective_key}. Returning {fail_value}.")
+             return fail_value
+        return float(best_metric)
 
     except optuna.exceptions.TrialPruned as e:
          raise e
     except Exception as e:
          print(f"Trial {trial.number} Failed: {e}")
          import traceback; traceback.print_exc()
-         return -1.0
+         return fail_value

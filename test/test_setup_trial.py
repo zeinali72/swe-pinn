@@ -97,8 +97,8 @@ def _load_experiment_config(experiment_num, **overrides):
     for key in list(sampling.keys()):
         if key.startswith("n_points_"):
             sampling[key] = 20
-    # Disable Aim
-    cfg_dict["aim"] = {"enable": False}
+    # Disable W&B tracking in tests
+    cfg_dict["wandb"] = {"enable": False}
     cfg_dict.update(overrides)
     return cfg_dict
 

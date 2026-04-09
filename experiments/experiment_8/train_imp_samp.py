@@ -21,10 +21,6 @@ import jax
 import jax.numpy as jnp
 from jax import random, lax
 import optax
-try:
-    from aim import Image
-except ImportError:
-    Image = None
 from flax.core import FrozenDict
 import flax.linen as nn
 import numpy as np 
@@ -58,11 +54,16 @@ from src.losses import (
 from src.utils import (
     nse, rmse, generate_trial_name, save_model, ask_for_confirmation
 )
-from src.monitoring import ConsoleLogger, AimTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, WandbTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.training import train_step_jitted, make_scan_body, maybe_batch_data
 
-from src.physics import SWEPhysics 
+from src.physics import SWEPhysics
+from src.balancing.importance_sampling import (
+    evaluate_pool_residuals,
+    compute_sampling_probs,
+    sample_from_pool,
+)
 
 # ==============================================================================
 # Helper: Shared PDE residual core (single Jacobian computation)
@@ -113,20 +114,6 @@ def _compute_pde_squared_errors(model: nn.Module, params: Dict[str, Any],
     return jnp.sum(final_residual ** 2, axis=1)
 
 
-# ==============================================================================
-# Helper: Vectorized Residual Calculation for Importance Sampling
-# ==============================================================================
-def compute_pde_residual_vector(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.ndarray,
-                                config: FrozenDict) -> jnp.ndarray:
-    """
-    Computes the scalar residual error for EACH point in the batch.
-    Used for Importance Sampling evaluation.
-    Returns: (Batch_Size,) array of errors.
-    """
-    return _compute_pde_squared_errors(model, params, pde_batch, config)
-
-# JIT the residual function for fast evaluation
-get_residuals_jitted = jax.jit(compute_pde_residual_vector, static_argnums=(0, 3))
 
 # ==============================================================================
 # Helper: Weighted PDE Loss (Corrected for Importance Sampling)
@@ -205,7 +192,8 @@ def main(config_path: str):
     print("Info: Running Experiment 8 (Importance Sampling) training...")
 
     # --- 2. SETUP DATA & COMPUTE DOMAIN EXTENT ---
-    scenario_name = cfg_dict.get('scenario', 'experiment_8')
+    cfg_dict['scenario'] = cfg_dict.get('scenario', 'experiment_8')
+    scenario_name = cfg_dict['scenario']
     base_data_path = os.path.join("data", scenario_name)
 
     try:
@@ -264,10 +252,10 @@ def main(config_path: str):
     model, params = init_model(model_class, model_key, cfg)
 
     # --- 4. Setup Directories ---
-    config_base = os.path.splitext(os.path.basename(cfg['CONFIG_PATH']))[0]
-    trial_name = generate_trial_name(config_base + "_IS_Weighted")
-    results_dir = os.path.join("results", trial_name)
-    model_dir = os.path.join("models", trial_name)
+    arch_name = cfg_dict.get('model', {}).get('name', '')
+    trial_name = generate_trial_name(scenario_name, arch_name, variant="IS_Weighted")
+    results_dir = os.path.join("results", scenario_name, trial_name)
+    model_dir = os.path.join("models", scenario_name, trial_name)
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
@@ -335,18 +323,16 @@ def main(config_path: str):
             print(f"Error loading validation data: {e}")
             val_pts_batch = None
 
-    # --- 7. Initialize Aim & Console Logger ---
-    aim_enabled = cfg_dict.get('aim', {}).get('enable', True)
-    aim_tracker = AimTracker(cfg_dict, trial_name, enable=aim_enabled)
-    aim_tracker.log_flags({"scenario_type": "experiment_8_importance_sampling"})
-    if aim_enabled:
+    # --- 7. Initialize W&B & Console Logger ---
+    wandb_enabled = cfg_dict.get('wandb', {}).get('enable', True)
+    tracker = WandbTracker(cfg_dict, trial_name, enable=wandb_enabled)
+    tracker.log_flags({"scenario_type": "experiment_8_importance_sampling"})
+    if wandb_enabled:
         try:
-            aim_tracker.log_artifact(config_path, 'run_config.yaml')
-            aim_tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
+            tracker.log_artifact(config_path, 'run_config.yaml')
+            tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
         except Exception:
             pass
-
-    cfg_dict['scenario'] = cfg_dict.get('scenario', 'experiment_8')
     console = ConsoleLogger(cfg_dict)
     console.print_header()
 
@@ -361,7 +347,7 @@ def main(config_path: str):
     POOL_SIZE = int(is_cfg.get("pool_size", 2_000_000))
     RESAMPLE_FREQ_EPOCHS = int(is_cfg.get("resample_freq", 5))
     EVAL_BATCH_SIZE = int(is_cfg.get("eval_batch_size", 10_000))
-    P_ERROR_WEIGHT = float(is_cfg.get("p_error_weight", 0.8)) # Alpha
+    P_ERROR_WEIGHT = float(is_cfg.get("p_error_weight", 0.8))
 
     print(f"Importance Sampling Config: Pool={POOL_SIZE}, Freq={RESAMPLE_FREQ_EPOCHS}, Alpha={P_ERROR_WEIGHT}")
 
@@ -386,33 +372,27 @@ def main(config_path: str):
     chunk_size = 1_000_000
     pool_chunks = []
     num_chunks = POOL_SIZE // chunk_size
-    # Handle remainder if POOL_SIZE not div by chunk_size
     if POOL_SIZE % chunk_size != 0: num_chunks += 1
-    
+
     pool_base_key = random.PRNGKey(12345)
-    
+
     for i in range(num_chunks):
         subkey = random.fold_in(pool_base_key, i)
-        # Determine actual size for this chunk
         current_chunk_size = min(chunk_size, POOL_SIZE - (i * chunk_size))
-        
         pts = domain_sampler.sample_interior(subkey, current_chunk_size, (0., domain_cfg["t_final"]))
-        pts_cpu = np.array(pts)
-        pool_chunks.append(pts_cpu)
+        pool_chunks.append(pts)
         if (i+1) % 2 == 0:
             print(f"  Generated {(i+1)*chunk_size} points...")
-            
-    pool_pde_cpu = np.concatenate(pool_chunks, axis=0)
-    print(f"Pool Generation Complete. Stored on CPU. Shape: {pool_pde_cpu.shape}")
-    del pool_chunks, pts
-    
-    # Initial Active Set (Random Selection)
-    np_rng = np.random.default_rng(42)
-    active_indices = np_rng.choice(POOL_SIZE, size=n_pde, replace=False)
-    
-    active_pde_pts = jnp.array(pool_pde_cpu[active_indices])
-    # Initialize weights to 1.0 (Uniform sampling initially)
-    active_pde_weights = jnp.ones((n_pde,), dtype=get_dtype())
+
+    pool_pde = jnp.concatenate(pool_chunks, axis=0)
+    print(f"Pool ready (GPU): {pool_pde.shape}")
+    del pool_chunks
+
+    # JIT pool residual evaluator (model and config are static; chunk_size is static)
+    eval_pool_jit = jax.jit(evaluate_pool_residuals, static_argnums=(0, 3, 4))
+
+    # Initial probabilities: uniform — active set redrawn every epoch
+    current_probs = jnp.ones(POOL_SIZE, dtype=get_dtype()) / POOL_SIZE
 
     # --- Optimizer ---
     reduce_on_plateau_cfg = cfg.get("training", {}).get("reduce_on_plateau", {})
@@ -489,70 +469,39 @@ def main(config_path: str):
     try:
         for epoch in range(cfg["training"]["epochs"]):
             epoch_start_time = time.time()
-            train_key, epoch_key, shuffle_key = random.split(train_key, 3)
-            
+            train_key, epoch_key, sample_key = random.split(train_key, 3)
+
             # --- IMPORTANCE SAMPLING UPDATE ---
             if epoch > 0 and epoch % RESAMPLE_FREQ_EPOCHS == 0:
                 print(f"--- Epoch {epoch}: Updating Importance Sampling Pool ---")
-                
-                # 1. Evaluate residuals on the WHOLE pool
-                num_eval_batches = int(np.ceil(POOL_SIZE / EVAL_BATCH_SIZE))
-                all_residuals_list = []
-                
-                # Enqueue all batches first to avoid serialising GPU work
-                gpu_results = []
-                for i in range(num_eval_batches):
-                    idx_start = i * EVAL_BATCH_SIZE
-                    idx_end = min((i + 1) * EVAL_BATCH_SIZE, POOL_SIZE)
 
-                    batch_pts_gpu = jax.device_put(pool_pde_cpu[idx_start:idx_end])
-                    gpu_results.append(get_residuals_jitted(model, params, batch_pts_gpu, cfg))
+                # 0. Resample pool from domain so new high-residual regions are reachable
+                train_key, pool_base_key = random.split(train_key)
+                new_pool_chunks = []
+                for i in range(num_chunks):
+                    subkey = random.fold_in(pool_base_key, i)
+                    current_chunk_size = min(chunk_size, POOL_SIZE - i * chunk_size)
+                    pts = domain_sampler.sample_interior(subkey, current_chunk_size, (0., domain_cfg["t_final"]))
+                    new_pool_chunks.append(pts)
+                pool_pde = jnp.concatenate(new_pool_chunks, axis=0)
+                del new_pool_chunks
 
-                # Collect results after all batches have been dispatched
-                for res in gpu_results:
-                    all_residuals_list.append(np.array(res.block_until_ready()))
-                
-                all_residuals = np.concatenate(all_residuals_list, axis=0)
-                
-                # 2. Compute Selection Probabilities (CPU)
-                err_sum = np.sum(all_residuals)
-                if err_sum < 1e-9:
-                    probs = np.ones(POOL_SIZE) / POOL_SIZE
-                else:
-                    # Use configurable alpha
-                    alpha = P_ERROR_WEIGHT 
-                    p_error = all_residuals / err_sum
-                    p_uniform = 1.0 / POOL_SIZE
-                    probs = alpha * p_error + (1 - alpha) * p_uniform
-                
-                # 3. Sample indices
-                new_indices = np_rng.choice(POOL_SIZE, size=n_pde, p=probs, replace=False)
+                # 1. Evaluate residuals on entire pool via lax.map (single JIT, no CPU round-trip)
+                all_residuals = eval_pool_jit(model, params, pool_pde, cfg, EVAL_BATCH_SIZE)
 
-                # 4. Compute Importance Weights
-                # w_i = 1 / (N * p_i)
-                selected_probs = probs[new_indices]
-                weights_unnormalized = 1.0 / (POOL_SIZE * selected_probs)
-                
-                # Normalize weights to have mean 1.0
-                weights_normalized = weights_unnormalized / np.mean(weights_unnormalized)
-                
-                # 5. Update Active Set
-                active_pde_pts = jnp.array(pool_pde_cpu[new_indices])
-                active_pde_weights = jnp.array(weights_normalized)
-                
-                mean_res = np.mean(all_residuals)
-                max_res = np.max(all_residuals)
-                print(f"    IS Update Stats: Mean Error={mean_res:.6f}, Max Error={max_res:.6f}, Max Weight={np.max(weights_normalized):.2f}")
-                print(f"    Resampled {n_pde} points.")
+                # 2. Compute sampling probabilities on GPU
+                current_probs = compute_sampling_probs(all_residuals, P_ERROR_WEIGHT)
 
-            # --- Shuffle Active Set ---
-            shuffled_indices = random.permutation(shuffle_key, n_pde)
-            limit = num_batches * batch_size
-            shuffled_indices = shuffled_indices[:limit]
-            
-            current_epoch_pde_pts = active_pde_pts[shuffled_indices]
-            current_epoch_pde_weights = active_pde_weights[shuffled_indices]
-            
+                _w = 1.0 / (POOL_SIZE * current_probs)
+                _w = _w / jnp.mean(_w)
+                print(f"    residual: mean={float(jnp.mean(all_residuals)):.3e}  max={float(jnp.max(all_residuals)):.3e}")
+                print(f"    weight:   min={float(jnp.min(_w)):.3f}  mean={float(jnp.mean(_w)):.3f}  max={float(jnp.max(_w)):.3f}")
+
+            # --- Draw fresh active set every epoch from current pool + probs ---
+            current_epoch_pde_pts, current_epoch_pde_weights = sample_from_pool(
+                sample_key, pool_pde, current_probs, n_pde
+            )
+
             # --- Generate Data ---
             scan_inputs = generate_epoch_data_jitted(epoch_key, current_epoch_pde_pts, current_epoch_pde_weights)
             
@@ -642,10 +591,10 @@ def main(config_path: str):
                 event_type, value, ep, prev_value, prev_epoch = event
                 if event_type == 'best_nse':
                     console.print_checkpoint_nse(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_nse(value, ep, step=global_step)
+                    tracker.log_best_nse(value, ep, step=global_step)
                 elif event_type == 'best_loss':
                     console.print_checkpoint_loss(value, ep, prev_value, prev_epoch)
-                    aim_tracker.log_best_loss(value, ep, step=global_step)
+                    tracker.log_best_loss(value, ep, step=global_step)
 
             # --- Reporting ---
             if (epoch + 1) % freq == 0:
@@ -656,7 +605,7 @@ def main(config_path: str):
                     val_metrics, neg_depth.get('fraction', 0.0), epoch_time
                 )
 
-            aim_tracker.log_epoch(
+            tracker.log_epoch(
                 epoch=epoch, step=global_step,
                 losses=avg_losses_unweighted, total_loss=avg_total_weighted_loss,
                 val_metrics=val_metrics, lr=current_lr,
@@ -743,14 +692,14 @@ def main(config_path: str):
         }
         if all_physics_losses:
             summary_metrics['all_physics_losses'] = all_physics_losses
-        aim_tracker.log_summary(summary_metrics)
+        tracker.log_summary(summary_metrics)
 
         if ask_for_confirmation():
             if final_params is not None:
                 saved_model_path = save_model(final_params, model_dir, trial_name)
 
-                if aim_tracker.enabled and saved_model_path:
-                    aim_tracker.log_artifact(saved_model_path, 'model_weights.pkl')
+                if tracker.enabled and saved_model_path:
+                    tracker.log_artifact(saved_model_path, 'model_weights.pkl')
 
                 print("Generating plots...")
                 t_plot = jnp.arange(0., cfg['domain']['t_final'], 60.0, dtype=get_dtype())
@@ -794,11 +743,11 @@ def main(config_path: str):
                     path = os.path.join(results_dir, f"{pname}_timeseries.png")
                     plt.savefig(path)
                     plt.close()
-                    aim_tracker.log_image(path, f"{pname}_timeseries.png", epoch if 'epoch' in locals() else 0)
+                    tracker.log_image(path, f"{pname}_timeseries.png")
 
                 print(f"Plots saved to {results_dir}")
 
-        aim_tracker.close()
+        tracker.close()
 
     return best_nse_stats['combined_nse']
 
