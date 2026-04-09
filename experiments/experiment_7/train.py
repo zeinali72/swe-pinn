@@ -333,7 +333,6 @@ def main(config_path: str):
         val_points_all=ctx.get("val_points_all"),
         h_true_val_all=ctx.get("h_true_val_all"),
         val_targets_all=ctx.get("val_targets_all"),
-        source_script_path=__file__,
         compute_all_losses_fn=ctx["compute_all_losses_fn"],
     )
 

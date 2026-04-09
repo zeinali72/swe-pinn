@@ -395,7 +395,6 @@ def main(config_path: str):
         model_dir=model_dir,
         config_path=config_path,
         validation_fn=ctx["validation_fn"],
-        source_script_path=__file__,
         compute_all_losses_fn=ctx["compute_all_losses_fn"],
     )
 
