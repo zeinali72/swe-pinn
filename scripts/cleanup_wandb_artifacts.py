@@ -23,13 +23,13 @@ def main():
     for col in collections:
         versions = list(col.versions())
         if len(versions) == 0:
+            deleted += 1
             if args.dry_run:
                 print(f"[dry-run] Would delete: {col.name} (type={col.type})")
             else:
                 try:
                     col.delete()
                     print(f"Deleted: {col.name} (type={col.type})")
-                    deleted += 1
                 except Exception as e:
                     print(f"Failed to delete {col.name}: {e}")
 

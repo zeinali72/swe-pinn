@@ -418,15 +418,13 @@ class WandbTracker:
     # ------------------------------------------------------------------
     # Model registry (W&B Artifacts with type="model")
     # ------------------------------------------------------------------
-    def register_best_model(self, model_path: str, metadata: dict = None) -> None:
+    def register_best_model(self, model_path: str) -> None:
         """Log the best checkpoint via ``run.log_model()``.
 
         Parameters
         ----------
         model_path : str
             Local path to the model weights file.
-        metadata : dict, optional
-            Extra metadata (NSE, RMSE, epoch, architecture, training time).
         """
         if not self.enabled:
             return
@@ -435,7 +433,6 @@ class WandbTracker:
                 path=model_path,
                 name=f"model_{self._trial_name}",
                 aliases=["best"],
-                metadata=metadata,
             )
             print(f"Model logged: model_{self._trial_name}")
         except Exception as e:
