@@ -2,7 +2,6 @@ experiment:
   name: experiment_2
 
 data_free: true
-opt_epochs: 20000
 data:
   root_dir: data
   training_file: training_dataset_sample.npy
