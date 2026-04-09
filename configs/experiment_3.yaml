@@ -69,8 +69,3 @@ reporting:
   epoch_freq: 100
 # --- REQUIRED: Needed for folder naming ---
 CONFIG_PATH: configs/train/test1_fourier_final.yaml
-
-
-softadapt:
-  enable: true
-  warmup_epochs: 100
