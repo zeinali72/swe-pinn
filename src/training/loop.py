@@ -44,7 +44,6 @@ def run_training_loop(
     pde_key_for_diag="pde",
     validation_fn=None,
     selection_metric_key="nse_h",
-    source_script_path=None,
     compute_all_losses_fn=None,
 ):
     """Execute the full epoch loop with logging, checkpointing, and early stopping.
@@ -81,8 +80,6 @@ def run_training_loop(
     if wandb_enabled:
         try:
             tracker.log_artifact(config_path, 'run_config.yaml')
-            if source_script_path is not None:
-                tracker.log_artifact(os.path.abspath(source_script_path), 'source_script.py')
         except Exception:
             pass
     console = ConsoleLogger(cfg_dict)

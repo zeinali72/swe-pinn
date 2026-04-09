@@ -418,32 +418,28 @@ class WandbTracker:
     # ------------------------------------------------------------------
     # Model registry (W&B Artifacts with type="model")
     # ------------------------------------------------------------------
-    def register_best_model(self, model_path: str) -> Optional[str]:
-        """Log the best checkpoint as a model artifact.
-
-        The artifact is named ``model_{trial_name}`` where trial_name
-        already contains timestamp + scenario + arch (e.g.
-        ``model_2025-03-19_14-32_experiment_1_fourierpinn``).
-        Each run produces a uniquely named artifact.
+    def register_best_model(self, model_path: str, metadata: dict = None) -> None:
+        """Log the best checkpoint via ``run.log_model()``.
 
         Parameters
         ----------
         model_path : str
             Local path to the model weights file.
+        metadata : dict, optional
+            Extra metadata (NSE, RMSE, epoch, architecture, training time).
         """
         if not self.enabled:
-            return None
+            return
         try:
-            import wandb
-            name = f"model_{self._trial_name}"
-            artifact = wandb.Artifact(name=name, type="model")
-            artifact.add_file(model_path, name=os.path.basename(model_path))
-            self.run.log_artifact(artifact)
-            print(f"Model artifact registered: {name}")
-            return self.run.id
+            self.run.log_model(
+                path=model_path,
+                name=f"model_{self._trial_name}",
+                aliases=["best"],
+                metadata=metadata,
+            )
+            print(f"Model logged: model_{self._trial_name}")
         except Exception as e:
             print(f"Warning: Failed to register model in W&B: {e}")
-            return None
 
     # ------------------------------------------------------------------
     # Cleanup

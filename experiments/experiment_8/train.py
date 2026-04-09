@@ -383,7 +383,6 @@ def main(config_path: str):
         pde_key_for_diag="pde",
         validation_fn=ctx["validation_fn"],
         selection_metric_key="selection_metric",
-        source_script_path=__file__,
         compute_all_losses_fn=ctx["compute_all_losses_fn"],
     )
 

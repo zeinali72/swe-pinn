@@ -114,7 +114,6 @@ def _run_relobralo_loop(
     trial_name, results_dir, model_dir,
     config_path,
     validation_fn=None,
-    source_script_path=None,
     compute_all_losses_fn=None,
 ):
     """Epoch loop with per-epoch ReLoBRaLo weight updates.
@@ -129,8 +128,6 @@ def _run_relobralo_loop(
     if wandb_enabled:
         try:
             tracker.log_artifact(config_path, 'run_config.yaml')
-            if source_script_path is not None:
-                tracker.log_artifact(os.path.abspath(source_script_path), 'source_script.py')
         except Exception:
             pass
 
@@ -620,7 +617,6 @@ def main(config_path: str):
         model_dir=model_dir,
         config_path=config_path,
         validation_fn=ctx["validation_fn"],
-        source_script_path=__file__,
         compute_all_losses_fn=ctx["compute_all_losses_fn"],
     )
 
