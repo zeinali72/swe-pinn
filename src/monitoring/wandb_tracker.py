@@ -418,14 +418,26 @@ class WandbTracker:
     # Cleanup
     # ------------------------------------------------------------------
     def delete_run(self):
-        """Mark the run as failed and finish."""
+        """Delete the run from W&B so rejected trials leave no trace."""
         if self.run is None:
             return
         try:
             import wandb
+
+            # Capture identifiers before finishing
+            run_id = self.run.id
+            entity = self.run.entity
+            project = self.run.project
+
+            # Finish the run first (required before deletion)
             self.run.finish(exit_code=1)
             self.run = None
-            print("W&B run marked as failed and finished.")
+
+            # Delete the run via the W&B API
+            api = wandb.Api()
+            api_run = api.run(f"{entity}/{project}/{run_id}")
+            api_run.delete()
+            print(f"W&B run {run_id} deleted.")
         except Exception as e:
             print(f"Warning: Failed to delete W&B run: {e}")
 
