@@ -370,12 +370,12 @@ class WandbTracker:
             self._run_files_artifact = None
 
     def log_image(self, path: str, name: str):
-        """Log an image to the run summary (no extra history step)."""
+        """Log an image so it appears in the W&B Media/Images panel."""
         if not self.enabled:
             return
         try:
             import wandb
-            self.run.summary[f"images/{name}"] = wandb.Image(path)
+            self.run.log({f"images/{name}": wandb.Image(path)}, commit=False)
         except Exception as e:
             print(f"Warning: Failed to log image '{name}': {e}")
 
