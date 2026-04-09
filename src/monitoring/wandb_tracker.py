@@ -58,6 +58,37 @@ def _flatten_dict(d: dict, prefix: str = "", sep: str = ".") -> dict:
     return out
 
 
+# Keys worth logging to wandb.config for grouping/filtering.
+# Everything else is noise in the W&B UI.
+_CONFIG_ALLOWLIST = [
+    "scenario",
+    "model.name", "model.width", "model.depth",
+    "model.ff_dims", "model.fourier_scale",
+    "domain.lx", "domain.ly", "domain.t_final",
+    "physics.g", "physics.n_manning", "physics.u_const", "physics.inflow",
+    "training.learning_rate", "training.epochs",
+    "training.batch_size", "training.seed",
+    "sampling.n_points_pde", "sampling.n_points_ic",
+    "sampling.n_points_bc_domain",
+    "device.dtype",
+]
+
+# All keys under loss_weights are kept (variable across experiments).
+_CONFIG_ALLOW_PREFIXES = ["loss_weights."]
+
+
+def _curated_config(config: dict) -> dict:
+    """Extract only the meaningful config keys for W&B grouping."""
+    flat = _flatten_dict(sanitize_params(copy.deepcopy(dict(config))))
+    out = {}
+    for key, val in flat.items():
+        if key in _CONFIG_ALLOWLIST:
+            out[key] = val
+        elif any(key.startswith(p) for p in _CONFIG_ALLOW_PREFIXES):
+            out[key] = val
+    return out
+
+
 class WandbTracker:
     """Wraps the W&B SDK with structured metric logging.
 
@@ -116,8 +147,8 @@ class WandbTracker:
                 jax_backend = 'unknown'
                 jax_device_count = 0
 
-            # Flatten config for wandb.config
-            flat_config = _flatten_dict(sanitize_params(copy.deepcopy(dict(config))))
+            # Curated config — only meaningful keys for W&B grouping
+            flat_config = _curated_config(config)
 
             self.run = wandb.init(
                 project=project,
