@@ -157,8 +157,12 @@ class WandbTracker:
                 group=group,
                 tags=tags,
                 config=flat_config,
+                save_code=True,
                 reinit=True,
             )
+
+            # Snapshot all Python source for the Code Comparer panel
+            self.run.log_code(".", include_fn=lambda path: path.endswith(".py"))
 
             # Log additional metadata
             self.run.config.update({
