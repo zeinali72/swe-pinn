@@ -6,7 +6,7 @@ Builds on: None (baseline verification).
 
 This script handles both data-free and data-driven (analytical) training modes.
 It supports static loss weighting and provides
-logging and result visualization through Aim.
+logging and result visualization through W&B.
 """
 
 import os
@@ -420,7 +420,7 @@ def main(config_path: str):
         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
         plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, ctx["cfg_dict"], plot_path_1d)
         tracker.log_image(plot_path_1d, 'validation_plot_1D')
-        print(f"Model and plot saved in {model_dir} and {results_dir} (and logged to Aim)")
+        print(f"Model and plot saved in {model_dir} and {results_dir}")
 
     post_training_save(
         loop_result=loop_result,

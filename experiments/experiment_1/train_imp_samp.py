@@ -60,7 +60,7 @@ from src.training import (
     maybe_batch_data,
     resolve_data_mode,
 )
-from src.monitoring import ConsoleLogger, MLflowTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, WandbTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.balancing.importance_sampling import (
     compute_weighted_pde_loss,
@@ -483,10 +483,10 @@ def main(config_path: str):
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    tracking_enabled = cfg_dict.get('mlflow', {}).get('enable', True)
-    tracker = MLflowTracker(cfg_dict, trial_name, enable=tracking_enabled)
+    wandb_enabled = cfg_dict.get('wandb', {}).get('enable', True)
+    tracker = WandbTracker(cfg_dict, trial_name, enable=wandb_enabled)
     tracker.log_flags({"scenario_type": "experiment_1_importance_sampling"})
-    if tracking_enabled:
+    if wandb_enabled:
         try:
             tracker.log_artifact(config_path, 'run_config.yaml')
             tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')
@@ -735,7 +735,7 @@ def main(config_path: str):
                     },
                 })
             except Exception as e:
-                print(f"Warning: Aim summary logging failed: {e}")
+                print(f"Warning: W&B summary logging failed: {e}")
 
         final_params = best_params_nse if best_params_nse is not None else best_params_loss
 

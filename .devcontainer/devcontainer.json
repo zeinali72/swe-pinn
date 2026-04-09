@@ -33,7 +33,7 @@
     }
   ],
 
-  "postCreateCommand": "mkdir -p /root/.claude && echo '{\"hasCompletedOnboarding\":true,\"installMethod\":\"native\"}' > /root/.claude/.claude.json && ln -sf /root/.claude/.claude.json /root/.claude.json && curl -fsSL https://claude.ai/install.sh | bash && ln -sf /root/.local/bin/claude /usr/local/bin/claude || true",
+  "postCreateCommand": "mkdir -p /root/.claude && [ -f /root/.claude/.claude.json ] || echo '{\"hasCompletedOnboarding\":true,\"installMethod\":\"native\"}' > /root/.claude/.claude.json && ln -sf /root/.claude/.claude.json /root/.claude.json && curl -fsSL https://claude.ai/install.sh | bash && ln -sf /root/.local/bin/claude /usr/local/bin/claude && rtk init -g --auto-patch || true",
   "postAttachCommand": "cp /root/.claude/.credentials.json /root/.claude/.credentials.json.bak 2>/dev/null || true",
 
   "workspaceFolder": "/workspace",

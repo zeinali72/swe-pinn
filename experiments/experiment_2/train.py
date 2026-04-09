@@ -6,7 +6,7 @@ Builds on: Experiment 1.
 
 This script handles training for scenarios with building
 structures. It supports static loss weighting and provides
-comprehensive logging and result visualization through Aim.
+comprehensive logging and result visualization through W&B.
 
 This is derived from the unified 'src/train.py'.
 """
@@ -444,7 +444,7 @@ def main(config_path: str):
         tracker.log_image(plot_path_h, 'validation_plot_h')
         tracker.log_image(plot_path_hu, 'validation_plot_hu')
         tracker.log_image(plot_path_hv, 'validation_plot_hv')
-        print(f"Model and plot saved in {model_dir} and {results_dir} (and logged to Aim)")
+        print(f"Model and plot saved in {model_dir} and {results_dir}")
 
     post_training_save(
         loop_result=loop_result,

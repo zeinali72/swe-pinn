@@ -11,7 +11,7 @@ shapely
 rasterio
 
 # Monitoring and logging
-mlflow
+wandb
 
 # Optimisation libraries
 optuna

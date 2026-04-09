@@ -10,7 +10,7 @@ from jax import lax
 
 from src.utils import nse, rmse, relative_l2, save_model, ask_for_confirmation
 from src.utils.profiling import EpochTimer, log_memory_usage
-from src.monitoring import ConsoleLogger, MLflowTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, WandbTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.predict.predictor import _apply_min_depth
 
@@ -75,10 +75,10 @@ def run_training_loop(
 
     cfg_dict['scenario'] = cfg_dict.get('scenario', experiment_name)
 
-    tracking_enabled = cfg_dict.get('mlflow', {}).get('enable', True)
-    tracker = MLflowTracker(cfg_dict, trial_name, enable=tracking_enabled)
+    wandb_enabled = cfg_dict.get('wandb', {}).get('enable', True)
+    tracker = WandbTracker(cfg_dict, trial_name, enable=wandb_enabled)
     tracker.log_flags({"scenario_type": experiment_name})
-    if tracking_enabled:
+    if wandb_enabled:
         try:
             tracker.log_artifact(config_path, 'run_config.yaml')
             if source_script_path is not None:
@@ -316,7 +316,7 @@ def run_training_loop(
             try:
                 tracker.log_artifact(history_path, 'training_history.json')
             except Exception as _he:
-                print(f"Warning: Failed to upload training_history.json to MLflow: {_he}")
+                print(f"Warning: Failed to upload training_history.json to W&B: {_he}")
 
         if tracker.enabled:
             if _early_stopped:
@@ -338,23 +338,24 @@ def run_training_loop(
             final_lr=current_lr,
         )
 
+        summary_metrics = {
+            'best_validation_model': {**best_nse_stats, 'epoch': best_nse_stats.get('epoch', 0) + 1},
+            'best_loss_model': {**best_loss_stats, 'epoch': best_loss_stats.get('epoch', 0) + 1},
+            'final_system': {
+                'total_training_time_seconds': total_time,
+                'total_epochs_run': epoch + 1,
+                'total_steps_run': global_step,
+            }
+        }
+        if all_physics_losses:
+            summary_metrics['all_physics_losses'] = all_physics_losses
+
         if tracker.enabled:
             try:
-                summary_metrics = {
-                    'best_validation_model': {**best_nse_stats, 'epoch': best_nse_stats.get('epoch', 0) + 1},
-                    'best_loss_model': {**best_loss_stats, 'epoch': best_loss_stats.get('epoch', 0) + 1},
-                    'final_system': {
-                        'total_training_time_seconds': total_time,
-                        'total_epochs_run': epoch + 1,
-                        'total_steps_run': global_step,
-                    }
-                }
-                if all_physics_losses:
-                    summary_metrics['all_physics_losses'] = all_physics_losses
                 tracker.log_summary(summary_metrics)
-                print("Summary metrics logged to MLflow.")
+                print("Summary metrics logged to W&B.")
             except Exception as e:
-                print(f"Warning: Error logging summary metrics to MLflow: {e}")
+                print(f"Warning: Error logging summary metrics to W&B: {e}")
 
     return {
         "best_nse_stats": best_nse_stats,
@@ -364,6 +365,7 @@ def run_training_loop(
         "params": params,
         "opt_state": opt_state,
         "tracker": tracker,
+        "cfg_dict": cfg_dict,
         "epoch": epoch,
         "total_time": total_time,
     }
@@ -402,13 +404,9 @@ def post_training_save(
 
             if tracker.enabled and saved_model_path:
                 try:
-                    tracker.log_artifact(saved_model_path, 'model_weights.pkl')
-                    print("Logged model artifact to MLflow.")
-                    # Register in the Model Registry — versions accumulate under
-                    # one entry per scenario+arch (e.g. "experiment_1_mlp").
-                    tracker.register_best_model("artifacts/model_weights.pkl")
+                    tracker.register_best_model(saved_model_path)
                 except Exception as e_mod:
-                    print(f"Warning: Failed to log model artifact: {e_mod}")
+                    print(f"Warning: Failed to log model artifact to W&B: {e_mod}")
 
             if plot_fn is not None:
                 plot_fn(final_params)

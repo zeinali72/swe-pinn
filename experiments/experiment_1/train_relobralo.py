@@ -50,7 +50,7 @@ from src.training import (
     post_training_save, resolve_data_mode, create_output_dirs,
 )
 from src.training.loop import extract_lr
-from src.monitoring import ConsoleLogger, MLflowTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, WandbTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.balancing import ReLoBRaLo, make_scan_body_relobralo
 
@@ -123,10 +123,10 @@ def _run_relobralo_loop(
     :meth:`ReLoBRaLo.update` is called with the average unweighted MSE losses
     to produce new ``loss_weights`` for the next epoch.
     """
-    tracking_enabled = cfg_dict.get('mlflow', {}).get('enable', True)
-    tracker = MLflowTracker(cfg_dict, trial_name, enable=tracking_enabled)
+    wandb_enabled = cfg_dict.get('wandb', {}).get('enable', True)
+    tracker = WandbTracker(cfg_dict, trial_name, enable=wandb_enabled)
     tracker.log_flags({"scenario_type": experiment_name, "loss_weighting": "relobralo"})
-    if tracking_enabled:
+    if wandb_enabled:
         try:
             tracker.log_artifact(config_path, 'run_config.yaml')
             if source_script_path is not None:
@@ -357,7 +357,7 @@ def _run_relobralo_loop(
                     },
                 })
             except Exception as e:
-                print(f"Warning: Error logging summary to Aim: {e}")
+                print(f"Warning: Error logging summary to W&B: {e}")
 
     return {
         "best_nse_stats": best_nse_stats,
@@ -367,6 +367,7 @@ def _run_relobralo_loop(
         "params": params,
         "opt_state": opt_state,
         "tracker": tracker,
+        "cfg_dict": cfg_dict,
         "epoch": epoch,
         "total_time": total_time,
     }

@@ -54,7 +54,7 @@ from src.losses import (
 from src.utils import (
     nse, rmse, generate_trial_name, save_model, ask_for_confirmation
 )
-from src.monitoring import ConsoleLogger, MLflowTracker, compute_negative_depth_diagnostics
+from src.monitoring import ConsoleLogger, WandbTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
 from src.training import train_step_jitted, make_scan_body, maybe_batch_data
 
@@ -323,11 +323,11 @@ def main(config_path: str):
             print(f"Error loading validation data: {e}")
             val_pts_batch = None
 
-    # --- 7. Initialize Aim & Console Logger ---
-    tracking_enabled = cfg_dict.get('mlflow', {}).get('enable', True)
-    tracker = MLflowTracker(cfg_dict, trial_name, enable=tracking_enabled)
+    # --- 7. Initialize W&B & Console Logger ---
+    wandb_enabled = cfg_dict.get('wandb', {}).get('enable', True)
+    tracker = WandbTracker(cfg_dict, trial_name, enable=wandb_enabled)
     tracker.log_flags({"scenario_type": "experiment_8_importance_sampling"})
-    if tracking_enabled:
+    if wandb_enabled:
         try:
             tracker.log_artifact(config_path, 'run_config.yaml')
             tracker.log_artifact(os.path.abspath(__file__), 'source_script.py')

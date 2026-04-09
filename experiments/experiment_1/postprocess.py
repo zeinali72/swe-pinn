@@ -80,7 +80,6 @@ _PP_DEFAULTS = {
         "t_snapshot_fracs": [0.1, 0.25, 0.5, 0.75, 1.0],
     },
     "inference": {"batch_size": 50_000, "skip_conservation": False, "skip_plots": False},
-    "aim": {"postprocess_tracking": False},
 }
 
 

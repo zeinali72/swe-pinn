@@ -33,8 +33,3 @@ inference:
   skip_conservation: false
   skip_plots: false
 
-# ---------------------------------------------------------------------------
-# MLflow postprocessing tracking
-# ---------------------------------------------------------------------------
-mlflow:
-  postprocess_tracking: false  # set true to log results as a named MLflow run
