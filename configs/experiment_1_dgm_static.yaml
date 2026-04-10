@@ -4,8 +4,8 @@ experiment:
 data_free: true
 data:
   root_dir: data
-  training_file: training_dataset_sample.npy
-  validation_file: validation_sample.npy
+  training_file: train_lhs_points.npy
+  validation_file: val_lhs_points.npy
 
 sampling_defaults:
   n_points_pde: 1000

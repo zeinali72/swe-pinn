@@ -137,13 +137,13 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
         base_data_path,
         has_data_loss,
         static_weights_dict,
-        filename=get_data_filename(cfg, "training_file", "training_dataset_sample.npy"),
+        filename=get_data_filename(cfg, "training_file", "train_lhs_points.npy"),
     )
 
     # C. Load Validation Data (Optional)
     validation = load_validation_from_file(
         base_data_path,
-        get_data_filename(cfg, "validation_file", "validation_gauges_ground_truth.npy"),
+        get_data_filename(cfg, "validation_file", "val_gauges_gt.npy"),
     )
     validation_data_loaded = validation["loaded"]
     full_val_data = validation["full_val_data"]

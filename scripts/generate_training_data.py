@@ -61,16 +61,16 @@ def create_datasets(
 
     # --- 1. Define File Paths ---
     base_path = Path('data') / scenario_name
-    input_file = base_path / 'validation_tensor.npy'
-    val_sample_file = base_path / 'validation_sample.npy'
-    train_sample_file = base_path / 'training_dataset_sample.npy'
+    input_file = base_path / 'val_full_domain.npy'
+    val_sample_file = base_path / 'val_lhs_points.npy'
+    train_sample_file = base_path / 'train_lhs_points.npy'
     plot_file = base_path / f'validation_plotting_t_{int(plotting_time)}s.npy'
 
     if not base_path.exists():
         print(f"Error: Scenario directory not found at {base_path}")
         return
     if not input_file.exists():
-        print(f"Error: Input file validation_tensor.npy not found at {input_file}")
+        print(f"Error: Input file val_full_domain.npy not found at {input_file}")
         return
 
     print(f"Input tensor: {input_file}")
