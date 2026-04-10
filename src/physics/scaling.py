@@ -43,7 +43,7 @@ class SWEScaler:
         self.Cf = g * n_manning ** 2 * self.L0 / self.H0 ** (4.0 / 3.0)
 
         # Pre-compute output scale product for hu/hv
-        self._HU0 = self.H0 * self.U0
+        self.HU0 = self.H0 * self.U0
 
     # ------------------------------------------------------------------
     # Input scaling
@@ -84,20 +84,20 @@ class SWEScaler:
 
     def scale_outputs(self, h: jnp.ndarray, hu: jnp.ndarray, hv: jnp.ndarray):
         """Scale dimensional [h, hu, hv] to dimensionless form."""
-        return h / self.H0, hu / self._HU0, hv / self._HU0
+        return h / self.H0, hu / self.HU0, hv / self.HU0
 
     def scale_output_array(self, U: jnp.ndarray) -> jnp.ndarray:
         """Scale a stacked output array [..., 3] (h, hu, hv) to dimensionless form."""
-        scales = jnp.array([self.H0, self._HU0, self._HU0], dtype=U.dtype)
+        scales = jnp.array([self.H0, self.HU0, self.HU0], dtype=U.dtype)
         return U / scales
 
     def unscale_outputs(self, h_star: jnp.ndarray, hu_star: jnp.ndarray, hv_star: jnp.ndarray):
         """Convert dimensionless predictions back to dimensional form."""
-        return h_star * self.H0, hu_star * self._HU0, hv_star * self._HU0
+        return h_star * self.H0, hu_star * self.HU0, hv_star * self.HU0
 
     def unscale_output_array(self, U_star: jnp.ndarray) -> jnp.ndarray:
         """Unscale a stacked output array [..., 3] back to dimensional form."""
-        scales = jnp.array([self.H0, self._HU0, self._HU0], dtype=U_star.dtype)
+        scales = jnp.array([self.H0, self.HU0, self.HU0], dtype=U_star.dtype)
         return U_star * scales
 
     # ------------------------------------------------------------------

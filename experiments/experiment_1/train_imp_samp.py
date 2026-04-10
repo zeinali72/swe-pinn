@@ -114,7 +114,7 @@ def compute_losses(model, params, batch, config, data_free, scaler=None):
         hu_true_dim = h_true_dim * u_const
         if scaler is not None:
             h_target = h_true_dim / scaler.H0
-            hu_target = hu_true_dim / scaler._HU0
+            hu_target = hu_true_dim / scaler.HU0
         else:
             h_target = h_true_dim
             hu_target = hu_true_dim
