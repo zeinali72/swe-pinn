@@ -19,7 +19,8 @@
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "GEMINI_API_KEY": "${localEnv:GEMINI_API_KEY}",
     "GH_TOKEN": "${localEnv:GH_TOKEN}",
-    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
+    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}",
+    "WANDB_API_KEY": "${localEnv:WANDB_API_KEY}"
   },
 
   "runArgs": [
