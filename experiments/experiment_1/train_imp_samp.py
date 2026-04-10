@@ -190,11 +190,11 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
         h_true_dim = h_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
         hu_true_dim = hu_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
         hv_true_dim = hv_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
-        # Scale to dimensionless
+        # Scale inputs for the network; keep targets dimensional for SI metrics
         val_points = scaler.scale_inputs(val_points_dim)
-        h_true_val, hu_true_val, hv_true_val = scaler.scale_outputs(
-            h_true_dim, hu_true_dim, hv_true_dim
-        )
+        h_true_val = h_true_dim
+        hu_true_val = hu_true_dim
+        hv_true_val = hv_true_dim
         validation_data_loaded = val_points.shape[0] > 0
         print(f"Analytical validation set: {val_points.shape[0]} points.")
     except Exception as e:
@@ -315,7 +315,9 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
         metrics = {}
         if validation_data_loaded:
             try:
-                U_pred = model.apply({'params': params['params']}, val_points, train=False)
+                # Unscale predictions to dimensional for SI metrics
+                U_pred_nd = model.apply({'params': params['params']}, val_points, train=False)
+                U_pred = scaler.unscale_output_array(U_pred_nd)
                 min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
                 U_pred = _apply_min_depth(U_pred, min_depth_val)
                 metrics = {
@@ -405,11 +407,11 @@ def main(config_path: str):
         h_true_dim = h_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
         hu_true_dim = hu_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
         hv_true_dim = hv_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
-        # Scale to dimensionless
+        # Scale inputs for the network; keep targets dimensional for SI metrics
         val_points = scaler.scale_inputs(val_points_dim)
-        h_true_val, hu_true_val, hv_true_val = scaler.scale_outputs(
-            h_true_dim, hu_true_dim, hv_true_dim
-        )
+        h_true_val = h_true_dim
+        hu_true_val = hu_true_dim
+        hv_true_val = hv_true_dim
         validation_data_loaded = val_points.shape[0] > 0
         print(f"Analytical validation set: {val_points.shape[0]} points.")
     except Exception as e:
@@ -618,7 +620,9 @@ def main(config_path: str):
             nse_val, rmse_val = -jnp.inf, jnp.inf
             if validation_data_loaded:
                 try:
-                    U_pred = model.apply({'params': params['params']}, val_points, train=False)
+                    # Unscale predictions to dimensional for SI metrics
+                    U_pred_nd = model.apply({'params': params['params']}, val_points, train=False)
+                    U_pred = scaler.unscale_output_array(U_pred_nd)
                     min_depth = cfg.get("numerics", {}).get("min_depth", 0.0)
                     U_pred = _apply_min_depth(U_pred, min_depth)
                     nse_val = float(nse(U_pred[..., 0], h_true_val))

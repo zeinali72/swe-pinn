@@ -156,11 +156,12 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
         hu_true_dim = hu_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
         hv_true_dim = hv_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
 
-        # Scale inputs and targets to dimensionless form
+        # Scale inputs to dimensionless for the network; keep targets dimensional
+        # for SI-unit metrics (spec §3: unscale predictions, compare in dimensional space)
         val_points = scaler.scale_inputs(val_points_dim)
-        h_true_val, hu_true_val, hv_true_val = scaler.scale_outputs(
-            h_true_dim, hu_true_dim, hv_true_dim
-        )
+        h_true_val = h_true_dim
+        hu_true_val = hu_true_dim
+        hv_true_val = hv_true_dim
 
         if val_points.shape[0] > 0:
             validation_data_loaded = True
@@ -343,24 +344,26 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
         metrics = {}
         if validation_data_loaded:
             try:
-                U_pred_val = model.apply({'params': params['params']}, val_points, train=False)
+                # Network predicts in non-dim space; unscale to dimensional for SI metrics
+                U_pred_nd = model.apply({'params': params['params']}, val_points, train=False)
+                U_pred_dim = scaler.unscale_output_array(U_pred_nd)
                 min_depth_val = cfg.get("numerics", {}).get("min_depth", 0.0)
-                U_pred_val = _apply_min_depth(U_pred_val, min_depth_val)
-                h_pred_val = U_pred_val[..., 0]
-                nse_val = float(nse(h_pred_val, h_true_val))
-                rmse_val = float(rmse(h_pred_val, h_true_val))
+                U_pred_dim = _apply_min_depth(U_pred_dim, min_depth_val)
+                h_pred = U_pred_dim[..., 0]
+                nse_val = float(nse(h_pred, h_true_val))
+                rmse_val = float(rmse(h_pred, h_true_val))
                 metrics = {
                     'nse_h': nse_val,
                     'rmse_h': rmse_val,
-                    'rel_l2_h': float(relative_l2(h_pred_val, h_true_val)),
+                    'rel_l2_h': float(relative_l2(h_pred, h_true_val)),
                 }
                 if hu_true_val is not None and hv_true_val is not None:
-                    metrics['nse_hu'] = float(nse(U_pred_val[..., 1], hu_true_val))
-                    metrics['rmse_hu'] = float(rmse(U_pred_val[..., 1], hu_true_val))
-                    metrics['rel_l2_hu'] = float(relative_l2(U_pred_val[..., 1], hu_true_val))
-                    metrics['nse_hv'] = float(nse(U_pred_val[..., 2], hv_true_val))
-                    metrics['rmse_hv'] = float(rmse(U_pred_val[..., 2], hv_true_val))
-                    metrics['rel_l2_hv'] = float(relative_l2(U_pred_val[..., 2], hv_true_val))
+                    metrics['nse_hu'] = float(nse(U_pred_dim[..., 1], hu_true_val))
+                    metrics['rmse_hu'] = float(rmse(U_pred_dim[..., 1], hu_true_val))
+                    metrics['rel_l2_hu'] = float(relative_l2(U_pred_dim[..., 1], hu_true_val))
+                    metrics['nse_hv'] = float(nse(U_pred_dim[..., 2], hv_true_val))
+                    metrics['rmse_hv'] = float(rmse(U_pred_dim[..., 2], hv_true_val))
+                    metrics['rel_l2_hv'] = float(relative_l2(U_pred_dim[..., 2], hv_true_val))
             except Exception as exc:
                 print(f"Warning: Validation calculation failed: {exc}")
         if not metrics:

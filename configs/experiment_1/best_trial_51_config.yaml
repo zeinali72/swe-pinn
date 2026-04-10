@@ -24,7 +24,7 @@ physics:
   u_const: 0.29
   n_manning: 0.03
   inflow: null
-  g: 9.81
+  g: 1.0
 loss_weights:
   pde_weight: 93057.20409296978
   ic_weight: 0.011970850304957308
@@ -41,14 +41,15 @@ device:
   early_stop_min_epochs: 4000
   early_stop_patience: 3000
 scaling:
-  H0: 1.0                           # Reference depth [m] for non-dimensionalization
+  enabled: true                      # Toggle non-dimensionalization (false = dimensional mode)
+  H0: 0.5                           # Reference depth [m] for non-dimensionalization
 numerics:
   eps: 1.0e-06
 validation_grid:
   n_points_val: 45000
 CONFIG_PATH: optimisation/configs/hpo_mlp_datafree_static_NOBUILDING.yaml
 sampling:
-  n_points_pde: 80000
+  n_points_pde: 35226
   n_points_ic: 3222
   n_points_bc_domain: 7483
   importance_sampling:

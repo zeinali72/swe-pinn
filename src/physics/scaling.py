@@ -3,8 +3,8 @@
 Transforms the conservative-form SWE into a dimensionless system where all
 residual terms are O(1), eliminating gravity from the flux terms entirely.
 
-Characteristic scales
----------------------
+Characteristic scales (when enabled)
+-------------------------------------
 L0 : Length scale — max(Lx, Ly) from domain geometry.
 H0 : Depth scale — reference depth (configurable, default 1.0 m).
 U0 : Velocity scale — shallow-water celerity sqrt(g * H0).
@@ -12,6 +12,9 @@ T0 : Time scale — advective timescale L0 / U0.
 
 The single dimensionless group is the friction number:
     C_f = g * n_manning^2 * L0 / H0^(4/3)
+
+When disabled (``scaling.enabled: false``), all scales are 1.0 and
+C_f = g * n_manning^2, preserving the original dimensional pipeline.
 """
 
 import jax.numpy as jnp
@@ -25,7 +28,11 @@ class SWEScaler:
     ----------
     cfg : FrozenDict or dict
         Config with keys ``domain.lx``, ``domain.ly``, ``domain.t_final``,
-        ``physics.g``, ``physics.n_manning``, and optionally ``scaling.H0``.
+        ``physics.g``, ``physics.n_manning``, and optionally ``scaling.*``.
+
+    When ``scaling.enabled`` is ``false`` (or absent), the scaler acts as an
+    identity: L0 = H0 = U0 = T0 = 1, Cf = g * n^2, and ``nondim_physics_config``
+    returns the original config unchanged.
     """
 
     def __init__(self, cfg):
@@ -33,14 +40,22 @@ class SWEScaler:
         physics = cfg["physics"]
         scaling_cfg = cfg.get("scaling", {})
 
+        self.enabled = bool(scaling_cfg.get("enabled", False))
         g = float(physics["g"])
         n_manning = float(physics["n_manning"])
 
-        self.L0 = float(max(domain["lx"], domain["ly"]))
-        self.H0 = float(scaling_cfg.get("H0", 1.0))
-        self.U0 = float(jnp.sqrt(g * self.H0))
-        self.T0 = self.L0 / self.U0
-        self.Cf = g * n_manning ** 2 * self.L0 / self.H0 ** (4.0 / 3.0)
+        if self.enabled:
+            self.L0 = float(max(domain["lx"], domain["ly"]))
+            self.H0 = float(scaling_cfg.get("H0", 1.0))
+            self.U0 = float(jnp.sqrt(g * self.H0))
+            self.T0 = self.L0 / self.U0
+            self.Cf = g * n_manning ** 2 * self.L0 / self.H0 ** (4.0 / 3.0)
+        else:
+            self.L0 = 1.0
+            self.H0 = 1.0
+            self.U0 = 1.0
+            self.T0 = 1.0
+            self.Cf = g * n_manning ** 2
 
         # Pre-compute output scale product for hu/hv
         self.HU0 = self.H0 * self.U0
@@ -129,17 +144,18 @@ class SWEScaler:
     def nondim_physics_config(self, base_config) -> FrozenDict:
         """Build a config for the non-dimensional PDE.
 
-        The returned config sets ``g = 1.0`` (absorbed into scaling),
-        ``n_manning = 0.0`` (friction absorbed into ``Cf``), and adds
-        ``Cf`` so the SWE source term uses the dimensionless friction
-        number exclusively.
+        When scaling is **enabled**, the returned config sets ``g = 1.0``
+        (absorbed into scaling), ``n_manning = 0.0`` (friction absorbed
+        into ``Cf``), and adds ``Cf``.  The original dimensional values
+        are preserved under ``physics.dimensional``.
 
-        The original dimensional ``n_manning`` and ``u_const`` are
-        preserved under ``physics.dimensional`` so that experiment
-        scripts can still compute analytical BC targets in dimensional
-        space before scaling.
+        When scaling is **disabled**, returns the original config as a
+        FrozenDict with no modifications.
         """
         cfg_dict = dict(base_config)
+        if not self.enabled:
+            return FrozenDict(cfg_dict)
+
         physics = dict(cfg_dict.get("physics", {}))
         # Preserve original values for analytical BC computations
         physics["dimensional"] = {
@@ -155,6 +171,8 @@ class SWEScaler:
 
     def summary(self) -> str:
         """Return a human-readable summary of the scaling parameters."""
+        if not self.enabled:
+            return "SWE Scaling: DISABLED (dimensional mode)"
         return (
             f"SWE Non-dimensionalization:\n"
             f"  L0 = {self.L0:.2f} m\n"
