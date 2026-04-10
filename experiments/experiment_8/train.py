@@ -47,7 +47,7 @@ from src.training import (
     get_experiment_name,
     get_sampling_count_from_config,
     init_model_from_config,
-    load_training_data,
+    resolve_training_data,
     load_validation_from_file,
     train_step_jitted,
     make_scan_body,
@@ -176,11 +176,11 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     data_points_full = None
 
     data_free, has_data_loss = resolve_data_mode(cfg)
-    data_points_full, has_data_loss, data_free = load_training_data(
+    data_points_full, has_data_loss, data_free = resolve_training_data(
+        cfg,
         base_data_path,
         has_data_loss,
         static_weights_dict,
-        filename=get_data_filename(cfg, "training_file", "train_lhs_points.npy"),
     )
 
     # E. Load Validation Data (Ground Truth)

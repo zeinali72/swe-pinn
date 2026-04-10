@@ -16,7 +16,7 @@ from src.training.setup import (
 	apply_output_scales,
 )
 from src.training.optimizer import create_optimizer
-from src.training.data_loading import resolve_data_mode, load_training_data, load_validation_from_file, load_terrain_assets
+from src.training.data_loading import resolve_data_mode, load_training_data, resolve_training_data, load_validation_from_file, load_terrain_assets
 from src.training.loop import run_training_loop, post_training_save
 from src.training.step import train_step, train_step_jitted
 from src.training.epoch import (
