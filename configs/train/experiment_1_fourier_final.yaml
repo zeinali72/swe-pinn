@@ -57,3 +57,7 @@ loss_weights:
 data_free: true
 reporting:
   epoch_freq: 100
+
+train_grid:
+  n_gauges: 0           # number of spatial gauge locations (0 = data-free)
+  dt_data: 10.0         # temporal resolution in seconds for gauge time series
