@@ -21,13 +21,13 @@ Column conventions:
 
 Usage:
     # Merged mode (single output)
-    python process_gauge_csvs.py --meta meta.csv --depth depth.csv \\
-        --angle angle.csv --speed speed.csv --output gauges.npy
+    python process_gauge_csvs.py --meta gauge_metadata.csv --depth gauge_depth.csv \\
+        --angle gauge_angle.csv --speed gauge_speed.csv --output gauge_data.npy
 
     # Split mode (train/val outputs)
-    python process_gauge_csvs.py --meta meta.csv --depth depth.csv \\
-        --angle angle.csv --speed speed.csv --split \\
-        --output_train train.npy --output_val val.npy
+    python process_gauge_csvs.py --meta gauge_metadata.csv --depth gauge_depth.csv \\
+        --angle gauge_angle.csv --speed gauge_speed.csv --split \\
+        --output_train train_gauges.npy --output_val val_gauges_gt.npy
 """
 
 import pandas as pd

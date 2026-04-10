@@ -2,14 +2,14 @@
 
 This is stage 2 of the preprocessing pipeline:
   1. InfoWorks ICM CSV -> binary (cpp/preprocess.cpp via run_preprocess.sh)
-  2. Binary -> .npy (this script)
-  3. .npy tensor -> training/validation/plotting datasets (generate_training_data.py)
+  2. Binary -> .npy (this script): val_full_domain.bin -> val_full_domain.npy
+  3. .npy -> training/validation datasets (generate_training_data.py or src/data/loader.py)
 
 The binary file contains rows of 6 float64 values: [t, x, y, h, u, v].
 Output is saved as float32 to reduce file size.
 
 Usage:
-    python binary_to_numpy.py input.bin output.npy
+    python binary_to_numpy.py val_full_domain.bin val_full_domain.npy
 """
 import numpy as np
 import argparse

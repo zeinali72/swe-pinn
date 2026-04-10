@@ -20,6 +20,10 @@ set -e  # Exit immediately if a command exits with a non-zero status
 #
 # Usage:
 #   ./run_preprocess.sh <angle_csv> <depth_csv> <speed_csv> <output_bin>
+#
+# CSV naming convention:
+#   Full domain exports:  full_domain_angle.csv, full_domain_depth.csv, full_domain_speed.csv
+#   Gauge sensor exports: gauge_angle.csv, gauge_depth.csv, gauge_speed.csv
 # =============================================================================
 
 # 1. Define where the C++ source code now lives
