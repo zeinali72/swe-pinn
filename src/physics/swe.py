@@ -31,11 +31,26 @@ class SWEPhysics:
         return F, G
 
     def source(self, g: float, n_manning: float, inflow: float,
-               bed_grad_x: jnp.ndarray = None, bed_grad_y: jnp.ndarray = None) -> jnp.ndarray:
-        """Compute source terms for SWE."""
+               bed_grad_x: jnp.ndarray = None, bed_grad_y: jnp.ndarray = None,
+               Cf: float = None) -> jnp.ndarray:
+        """Compute source terms for SWE.
+
+        Parameters
+        ----------
+        Cf : float, optional
+            Dimensionless friction number.  When provided, friction is
+            computed as ``Cf * u * vel / h^(4/3)`` and ``g`` is assumed
+            to be 1.0 (absorbed into scaling).  When ``None``, the
+            standard dimensional form ``n^2 * u * vel / h^(4/3)`` is
+            used with explicit ``g``.
+        """
         vel = jnp.sqrt(self.u**2 + self.v**2)
-        sfx = n_manning**2 * self.u * vel / (self.h_safe**(4 / 3))
-        sfy = n_manning**2 * self.v * vel / (self.h_safe**(4 / 3))
+        if Cf is not None:
+            sfx = Cf * self.u * vel / (self.h_safe**(4 / 3))
+            sfy = Cf * self.v * vel / (self.h_safe**(4 / 3))
+        else:
+            sfx = n_manning**2 * self.u * vel / (self.h_safe**(4 / 3))
+            sfy = n_manning**2 * self.v * vel / (self.h_safe**(4 / 3))
         sox = -bed_grad_x if bed_grad_x is not None else 0.0
         soy = -bed_grad_y if bed_grad_y is not None else 0.0
 

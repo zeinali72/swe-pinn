@@ -68,8 +68,9 @@ def pde_residuals_per_point(
     JF, JG = physics.flux_jac(g=g)
     div_F = jnp.einsum('nij,nj->ni', JF, dU_dx)
     div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
+    Cf = config.get("physics", {}).get("Cf", None)
     S = physics.source(g=g, n_manning=n_manning, inflow=inflow,
-                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
+                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y, Cf=Cf)
 
     residual = dU_dt + div_F + div_G - S
     h_mask = jnp.where(U_pred[..., 0] < eps, 0.0, 1.0)

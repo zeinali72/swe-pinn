@@ -369,7 +369,7 @@ class TestSetupTrialHPOWrapper(unittest.TestCase):
         trial = study.ask()
         result = run_training_trial(trial, FrozenDict(cfg_dict))
         self.assertIsInstance(result, float)
-        self.assertGreater(result, 0.0)  # RMSE is always positive
+        self.assertGreaterEqual(result, 0.0)  # RMSE is non-negative
 
     def test_objective_key_from_config(self):
         """HPO wrapper should use objective_key from hpo_settings."""

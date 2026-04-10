@@ -12,6 +12,7 @@ logging and result visualization through W&B.
 import os
 import sys
 import argparse
+import functools
 import jax
 import jax.numpy as jnp
 from jax import random
@@ -28,7 +29,7 @@ from src.losses import (
     loss_boundary_wall_horizontal,
 )
 from src.utils import nse, rmse, relative_l2, plot_h_vs_x
-from src.physics import h_exact, hu_exact, hv_exact
+from src.physics import h_exact, hu_exact, hv_exact, SWEScaler
 from src.training import (
     create_optimizer,
     calculate_num_batches,
@@ -53,8 +54,13 @@ from src.training import (
 # jax.config.update('jax_enable_x64', True)
 
 
-def compute_losses(model, params, batch, config, data_free):
-    """Compute all loss terms for Experiment 1 (analytical dam-break)."""
+def compute_losses(model, params, batch, config, data_free, scaler=None):
+    """Compute all loss terms for Experiment 1 (analytical dam-break).
+
+    When ``scaler`` is provided, boundary targets are computed in dimensional
+    space from the analytical solution and then scaled to match the network's
+    dimensionless output.
+    """
     terms = {}
 
     pde_batch_data = batch.get('pde', jnp.empty((0, 3), dtype=get_dtype()))
@@ -76,11 +82,18 @@ def compute_losses(model, params, batch, config, data_free):
         # Left: Dirichlet h + hu from analytical dam-break solution
         u_const = config["physics"]["u_const"]
         n_manning = config["physics"]["n_manning"]
-        t_left = left[..., 2]
-        h_true = h_exact(0.0, t_left, n_manning, u_const)
-        hu_true = h_true * u_const
-        loss_left = (loss_boundary_dirichlet(model, params, left, h_true, var_idx=0) +
-                     loss_boundary_dirichlet(model, params, left, hu_true, var_idx=1))
+        # Recover dimensional time for the analytical solution
+        t_left_dim = left[..., 2] * scaler.T0 if scaler is not None else left[..., 2]
+        h_true_dim = h_exact(0.0, t_left_dim, n_manning, u_const)
+        hu_true_dim = h_true_dim * u_const
+        if scaler is not None:
+            h_target = h_true_dim / scaler.H0
+            hu_target = hu_true_dim / scaler._HU0
+        else:
+            h_target = h_true_dim
+            hu_target = hu_true_dim
+        loss_left = (loss_boundary_dirichlet(model, params, left, h_target, var_idx=0) +
+                     loss_boundary_dirichlet(model, params, left, hu_target, var_idx=1))
         # Right: Neumann outflow
         loss_right = loss_boundary_neumann_outflow_x(model, params, right)
         # Top/Bottom: horizontal walls
@@ -109,6 +122,11 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     cfg = FrozenDict(cfg_dict)
     experiment_name = get_experiment_name(cfg_dict, "experiment_1")
 
+    # --- Non-dimensionalization ---
+    scaler = SWEScaler(cfg)
+    nondim_cfg = scaler.nondim_physics_config(cfg_dict)
+    print(scaler.summary())
+
     model, params, train_key, val_key = init_model_from_config(cfg)
 
     print("Info: Running in analytical (no-building) mode.")
@@ -124,16 +142,23 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
         domain_cfg = cfg["domain"]
         print(f"Creating analytical validation set from 'validation_grid' config...")
 
-        val_points = sample_domain(
+        # Sample in dimensional space, then compute analytical targets
+        val_points_dim = sample_domain(
             val_key,
             val_grid_cfg["n_points_val"],
             (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
         )
         n_manning = cfg["physics"]["n_manning"]
         u_const = cfg["physics"]["u_const"]
-        h_true_val = h_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
-        hu_true_val = hu_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
-        hv_true_val = hv_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
+        h_true_dim = h_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
+        hu_true_dim = hu_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
+        hv_true_dim = hv_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
+
+        # Scale inputs and targets to dimensionless form
+        val_points = scaler.scale_inputs(val_points_dim)
+        h_true_val, hu_true_val, hv_true_val = scaler.scale_outputs(
+            h_true_dim, hu_true_dim, hv_true_dim
+        )
 
         if val_points.shape[0] > 0:
             validation_data_loaded = True
@@ -192,13 +217,24 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
             u_true_train = jnp.full_like(h_true_train, cfg["physics"]["u_const"])
             v_true_train = jnp.zeros_like(h_true_train)
 
-            data_points_full = jnp.stack([
-                data_points_coords[:, 2],
-                data_points_coords[:, 0],
-                data_points_coords[:, 1],
+            # Scale coordinates and targets to dimensionless form
+            coords_scaled = scaler.scale_inputs(data_points_coords)
+            h_scaled, hu_scaled, hv_scaled = scaler.scale_outputs(
                 h_true_train,
-                u_true_train,
-                v_true_train
+                h_true_train * u_true_train,
+                h_true_train * v_true_train,
+            )
+            # data_loss expects [t, x, y, h, u, v] — recover u*, v* from (hu)*/h*
+            eps_safe = 1e-12
+            u_scaled = hu_scaled / jnp.maximum(h_scaled, eps_safe)
+            v_scaled = hv_scaled / jnp.maximum(h_scaled, eps_safe)
+            data_points_full = jnp.stack([
+                coords_scaled[:, 2],   # t*
+                coords_scaled[:, 0],   # x*
+                coords_scaled[:, 1],   # y*
+                h_scaled,
+                u_scaled,
+                v_scaled,
             ], axis=1).astype(get_dtype())
 
             if data_points_full.shape[0] == 0:
@@ -257,22 +293,28 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     optimiser = create_optimizer(cfg, num_batches=num_batches)
     opt_state = optimiser.init(params)
 
+    # --- Scaled sampling ranges (dimensionless) ---
+    x_range_s = scaler.scale_range(0., domain_cfg["lx"], "x")
+    y_range_s = scaler.scale_range(0., domain_cfg["ly"], "y")
+    t_range_s = scaler.scale_range(0., domain_cfg["t_final"], "t")
+    x_left_s = scaler.scale_range(0., 0., "x")
+    x_right_s = scaler.scale_range(domain_cfg["lx"], domain_cfg["lx"], "x")
+    y_bottom_s = scaler.scale_range(0., 0., "y")
+    y_top_s = scaler.scale_range(domain_cfg["ly"], domain_cfg["ly"], "y")
+
     # --- Define JIT Data Generator ---
     def generate_epoch_data(key):
         key, pde_key, ic_key, bc_keys, data_key = random.split(key, 5)
-        x_range = (0., domain_cfg["lx"])
-        y_range = (0., domain_cfg["ly"])
-        t_range = (0., domain_cfg["t_final"])
 
-        pde_data = sample_and_batch(pde_key, sample_domain, n_pde, batch_size, num_batches, x_range, y_range, t_range)
-        ic_data = sample_and_batch(ic_key, sample_domain, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
+        pde_data = sample_and_batch(pde_key, sample_domain, n_pde, batch_size, num_batches, x_range_s, y_range_s, t_range_s)
+        ic_data = sample_and_batch(ic_key, sample_domain, n_ic, batch_size, num_batches, x_range_s, y_range_s, (0., 0.))
 
         l_key, r_key, b_key, t_key = random.split(bc_keys, 4)
         bc_data = {
-            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (0., 0.), y_range, t_range),
-            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
-            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range),
-            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_left_s, y_range_s, t_range_s),
+            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_right_s, y_range_s, t_range_s),
+            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range_s, y_bottom_s, t_range_s),
+            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range_s, y_top_s, t_range_s),
         }
 
         return {
@@ -286,9 +328,11 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     generate_epoch_data_jit = jax.jit(generate_epoch_data)
 
     # --- Define Scan Body Function ---
+    # Bind scaler into the loss function so the generic train_step signature is unchanged.
+    _losses_fn = functools.partial(compute_losses, scaler=scaler)
     scan_body = make_scan_body(
-        train_step_jitted, model, optimiser, current_weights_dict, cfg, data_free,
-        compute_losses_fn=compute_losses,
+        train_step_jitted, model, optimiser, current_weights_dict, nondim_cfg, data_free,
+        compute_losses_fn=_losses_fn,
     )
 
     # --- Validation Function ---
@@ -327,22 +371,19 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     def compute_all_losses_fn(model, params):
         eval_key = random.PRNGKey(0)
         keys = random.split(eval_key, 5)
-        x_range = (0., domain_cfg["lx"])
-        y_range = (0., domain_cfg["ly"])
-        t_range = (0., domain_cfg["t_final"])
         batch = {
-            'pde': sample_domain(keys[0], n_eval, x_range, y_range, t_range),
-            'ic': sample_domain(keys[1], n_eval, x_range, y_range, (0., 0.)),
+            'pde': sample_domain(keys[0], n_eval, x_range_s, y_range_s, t_range_s),
+            'ic': sample_domain(keys[1], n_eval, x_range_s, y_range_s, (0., 0.)),
             'bc': {
-                'left': sample_domain(keys[2], n_eval, (0., 0.), y_range, t_range),
-                'right': sample_domain(keys[2], n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
-                'bottom': sample_domain(keys[3], n_eval, x_range, (0., 0.), t_range),
-                'top': sample_domain(keys[3], n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+                'left': sample_domain(keys[2], n_eval, x_left_s, y_range_s, t_range_s),
+                'right': sample_domain(keys[2], n_eval, x_right_s, y_range_s, t_range_s),
+                'bottom': sample_domain(keys[3], n_eval, x_range_s, y_bottom_s, t_range_s),
+                'top': sample_domain(keys[3], n_eval, x_range_s, y_top_s, t_range_s),
             },
             'data': jnp.empty((0, 6), dtype=get_dtype()),
             'building_bc': {},
         }
-        return compute_losses(model, params, batch, cfg, data_free=True)
+        return compute_losses(model, params, batch, nondim_cfg, data_free=True, scaler=scaler)
 
     return {
         "cfg": cfg,
@@ -358,6 +399,7 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
         "validation_fn": validation_fn,
         "data_free": data_free,
         "compute_all_losses_fn": compute_all_losses_fn,
+        "scaler": scaler,
         # Production extras
         "experiment_name": experiment_name,
         "validation_data_loaded": validation_data_loaded,
@@ -398,6 +440,8 @@ def main(config_path: str):
         compute_all_losses_fn=ctx["compute_all_losses_fn"],
     )
 
+    scaler = SWEScaler(cfg)
+
     def plot_fn(final_params):
         print("  Generating 1D validation plot...")
         tracker = loop_result["tracker"]
@@ -407,17 +451,20 @@ def main(config_path: str):
         t_const_val_plot = plot_cfg.get("t_const_val", cfg["domain"]["t_final"] / 2.0)
         nx_val_plot = plot_cfg.get("nx_val", 101)
         y_const_plot = plot_cfg.get("y_const_plot", 0.0)
-        x_val_plot = jnp.linspace(0.0, cfg["domain"]["lx"], nx_val_plot, dtype=get_dtype())
-        plot_points_1d = jnp.stack([
-            x_val_plot,
-            jnp.full_like(x_val_plot, y_const_plot, dtype=get_dtype()),
-            jnp.full_like(x_val_plot, t_const_val_plot, dtype=get_dtype()),
+        # Build dimensional 1D line, then scale to dimensionless for the network
+        x_val_dim = jnp.linspace(0.0, cfg["domain"]["lx"], nx_val_plot, dtype=get_dtype())
+        plot_points_dim = jnp.stack([
+            x_val_dim,
+            jnp.full_like(x_val_dim, y_const_plot, dtype=get_dtype()),
+            jnp.full_like(x_val_dim, t_const_val_plot, dtype=get_dtype()),
         ], axis=1)
-        U_plot_pred_1d = model.apply({'params': final_params['params']}, plot_points_1d, train=False)
-        U_plot_pred_1d = _apply_min_depth(U_plot_pred_1d, min_depth_plot)
-        h_plot_pred_1d = U_plot_pred_1d[..., 0]
+        plot_points_nd = scaler.scale_inputs(plot_points_dim)
+        U_plot_nd = model.apply({'params': final_params['params']}, plot_points_nd, train=False)
+        U_plot_dim = scaler.unscale_output_array(U_plot_nd)
+        U_plot_dim = _apply_min_depth(U_plot_dim, min_depth_plot)
+        h_plot_pred_1d = U_plot_dim[..., 0]
         plot_path_1d = os.path.join(results_dir, "final_validation_plot.png")
-        plot_h_vs_x(x_val_plot, h_plot_pred_1d, t_const_val_plot, y_const_plot, ctx["cfg_dict"], plot_path_1d)
+        plot_h_vs_x(x_val_dim, h_plot_pred_1d, t_const_val_plot, y_const_plot, ctx["cfg_dict"], plot_path_1d)
         tracker.log_image(plot_path_1d, 'validation_plot_1D')
         print(f"Model and plot saved in {model_dir} and {results_dir}")
 

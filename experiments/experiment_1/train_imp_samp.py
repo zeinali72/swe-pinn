@@ -25,6 +25,7 @@ import os
 import sys
 import time
 import argparse
+import functools
 
 # Ensure project root is on sys.path before src imports.
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -44,7 +45,7 @@ from src.losses import (
     loss_boundary_wall_horizontal,
 )
 from src.utils import nse, rmse, relative_l2, plot_h_vs_x, generate_trial_name, save_model, ask_for_confirmation
-from src.physics import h_exact, hu_exact, hv_exact
+from src.physics import h_exact, hu_exact, hv_exact, SWEScaler
 from src.training import (
     create_optimizer,
     calculate_num_batches,
@@ -74,11 +75,15 @@ from src.balancing.importance_sampling import (
 # Loss function
 # ---------------------------------------------------------------------------
 
-def compute_losses(model, params, batch, config, data_free):
+def compute_losses(model, params, batch, config, data_free, scaler=None):
     """Compute all loss terms for Experiment 1 IS variant.
 
     Reads ``batch['pde_weights']`` for importance-corrected PDE loss.
     All other terms (IC, BC, data) are identical to the uniform variant.
+
+    When ``scaler`` is provided, boundary targets are computed in dimensional
+    space from the analytical solution and then scaled to match the network's
+    dimensionless output.
     """
     terms = {}
 
@@ -101,11 +106,18 @@ def compute_losses(model, params, batch, config, data_free):
 
         u_const = config["physics"]["u_const"]
         n_manning = config["physics"]["n_manning"]
-        t_left = left[..., 2]
-        h_true = h_exact(0.0, t_left, n_manning, u_const)
-        hu_true = h_true * u_const
-        loss_left = (loss_boundary_dirichlet(model, params, left, h_true, var_idx=0) +
-                     loss_boundary_dirichlet(model, params, left, hu_true, var_idx=1))
+        # Recover dimensional time for the analytical solution
+        t_left_dim = left[..., 2] * scaler.T0 if scaler is not None else left[..., 2]
+        h_true_dim = h_exact(0.0, t_left_dim, n_manning, u_const)
+        hu_true_dim = h_true_dim * u_const
+        if scaler is not None:
+            h_target = h_true_dim / scaler.H0
+            hu_target = hu_true_dim / scaler._HU0
+        else:
+            h_target = h_true_dim
+            hu_target = hu_true_dim
+        loss_left = (loss_boundary_dirichlet(model, params, left, h_target, var_idx=0) +
+                     loss_boundary_dirichlet(model, params, left, hu_target, var_idx=1))
         loss_right = loss_boundary_neumann_outflow_x(model, params, right)
         loss_bottom = loss_boundary_wall_horizontal(model, params, bottom)
         loss_top = loss_boundary_wall_horizontal(model, params, top)
@@ -138,6 +150,11 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     cfg = FrozenDict(cfg_dict)
     experiment_name = get_experiment_name(cfg_dict, "experiment_1_is")
 
+    # --- Non-dimensionalization ---
+    scaler = SWEScaler(cfg)
+    nondim_cfg = scaler.nondim_physics_config(cfg_dict)
+    print(scaler.summary())
+
     model, params, train_key, val_key = init_model_from_config(cfg)
     domain_cfg = cfg["domain"]
 
@@ -162,15 +179,20 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     validation_data_loaded = False
     try:
         val_grid_cfg = cfg["validation_grid"]
-        val_points = sample_domain(
+        val_points_dim = sample_domain(
             val_key, val_grid_cfg["n_points_val"],
             (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
         )
         n_manning = cfg["physics"]["n_manning"]
         u_const = cfg["physics"]["u_const"]
-        h_true_val = h_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
-        hu_true_val = hu_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
-        hv_true_val = hv_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
+        h_true_dim = h_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
+        hu_true_dim = hu_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
+        hv_true_dim = hv_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
+        # Scale to dimensionless
+        val_points = scaler.scale_inputs(val_points_dim)
+        h_true_val, hu_true_val, hv_true_val = scaler.scale_outputs(
+            h_true_dim, hu_true_dim, hv_true_dim
+        )
         validation_data_loaded = val_points.shape[0] > 0
         print(f"Analytical validation set: {val_points.shape[0]} points.")
     except Exception as e:
@@ -193,19 +215,27 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     if num_batches == 0:
         raise ValueError(f"Batch size {batch_size} is too large for configured sample counts.")
 
+    # --- Scaled sampling ranges (dimensionless) ---
+    x_range_s = scaler.scale_range(0., domain_cfg["lx"], "x")
+    y_range_s = scaler.scale_range(0., domain_cfg["ly"], "y")
+    t_range_s = scaler.scale_range(0., domain_cfg["t_final"], "t")
+    x_left_s = scaler.scale_range(0., 0., "x")
+    x_right_s = scaler.scale_range(domain_cfg["lx"], domain_cfg["lx"], "x")
+    y_bottom_s = scaler.scale_range(0., 0., "y")
+    y_top_s = scaler.scale_range(domain_cfg["ly"], domain_cfg["ly"], "y")
+
     # --- Build initial IS pool ---
     train_key, pool_key, sample_key = random.split(train_key, 3)
     print(f"Generating IS pool ({pool_size} points)...")
     pool_pde_init = sample_lhs(
-        pool_key, pool_size,
-        (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
+        pool_key, pool_size, x_range_s, y_range_s, t_range_s
     )
     initial_probs = jnp.ones(pool_size, dtype=get_dtype()) / pool_size
 
-    # Closure-based JIT: captures model/cfg/eval_batch_size to avoid hashing them
+    # Closure-based JIT: captures model/nondim_cfg/eval_batch_size to avoid hashing them
     @jax.jit
     def _eval_pool(params, pool_pts):
-        return evaluate_pool_residuals(model, params, pool_pts, cfg, eval_batch_size)
+        return evaluate_pool_residuals(model, params, pool_pts, nondim_cfg, eval_batch_size)
 
     # --- Optimizer ---
     optimiser = create_optimizer(cfg, num_batches=num_batches)
@@ -214,18 +244,15 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
     # --- Epoch data generator (3-arg, JIT-compiled inner function) ---
     def _generate_epoch_data(key, pde_pts, pde_weights):
         k_ic, k_bc, k_data = random.split(key, 3)
-        x_range = (0., domain_cfg["lx"])
-        y_range = (0., domain_cfg["ly"])
-        t_range = (0., domain_cfg["t_final"])
         pde_data = pde_pts.reshape((num_batches, batch_size, 3))
         pde_w = pde_weights.reshape((num_batches, batch_size))
         l_key, r_key, b_key, t_key = random.split(k_bc, 4)
-        ic_data = sample_and_batch(k_ic, sample_domain, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
+        ic_data = sample_and_batch(k_ic, sample_domain, n_ic, batch_size, num_batches, x_range_s, y_range_s, (0., 0.))
         bc_data = {
-            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (0., 0.), y_range, t_range),
-            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
-            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range),
-            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_left_s, y_range_s, t_range_s),
+            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_right_s, y_range_s, t_range_s),
+            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range_s, y_bottom_s, t_range_s),
+            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range_s, y_top_s, t_range_s),
         }
         return {
             'pde': pde_data,
@@ -256,8 +283,7 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
             if epoch > 0 and epoch % resample_freq == 0:
                 self._key, pk = random.split(self._key)
                 self.pool_pde = sample_lhs(
-                    pk, pool_size,
-                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
+                    pk, pool_size, x_range_s, y_range_s, t_range_s
                 )
                 residuals = _eval_pool(params, self.pool_pde)
                 self.current_probs = compute_sampling_probs(residuals, alpha)
@@ -276,9 +302,10 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
         is_state.update(epoch, params)
 
     # --- scan body ---
+    _losses_fn = functools.partial(compute_losses, scaler=scaler)
     scan_body = make_scan_body(
-        train_step_jitted, model, optimiser, current_weights_dict, cfg, data_free,
-        compute_losses_fn=compute_losses,
+        train_step_jitted, model, optimiser, current_weights_dict, nondim_cfg, data_free,
+        compute_losses_fn=_losses_fn,
     )
 
     # --- Validation function ---
@@ -317,6 +344,7 @@ def setup_trial(cfg_dict: dict, hpo_mode: bool = False) -> dict:
         "num_batches": num_batches,
         "validation_fn": validation_fn,
         "pre_epoch_hook": pre_epoch_hook,
+        "scaler": scaler,
         # Production extras
         "experiment_name": experiment_name,
         "validation_data_loaded": validation_data_loaded,
@@ -334,6 +362,11 @@ def main(config_path: str):
     cfg_dict = load_config(config_path)
     cfg = FrozenDict(cfg_dict)
     experiment_name = get_experiment_name(cfg_dict, "experiment_1_is")
+
+    # --- Non-dimensionalization ---
+    scaler = SWEScaler(cfg)
+    nondim_cfg = scaler.nondim_physics_config(cfg_dict)
+    print(scaler.summary())
 
     model, params, train_key, val_key = init_model_from_config(cfg)
     print("Info: Running Experiment 1 (Importance Sampling) training...")
@@ -361,15 +394,20 @@ def main(config_path: str):
     validation_data_loaded = False
     try:
         val_grid_cfg = cfg["validation_grid"]
-        val_points = sample_domain(
+        val_points_dim = sample_domain(
             val_key, val_grid_cfg["n_points_val"],
             (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
         )
         n_manning = cfg["physics"]["n_manning"]
         u_const = cfg["physics"]["u_const"]
-        h_true_val = h_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
-        hu_true_val = hu_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
-        hv_true_val = hv_exact(val_points[:, 0], val_points[:, 2], n_manning, u_const)
+        h_true_dim = h_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
+        hu_true_dim = hu_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
+        hv_true_dim = hv_exact(val_points_dim[:, 0], val_points_dim[:, 2], n_manning, u_const)
+        # Scale to dimensionless
+        val_points = scaler.scale_inputs(val_points_dim)
+        h_true_val, hu_true_val, hv_true_val = scaler.scale_outputs(
+            h_true_dim, hu_true_dim, hv_true_dim
+        )
         validation_data_loaded = val_points.shape[0] > 0
         print(f"Analytical validation set: {val_points.shape[0]} points.")
     except Exception as e:
@@ -392,7 +430,13 @@ def main(config_path: str):
             h_tr = h_exact(data_pts_coords[:, 0], data_pts_coords[:, 2], cfg["physics"]["n_manning"], cfg["physics"]["u_const"])
             u_tr = jnp.full_like(h_tr, cfg["physics"]["u_const"])
             v_tr = jnp.zeros_like(h_tr)
-            data_points_full = jnp.stack([data_pts_coords[:, 2], data_pts_coords[:, 0], data_pts_coords[:, 1], h_tr, u_tr, v_tr], axis=1).astype(get_dtype())
+            # Scale coordinates and targets to dimensionless form
+            coords_scaled = scaler.scale_inputs(data_pts_coords)
+            h_sc, hu_sc, hv_sc = scaler.scale_outputs(h_tr, h_tr * u_tr, h_tr * v_tr)
+            eps_safe = 1e-12
+            u_sc = hu_sc / jnp.maximum(h_sc, eps_safe)
+            v_sc = hv_sc / jnp.maximum(h_sc, eps_safe)
+            data_points_full = jnp.stack([coords_scaled[:, 2], coords_scaled[:, 0], coords_scaled[:, 1], h_sc, u_sc, v_sc], axis=1).astype(get_dtype())
             if data_points_full.shape[0] == 0:
                 data_points_full = None
                 has_data_loss = False
@@ -418,13 +462,21 @@ def main(config_path: str):
         raise ValueError(f"Batch size {batch_size} is too large for configured sample counts.")
     print(f"Batches per epoch: {num_batches} | n_pde: {n_pde}")
 
+    # --- Scaled sampling ranges (dimensionless) ---
+    x_range_s = scaler.scale_range(0., domain_cfg["lx"], "x")
+    y_range_s = scaler.scale_range(0., domain_cfg["ly"], "y")
+    t_range_s = scaler.scale_range(0., domain_cfg["t_final"], "t")
+    x_left_s = scaler.scale_range(0., 0., "x")
+    x_right_s = scaler.scale_range(domain_cfg["lx"], domain_cfg["lx"], "x")
+    y_bottom_s = scaler.scale_range(0., 0., "y")
+    y_top_s = scaler.scale_range(domain_cfg["ly"], domain_cfg["ly"], "y")
+
     # --- Build IS pool on GPU (LHS for space-filling coverage) ---
     # Keys derived from the config seed via train_key (same root as model init)
     train_key, pool_key = random.split(train_key)
     print(f"Generating IS pool ({POOL_SIZE} points) on GPU via LHS...")
     pool_pde = sample_lhs(
-        pool_key, POOL_SIZE,
-        (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
+        pool_key, POOL_SIZE, x_range_s, y_range_s, t_range_s
     )
     print(f"Pool ready: {pool_pde.shape}")
 
@@ -441,21 +493,18 @@ def main(config_path: str):
     # --- Epoch data generator ---
     def generate_epoch_data(key, pde_pts, pde_weights):
         k_ic, k_bc, k_data = random.split(key, 3)
-        x_range = (0., domain_cfg["lx"])
-        y_range = (0., domain_cfg["ly"])
-        t_range = (0., domain_cfg["t_final"])
 
         pde_data = pde_pts.reshape((num_batches, batch_size, 3))
         pde_w = pde_weights.reshape((num_batches, batch_size))
 
         l_key, r_key, b_key, t_key = random.split(k_bc, 4)
 
-        ic_data = sample_and_batch(k_ic, sample_domain, n_ic, batch_size, num_batches, x_range, y_range, (0., 0.))
+        ic_data = sample_and_batch(k_ic, sample_domain, n_ic, batch_size, num_batches, x_range_s, y_range_s, (0., 0.))
         bc_data = {
-            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (0., 0.), y_range, t_range),
-            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
-            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (0., 0.), t_range),
-            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+            'left':   sample_and_batch(l_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_left_s, y_range_s, t_range_s),
+            'right':  sample_and_batch(r_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_right_s, y_range_s, t_range_s),
+            'bottom': sample_and_batch(b_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range_s, y_bottom_s, t_range_s),
+            'top':    sample_and_batch(t_key, sample_domain, n_bc_per_wall, batch_size, num_batches, x_range_s, y_top_s, t_range_s),
         }
         return {
             'pde': pde_data,
@@ -469,9 +518,10 @@ def main(config_path: str):
     generate_epoch_data_jit = jax.jit(generate_epoch_data)
 
     # --- scan body ---
+    _losses_fn = functools.partial(compute_losses, scaler=scaler)
     scan_body = make_scan_body(
-        train_step_jitted, model, optimiser, current_weights_dict, cfg, data_free,
-        compute_losses_fn=compute_losses,
+        train_step_jitted, model, optimiser, current_weights_dict, nondim_cfg, data_free,
+        compute_losses_fn=_losses_fn,
     )
 
     # --- Output dirs and logging ---
@@ -525,12 +575,11 @@ def main(config_path: str):
 
                 # Resample pool from domain so new high-residual regions are reachable
                 pool_pde = sample_lhs(
-                    pool_key, POOL_SIZE,
-                    (0., domain_cfg["lx"]), (0., domain_cfg["ly"]), (0., domain_cfg["t_final"])
+                    pool_key, POOL_SIZE, x_range_s, y_range_s, t_range_s
                 )
 
                 # Evaluate residuals on GPU, update probabilities
-                all_residuals = eval_pool_jit(model, params, pool_pde, cfg, EVAL_BATCH_SIZE)
+                all_residuals = eval_pool_jit(model, params, pool_pde, nondim_cfg, EVAL_BATCH_SIZE)
                 current_probs = compute_sampling_probs(all_residuals, ALPHA)
 
                 _w = 1.0 / (POOL_SIZE * current_probs)
@@ -670,23 +719,20 @@ def main(config_path: str):
             eval_key = random.PRNGKey(0)
             k_pde, k_ic, k_left, k_right, k_bottom, k_top = random.split(eval_key, 6)
             n_eval = 200
-            x_range = (0., domain_cfg["lx"])
-            y_range = (0., domain_cfg["ly"])
-            t_range = (0., domain_cfg["t_final"])
             eval_batch = {
-                'pde': sample_domain(k_pde, n_eval, x_range, y_range, t_range),
+                'pde': sample_domain(k_pde, n_eval, x_range_s, y_range_s, t_range_s),
                 'pde_weights': jnp.ones(n_eval, dtype=get_dtype()),
-                'ic': sample_domain(k_ic, n_eval, x_range, y_range, (0., 0.)),
+                'ic': sample_domain(k_ic, n_eval, x_range_s, y_range_s, (0., 0.)),
                 'bc': {
-                    'left':   sample_domain(k_left,   n_eval, (0., 0.), y_range, t_range),
-                    'right':  sample_domain(k_right,  n_eval, (domain_cfg["lx"], domain_cfg["lx"]), y_range, t_range),
-                    'bottom': sample_domain(k_bottom, n_eval, x_range, (0., 0.), t_range),
-                    'top':    sample_domain(k_top,    n_eval, x_range, (domain_cfg["ly"], domain_cfg["ly"]), t_range),
+                    'left':   sample_domain(k_left,   n_eval, x_left_s, y_range_s, t_range_s),
+                    'right':  sample_domain(k_right,  n_eval, x_right_s, y_range_s, t_range_s),
+                    'bottom': sample_domain(k_bottom, n_eval, x_range_s, y_bottom_s, t_range_s),
+                    'top':    sample_domain(k_top,    n_eval, x_range_s, y_top_s, t_range_s),
                 },
                 'data': jnp.empty((0, 6), dtype=get_dtype()),
                 'building_bc': {},
             }
-            all_physics_losses = compute_losses(model, eval_params, eval_batch, cfg, data_free=True)
+            all_physics_losses = compute_losses(model, eval_params, eval_batch, nondim_cfg, data_free=True, scaler=scaler)
             all_physics_losses = {k: float(v) for k, v in all_physics_losses.items()}
             print("\nAll physics losses (best-NSE params):")
             for k, v in all_physics_losses.items():
@@ -755,16 +801,19 @@ def main(config_path: str):
                 t_val = plot_cfg.get("t_const_val", domain_cfg["t_final"] / 2.0)
                 nx_val = plot_cfg.get("nx_val", 101)
                 y_const = plot_cfg.get("y_const_plot", 0.0)
-                x_plot = jnp.linspace(0., domain_cfg["lx"], nx_val, dtype=get_dtype())
-                plot_pts = jnp.stack([
-                    x_plot,
-                    jnp.full_like(x_plot, y_const),
-                    jnp.full_like(x_plot, t_val),
+                # Build dimensional 1D line, scale for network, unscale output
+                x_plot_dim = jnp.linspace(0., domain_cfg["lx"], nx_val, dtype=get_dtype())
+                plot_pts_dim = jnp.stack([
+                    x_plot_dim,
+                    jnp.full_like(x_plot_dim, y_const),
+                    jnp.full_like(x_plot_dim, t_val),
                 ], axis=1)
-                U_plot = model.apply({'params': final_params['params']}, plot_pts, train=False)
+                plot_pts_nd = scaler.scale_inputs(plot_pts_dim)
+                U_plot_nd = model.apply({'params': final_params['params']}, plot_pts_nd, train=False)
+                U_plot = scaler.unscale_output_array(U_plot_nd)
                 U_plot = _apply_min_depth(U_plot, min_depth_plot)
                 plot_path = os.path.join(results_dir, "final_validation_plot.png")
-                plot_h_vs_x(x_plot, U_plot[..., 0], t_val, y_const, cfg_dict, plot_path)
+                plot_h_vs_x(x_plot_dim, U_plot[..., 0], t_val, y_const, cfg_dict, plot_path)
                 tracker.log_image(plot_path, 'validation_plot_1D')
                 print(f"Model and plots saved in {model_dir} / {results_dir}")
 
