@@ -80,8 +80,10 @@ def compute_losses(model, params, batch, config, data_free, scaler=None):
         top = bc_batches.get('top', jnp.empty((0, 3), dtype=get_dtype()))
 
         # Left: Dirichlet h + hu from analytical dam-break solution
-        u_const = config["physics"]["u_const"]
-        n_manning = config["physics"]["n_manning"]
+        # Use original dimensional physics values for the analytical solution
+        dim_physics = config["physics"].get("dimensional", config["physics"])
+        u_const = dim_physics.get("u_const", config["physics"]["u_const"])
+        n_manning = dim_physics.get("n_manning", config["physics"]["n_manning"])
         # Recover dimensional time for the analytical solution
         t_left_dim = left[..., 2] * scaler.T0 if scaler is not None else left[..., 2]
         h_true_dim = h_exact(0.0, t_left_dim, n_manning, u_const)

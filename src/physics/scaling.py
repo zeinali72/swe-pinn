@@ -129,16 +129,26 @@ class SWEScaler:
     def nondim_physics_config(self, base_config) -> FrozenDict:
         """Build a config for the non-dimensional PDE.
 
-        The returned config sets ``g = 1.0`` (absorbed into scaling) and adds
-        ``Cf`` so the SWE source term uses the dimensionless friction number.
+        The returned config sets ``g = 1.0`` (absorbed into scaling),
+        ``n_manning = 0.0`` (friction absorbed into ``Cf``), and adds
+        ``Cf`` so the SWE source term uses the dimensionless friction
+        number exclusively.
 
-        ``n_manning`` and ``u_const`` are preserved because experiment scripts
-        use them for analytical boundary condition targets (which are computed
-        in dimensional space and then scaled separately).
+        The original dimensional ``n_manning`` and ``u_const`` are
+        preserved under ``physics.dimensional`` so that experiment
+        scripts can still compute analytical BC targets in dimensional
+        space before scaling.
         """
         cfg_dict = dict(base_config)
         physics = dict(cfg_dict.get("physics", {}))
+        # Preserve original values for analytical BC computations
+        physics["dimensional"] = {
+            "n_manning": physics["n_manning"],
+            "u_const": physics.get("u_const"),
+            "g": physics["g"],
+        }
         physics["g"] = 1.0
+        physics["n_manning"] = 0.0
         physics["Cf"] = self.Cf
         cfg_dict["physics"] = physics
         return FrozenDict(cfg_dict)
