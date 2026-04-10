@@ -4,6 +4,8 @@ experiment:
 scenario: experiment_5
 data:
   root_dir: data
+  source_file: val_full_domain.npy
+  n_train_samples: 2000
   training_file: train_lhs_points.npy
   validation_file: val_gauges_gt.npy
 

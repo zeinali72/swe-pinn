@@ -6,6 +6,7 @@ import jax.numpy as jnp
 
 from src.config import get_dtype
 from src.data import load_validation_data, load_bathymetry, load_boundary_condition
+from src.data.loader import resolve_training_data  # noqa: F401 — re-exported
 from src.training.setup import resolve_configured_asset_path
 
 
