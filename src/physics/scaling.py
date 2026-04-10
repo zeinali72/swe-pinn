@@ -41,21 +41,27 @@ class SWEScaler:
         scaling_cfg = cfg.get("scaling", {})
 
         self.enabled = bool(scaling_cfg.get("enabled", False))
-        g = float(physics["g"])
         n_manning = float(physics["n_manning"])
+
+        # Physical gravity: always 9.81 m/s² unless overridden in scaling config.
+        # This is distinct from physics.g which the user may have set to 1.0
+        # for legacy dimensional runs.  The scaler needs the true physical
+        # constant to compute correct scales.
+        self.g_physical = float(scaling_cfg.get("g", 9.81))
 
         if self.enabled:
             self.L0 = float(max(domain["lx"], domain["ly"]))
             self.H0 = float(scaling_cfg.get("H0", 1.0))
-            self.U0 = float(jnp.sqrt(g * self.H0))
+            self.U0 = float(jnp.sqrt(self.g_physical * self.H0))
             self.T0 = self.L0 / self.U0
-            self.Cf = g * n_manning ** 2 * self.L0 / self.H0 ** (4.0 / 3.0)
+            self.Cf = self.g_physical * n_manning ** 2 * self.L0 / self.H0 ** (4.0 / 3.0)
         else:
+            g_cfg = float(physics["g"])
             self.L0 = 1.0
             self.H0 = 1.0
             self.U0 = 1.0
             self.T0 = 1.0
-            self.Cf = g * n_manning ** 2
+            self.Cf = g_cfg * n_manning ** 2
 
         # Pre-compute output scale product for hu/hv
         self.HU0 = self.H0 * self.U0
@@ -157,11 +163,11 @@ class SWEScaler:
             return FrozenDict(cfg_dict)
 
         physics = dict(cfg_dict.get("physics", {}))
-        # Preserve original values for analytical BC computations
+        # Preserve original dimensional values for analytical BC computations
         physics["dimensional"] = {
             "n_manning": physics["n_manning"],
             "u_const": physics.get("u_const"),
-            "g": physics["g"],
+            "g": self.g_physical,
         }
         physics["g"] = 1.0
         physics["n_manning"] = 0.0
@@ -175,6 +181,7 @@ class SWEScaler:
             return "SWE Scaling: DISABLED (dimensional mode)"
         return (
             f"SWE Non-dimensionalization:\n"
+            f"  g  = {self.g_physical:.2f} m/s² (physical)\n"
             f"  L0 = {self.L0:.2f} m\n"
             f"  H0 = {self.H0:.4f} m\n"
             f"  U0 = {self.U0:.4f} m/s (celerity)\n"
