@@ -286,7 +286,7 @@ def main(config_path: str):
     data_free_flag = cfg.get("data_free")
     has_data_loss = not data_free_flag
     
-    training_data_file = os.path.join(base_data_path, "training_dataset_sample.npy")
+    training_data_file = os.path.join(base_data_path, "train_lhs_points.npy")
     if has_data_loss: 
         if os.path.exists(training_data_file):
             try:
@@ -301,7 +301,7 @@ def main(config_path: str):
             has_data_loss = False
     data_free = not has_data_loss 
 
-    validation_data_file = os.path.join(base_data_path, "validation_gauges_ground_truth.npy")
+    validation_data_file = os.path.join(base_data_path, "val_gauges_gt.npy")
     validation_data_loaded = False
     val_pts_batch = None
     val_h_true = None

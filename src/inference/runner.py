@@ -57,7 +57,7 @@ def _load_validation(cfg_dict, paths_info, meta, experiment_name):
         return _generate_analytical_validation(cfg_dict)
 
     val_file = get_data_filename(cfg_dict, "validation_file",
-                                 meta.get("default_val_file", "validation_sample.npy"))
+                                 meta.get("default_val_file", "val_lhs_points.npy"))
     val_path = os.path.join(paths_info["base_data_path"], val_file)
 
     if not os.path.exists(val_path):
