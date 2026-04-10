@@ -39,7 +39,7 @@ EXPERIMENT_REGISTRY = {
         "reference_type": "simulation",
         "flood_extent": False,
         "extra_checks": [],
-        "default_val_file": "val_lhs_points.npy",
+        "default_val_file": "val_gauges_gt.npy",
     },
     "experiment_5": {
         "domain_type": "rectangular",
@@ -48,7 +48,7 @@ EXPERIMENT_REGISTRY = {
         "reference_type": "simulation",
         "flood_extent": False,
         "extra_checks": ["overtopping"],
-        "default_val_file": "val_lhs_points.npy",
+        "default_val_file": "val_gauges_gt.npy",
     },
     "experiment_6": {
         "domain_type": "rectangular",
@@ -57,7 +57,7 @@ EXPERIMENT_REGISTRY = {
         "reference_type": "simulation",
         "flood_extent": False,
         "extra_checks": [],
-        "default_val_file": "val_lhs_points.npy",
+        "default_val_file": "val_gauges_gt.npy",
     },
     "experiment_7": {
         "domain_type": "irregular",
@@ -66,7 +66,7 @@ EXPERIMENT_REGISTRY = {
         "reference_type": "simulation",
         "flood_extent": True,
         "extra_checks": [],
-        "default_val_file": "val_lhs_points.npy",
+        "default_val_file": "val_gauges_gt.npy",
     },
     "experiment_8": {
         "domain_type": "irregular",
@@ -75,7 +75,7 @@ EXPERIMENT_REGISTRY = {
         "reference_type": "simulation",
         "flood_extent": True,
         "extra_checks": ["per_building_slip", "street_corridor"],
-        "default_val_file": "val_lhs_points.npy",
+        "default_val_file": "val_gauges_gt.npy",
     },
 }
 
@@ -89,5 +89,5 @@ def get_experiment_meta(experiment_name: str) -> dict:
         "reference_type": "simulation",
         "flood_extent": False,
         "extra_checks": [],
-        "default_val_file": "val_lhs_points.npy",
+        "default_val_file": "val_gauges_gt.npy",
     })

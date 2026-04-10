@@ -96,7 +96,7 @@ for exp_num in 3 4 5 6 7; do
                 --angle "$ANGLE_FILE" \
                 --speed "$SPEED_FILE" \
                 --split \
-                --output_train "$EXP_DIR/training_gauges.npy" \
+                --output_train "$EXP_DIR/train_gauges.npy" \
                 --output_val "$EXP_DIR/val_gauges_gt.npy"
             echo "[Experiment $exp_num] Done."
         else
