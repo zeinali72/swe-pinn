@@ -5,11 +5,11 @@
 # the training loop can compute NSE/RMSE for hu and hv in addition to h.
 #
 # Prerequisites:
-#   - Raw ICM simulation data must exist as validation_tensor.npy (6 columns)
+#   - Raw ICM simulation data must exist as val_full_domain.npy (6 columns)
 #     under data/experiment_N/. If only 4-column tensors exist, re-run the
 #     full pipeline from ICM CSV -> binary -> .npy first.
-#   - For gauge-based experiments (3-7), the gauge CSVs (depth, angle, speed)
-#     and metadata CSV must be available.
+#   - For gauge-based experiments (3-7), gauge CSVs (gauge_depth.csv,
+#     gauge_angle.csv, gauge_speed.csv) and gauge_metadata.csv must exist.
 #
 # This script is a convenience wrapper. See individual scripts for options.
 #
@@ -50,10 +50,10 @@ echo "  val_samples=$VAL_SAMPLES  train_samples=$TRAIN_SAMPLES  max_time=$MAX_TI
 echo ""
 
 # --- Experiment 2: Building obstacle ---
-# Uses generate_training_data.py which samples from validation_tensor.npy
-EXP2_TENSOR="$PROJECT_ROOT/data/experiment_2/validation_tensor.npy"
+# Uses generate_training_data.py which samples from val_full_domain.npy
+EXP2_TENSOR="$PROJECT_ROOT/data/experiment_2/val_full_domain.npy"
 if [ -f "$EXP2_TENSOR" ]; then
-    echo "[Experiment 2] Regenerating from validation_tensor.npy..."
+    echo "[Experiment 2] Regenerating from val_full_domain.npy..."
     python "$SCRIPT_DIR/generate_training_data.py" \
         --scenario experiment_2 \
         --val_samples "$VAL_SAMPLES" \
@@ -77,12 +77,13 @@ for exp_num in 3 4 5 6 7; do
     META_FILE="$EXP_DIR/gauge_metadata.csv"
 
     if [ -f "$META_FILE" ]; then
-        # Look for gauge CSVs with specific naming patterns.
-        # Only match files directly named *_depth.csv, *_angle.csv, *_speed.csv
-        # to avoid false positives on backup or config files.
-        DEPTH_FILE=$(find "$EXP_DIR" -maxdepth 1 -name "*_depth.csv" -o -name "depth_*.csv" 2>/dev/null | head -1)
-        ANGLE_FILE=$(find "$EXP_DIR" -maxdepth 1 -name "*_angle.csv" -o -name "angle_*.csv" 2>/dev/null | head -1)
-        SPEED_FILE=$(find "$EXP_DIR" -maxdepth 1 -name "*_speed.csv" -o -name "speed_*.csv" 2>/dev/null | head -1)
+        # Look for gauge CSVs: prefer canonical names, fall back to glob.
+        DEPTH_FILE="$EXP_DIR/gauge_depth.csv"
+        ANGLE_FILE="$EXP_DIR/gauge_angle.csv"
+        SPEED_FILE="$EXP_DIR/gauge_speed.csv"
+        [ -f "$DEPTH_FILE" ] || DEPTH_FILE=$(find "$EXP_DIR" -maxdepth 1 -name "*_depth.csv" -o -name "depth_*.csv" 2>/dev/null | head -1)
+        [ -f "$ANGLE_FILE" ] || ANGLE_FILE=$(find "$EXP_DIR" -maxdepth 1 -name "*_angle.csv" -o -name "angle_*.csv" 2>/dev/null | head -1)
+        [ -f "$SPEED_FILE" ] || SPEED_FILE=$(find "$EXP_DIR" -maxdepth 1 -name "*_speed.csv" -o -name "speed_*.csv" 2>/dev/null | head -1)
 
         if [ -n "$DEPTH_FILE" ] && [ -n "$ANGLE_FILE" ] && [ -n "$SPEED_FILE" ]; then
             echo "[Experiment $exp_num] Regenerating from gauge CSVs..."
@@ -95,15 +96,15 @@ for exp_num in 3 4 5 6 7; do
                 --angle "$ANGLE_FILE" \
                 --speed "$SPEED_FILE" \
                 --split \
-                --output_train "$EXP_DIR/training_gauges.npy" \
-                --output_val "$EXP_DIR/validation_gauges.npy"
+                --output_train "$EXP_DIR/train_gauges.npy" \
+                --output_val "$EXP_DIR/val_gauges_gt.npy"
             echo "[Experiment $exp_num] Done."
         else
             echo "[Experiment $exp_num] SKIP: Missing gauge CSV files in $EXP_DIR."
             echo "  Need: *_depth.csv, *_angle.csv, and *_speed.csv."
         fi
-    elif [ -f "$EXP_DIR/validation_tensor.npy" ]; then
-        echo "[Experiment $exp_num] Regenerating from validation_tensor.npy..."
+    elif [ -f "$EXP_DIR/val_full_domain.npy" ]; then
+        echo "[Experiment $exp_num] Regenerating from val_full_domain.npy..."
         python "$SCRIPT_DIR/generate_training_data.py" \
             --scenario "experiment_${exp_num}" \
             --val_samples "$VAL_SAMPLES" \
@@ -119,6 +120,6 @@ done
 echo "=== Validation data regeneration complete ==="
 echo ""
 echo "Verify column counts with:"
-echo "  python -c \"import numpy as np; d=np.load('data/experiment_N/validation_sample.npy'); print(d.shape)\""
+echo "  python -c \"import numpy as np; d=np.load('data/experiment_N/val_lhs_points.npy'); print(d.shape)\""
 echo ""
 echo "Expected: (N, 6) with columns [t, x, y, h, u, v]"

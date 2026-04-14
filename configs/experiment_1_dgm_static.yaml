@@ -4,8 +4,10 @@ experiment:
 data_free: true
 data:
   root_dir: data
-  training_file: training_dataset_sample.npy
-  validation_file: validation_sample.npy
+  source_file: val_full_domain.npy
+  n_train_samples: 2000
+  training_file: train_lhs_points.npy
+  validation_file: val_lhs_points.npy
 
 sampling_defaults:
   n_points_pde: 1000
@@ -68,3 +70,7 @@ numerics:
 CONFIG_PATH: optimisation/configs/hpo_DGM_datafree_static.yaml
 reporting:
   epoch_freq: 100
+
+train_grid:
+  n_gauges: 0           # number of spatial gauge locations (0 = data-free)
+  dt_data: 10.0         # temporal resolution in seconds for gauge time series

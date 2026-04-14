@@ -6,6 +6,7 @@ import jax.numpy as jnp
 
 from src.config import get_dtype
 from src.data import load_validation_data, load_bathymetry, load_boundary_condition
+from src.data.loader import resolve_training_data  # noqa: F401 — re-exported
 from src.training.setup import resolve_configured_asset_path
 
 
@@ -34,7 +35,7 @@ def resolve_data_mode(cfg, verbose=True):
 
 
 def load_training_data(base_data_path, has_data_loss, static_weights_dict,
-                       filename="training_dataset_sample.npy", verbose=True):
+                       filename="train_lhs_points.npy", verbose=True):
     """Load the training data .npy file if data-driven mode is active.
 
     Returns
@@ -79,7 +80,7 @@ def load_training_data(base_data_path, has_data_loss, static_weights_dict,
     return data_points_full, has_data_loss, data_free
 
 
-def load_validation_from_file(base_data_path, filename="validation_gauges.npy", verbose=True):
+def load_validation_from_file(base_data_path, filename="val_gauges_gt.npy", verbose=True):
     """Load validation gauge data if it exists.
 
     Returns

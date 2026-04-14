@@ -56,7 +56,7 @@ from src.utils import (
 )
 from src.monitoring import ConsoleLogger, WandbTracker, compute_negative_depth_diagnostics
 from src.checkpointing import CheckpointManager
-from src.training import train_step_jitted, make_scan_body, maybe_batch_data
+from src.training import train_step_jitted, make_scan_body, maybe_batch_data, resolve_training_data
 
 from src.physics import SWEPhysics
 from src.balancing.importance_sampling import (
@@ -281,27 +281,18 @@ def main(config_path: str):
     bc_fn_static = load_boundary_condition(bc_csv_path)
 
     val_points, h_true_val = None, None
-    data_points_full = None
-    
+
     data_free_flag = cfg.get("data_free")
     has_data_loss = not data_free_flag
-    
-    training_data_file = os.path.join(base_data_path, "training_dataset_sample.npy")
-    if has_data_loss: 
-        if os.path.exists(training_data_file):
-            try:
-                data_points_full = jnp.load(training_data_file).astype(get_dtype()) 
-                if data_points_full.shape[0] == 0:
-                     data_points_full = None
-                     has_data_loss = False
-            except Exception as e:
-                data_points_full = None
-                has_data_loss = False
-        else:
-            has_data_loss = False
-    data_free = not has_data_loss 
 
-    validation_data_file = os.path.join(base_data_path, "validation_gauges_ground_truth.npy")
+    data_points_full, has_data_loss, data_free = resolve_training_data(
+        cfg,
+        base_data_path,
+        has_data_loss,
+        static_weights_dict,
+    )
+
+    validation_data_file = os.path.join(base_data_path, "val_gauges_gt.npy")
     validation_data_loaded = False
     val_pts_batch = None
     val_h_true = None

@@ -52,8 +52,7 @@ sampling:
   n_points_pde: 35226
   n_points_ic: 3222
   n_points_bc_domain: 7483
-  importance_sampling:
-    pool_size: 2000000
-    resample_freq: 40
-    eval_batch_size: 100000
-    alpha: 0.8
+
+train_grid:
+  n_gauges: 0           # number of spatial gauge locations (0 = data-free)
+  dt_data: 10.0         # temporal resolution in seconds for gauge time series

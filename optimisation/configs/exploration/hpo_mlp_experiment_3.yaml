@@ -14,8 +14,10 @@ experiment:
 
 data:
   root_dir: data
-  training_file: training_dataset_sample.npy
-  validation_file: validation_gauges.npy
+  source_file: val_full_domain.npy
+  n_train_samples: 2000
+  training_file: train_lhs_points.npy
+  validation_file: val_gauges_gt.npy
 
 training:
   epochs: 500

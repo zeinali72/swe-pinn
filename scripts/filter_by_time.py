@@ -4,7 +4,7 @@ Reads a .npy file where the first column is time (t), keeps only rows where
 t <= max_time, and saves the filtered result to a new file.
 
 Usage:
-    python filter_by_time.py validation_sample.npy --max_time 3600
+    python filter_by_time.py val_lhs_points.npy --max_time 3600
 """
 import numpy as np
 import os
@@ -13,12 +13,12 @@ from pathlib import Path
 
 def filter_validation_sample_by_time(input_npy_path: str, max_time: float = 3600.0) -> None:
     """
-    Loads a validation_sample.npy file, filters it to keep rows where
+    Loads a val_lhs_points.npy file, filters it to keep rows where
     time (first column) is less than or equal to max_time, and saves
     the filtered data to a new file in the same directory.
 
     Args:
-        input_npy_path (str): Path to the input validation_sample.npy file.
+        input_npy_path (str): Path to the input val_lhs_points.npy file.
         max_time (float): The maximum time value (inclusive) to keep.
                           Defaults to 3600.0.
     """
@@ -62,12 +62,12 @@ def filter_validation_sample_by_time(input_npy_path: str, max_time: float = 3600
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description=f"Filter a validation_sample.npy file based on a maximum time value."
+        description=f"Filter a val_lhs_points.npy file based on a maximum time value."
     )
     parser.add_argument(
         "input_file",
         type=str,
-        help="Path to the input validation_sample.npy file."
+        help="Path to the input val_lhs_points.npy file."
     )
     parser.add_argument(
         "--max_time",
@@ -79,11 +79,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # --- Example Usage ---
-    # Assuming your file is in 'data/one_building_DEM_zero/validation_sample.npy'
+    # Assuming your file is in 'data/one_building_DEM_zero/val_lhs_points.npy'
     # You would run this script like:
-    # python <script_name>.py data/one_building_DEM_zero/validation_sample.npy --max_time 3600.0
+    # python <script_name>.py data/one_building_DEM_zero/val_lhs_points.npy --max_time 3600.0
     # Or simply:
-    # python <script_name>.py data/one_building_DEM_zero/validation_sample.npy
+    # python <script_name>.py data/one_building_DEM_zero/val_lhs_points.npy
     # (since 3600.0 is the default max_time)
 
     filter_validation_sample_by_time(args.input_file, args.max_time)
