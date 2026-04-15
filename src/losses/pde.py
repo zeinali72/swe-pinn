@@ -46,8 +46,9 @@ def compute_pde_loss(model: nn.Module, params: Dict[str, Any], pde_batch: jnp.nd
     div_G = jnp.einsum('nij,nj->ni', JG, dU_dy)
 
     # 3. Pass gradients to source term
+    Cf = config.get("physics", {}).get("Cf", None)
     S = physics.source(g=g, n_manning=n_manning, inflow=inflow,
-                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y)
+                       bed_grad_x=bed_grad_x, bed_grad_y=bed_grad_y, Cf=Cf)
 
     residual = (dU_dt + div_F + div_G - S)
 
