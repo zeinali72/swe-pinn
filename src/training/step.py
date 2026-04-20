@@ -43,6 +43,8 @@ def train_step(
         return total, terms
 
     (loss_val, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+    grad_norm = optax.global_norm(grads)
+    metrics = {**metrics, "_grad_norm": grad_norm}
     updates, new_opt_state = optimiser.update(grads, opt_state, params, value=loss_val)
     new_params = optax.apply_updates(params, updates)
     return new_params, new_opt_state, metrics, loss_val

@@ -74,3 +74,35 @@ IMPORTANT: Always consult `docs/experimental_programme_reference.md` when:
 Key conventions:
 - Accuracy metrics (NSE, RMSE, MAE, Rel L2) reported separately for h, hu, hv
 - Colour palette: Exeter (Deep Green #003C3C, Teal #007D69, Mint #00C896) + Blue Heart (Navy #0D2B45, Ocean #1B5E8A, Sky #4FA3D1). Arial font. 300 DPI.
+
+---
+
+## Git Workflow
+
+- **Feature branches target `main` directly.** PR base is `main` (not a claude-cleanup branch — that rule was relaxed 2026-04-20).
+- **Squash-merge** via `gh pr merge <N> --squash --delete-branch`.
+- **Branch naming**: `feat/<area>-<short>` for features, `refactor/<short>` for refactors, `fix/<short>` for bugfixes.
+- One PR per coherent scope. If a PR grows past ~500 lines across unrelated concerns, split it.
+- Never force-push `main`.
+- Tag headline result commits (`git tag exp1-ablation-v1`) so any thesis figure can be reproduced from `git checkout <tag>`.
+
+## Repo Organization (what goes where)
+
+| Dir | Purpose |
+|---|---|
+| `src/` | Reusable library code (physics, losses, training loop, scaling, monitoring). No experiment-specific logic. |
+| `experiments/experiment_N/` | Experiment drivers. Entry-points that import from `src/` and produce a trained model. |
+| `configs/experiment_N/` | YAML hyperparameter files. One per run variant. No Python. |
+| `scripts/` | Automation around experiments — orchestrators, run launchers, aggregators, figure generators. Not experiments themselves. |
+| `test/` | Unit tests for `src/` and smoke tests for experiments. |
+| `docs/` | Design docs, session notes, workflow recipes. |
+| `models/`, `results/`, `wandb/` | Generated artifacts (gitignored). Produced by training runs. |
+
+**Rule of thumb**: if it produces a model → `experiments/`. If it consumes models/results to produce something else → `scripts/`. If it's reusable pure logic → `src/`.
+
+## Artifact Organization (models/, archive/)
+
+- **Active runs** land under `models/<timestamped-trial>/` as before (unchanged behaviour).
+- **Archived runs** live under `models/archive/` and are intentionally excluded from the rotation / hygiene sweeps. Move a run there when it produced a headline figure or thesis result you must keep.
+- **Local `wandb/` and `results/` are disposable.** W&B server is the authoritative log; local dirs can be deleted after `wandb sync`.
+- **Reproducibility**: every headline run is recoverable from (a) the git tag/SHA at the time of training, (b) the W&B run URL, (c) the saved config snapshot in `models/<trial>/`. If any of the three is missing, the run is not thesis-quality.

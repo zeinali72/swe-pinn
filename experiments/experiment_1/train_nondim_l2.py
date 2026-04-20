@@ -73,19 +73,26 @@ from src.training import (
 )
 
 
-_SQRT_EPS = 1e-12
+_SQRT_EPS_DEFAULT = 1e-12
 
 
-def _l2(sum_sq):
+def _l2(sum_sq, eps):
     """True L2 norm: ``sqrt(sum(r^2) + eps)``.
 
     Callers must pass the **sum of squared residuals**, not the mean. Because
     the shared loss helpers all return ``mean(r^2)``, the call sites multiply
     by the batch count ``N`` to recover ``sum = mean * N`` before applying
-    this function. The tiny epsilon keeps the gradient ``1/(2*sqrt(x))``
-    finite near zero — see ``docs/l2_loss_experiment.md``.
+    this function. The epsilon keeps the gradient ``1/(2*sqrt(x))`` finite
+    near zero; set ``eps=0`` to recover the unstabilized L2 (ablation A2).
+    See ``docs/l2_loss_experiment.md`` and ``docs/experiment_1_ablation_design.md``.
     """
-    return jnp.sqrt(sum_sq + _SQRT_EPS)
+    return jnp.sqrt(sum_sq + eps)
+
+
+def _read_l2_eps(config) -> float:
+    """Extract the Charbonnier epsilon from config, defaulting to 1e-12."""
+    training_cfg = config.get("training", {}) if hasattr(config, "get") else {}
+    return float(training_cfg.get("l2_eps", _SQRT_EPS_DEFAULT))
 
 
 def compute_losses(model, params, batch, config, data_free, scaler=None):
@@ -97,17 +104,18 @@ def compute_losses(model, params, batch, config, data_free, scaler=None):
     one L2 norm over the concatenated boundary residual vector.
     """
     terms = {}
+    l2_eps = _read_l2_eps(config)
 
     pde_batch_data = batch.get('pde', jnp.empty((0, 3), dtype=get_dtype()))
     if pde_batch_data.shape[0] > 0:
         n_pde = pde_batch_data.shape[0]
-        terms['pde'] = _l2(compute_pde_loss(model, params, pde_batch_data, config) * n_pde)
-        terms['neg_h'] = _l2(compute_neg_h_loss(model, params, pde_batch_data) * n_pde)
+        terms['pde'] = _l2(compute_pde_loss(model, params, pde_batch_data, config) * n_pde, l2_eps)
+        terms['neg_h'] = _l2(compute_neg_h_loss(model, params, pde_batch_data) * n_pde, l2_eps)
 
     ic_batch_data = batch.get('ic', jnp.empty((0, 3), dtype=get_dtype()))
     if ic_batch_data.shape[0] > 0:
         n_ic = ic_batch_data.shape[0]
-        terms['ic'] = _l2(compute_ic_loss(model, params, ic_batch_data) * n_ic)
+        terms['ic'] = _l2(compute_ic_loss(model, params, ic_batch_data) * n_ic, l2_eps)
 
     bc_batches = batch.get('bc', {})
     if any(b.shape[0] > 0 for b in bc_batches.values() if hasattr(b, 'shape')):
@@ -143,12 +151,12 @@ def compute_losses(model, params, batch, config, data_free, scaler=None):
         loss_bottom = loss_boundary_wall_horizontal(model, params, bottom)
         loss_top = loss_boundary_wall_horizontal(model, params, top)
         n_wall = left.shape[0]
-        terms['bc'] = _l2((loss_left + loss_right + loss_bottom + loss_top) * n_wall)
+        terms['bc'] = _l2((loss_left + loss_right + loss_bottom + loss_top) * n_wall, l2_eps)
 
     data_batch_data = batch.get('data', jnp.empty((0, 6), dtype=get_dtype()))
     if not data_free and data_batch_data.shape[0] > 0:
         n_data = data_batch_data.shape[0]
-        terms['data'] = _l2(compute_data_loss(model, params, data_batch_data, config) * n_data)
+        terms['data'] = _l2(compute_data_loss(model, params, data_batch_data, config) * n_data, l2_eps)
 
     return terms
 
