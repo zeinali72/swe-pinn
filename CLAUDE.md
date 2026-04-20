@@ -22,10 +22,14 @@ This rule is global across all branches and overrides any default "be concise" b
 # Training (all experiments follow this pattern)
 python -m experiments.experiment_<N>.train --config configs/<config>.yaml
 
-# Example: experiment 1 with variants
-python -m experiments.experiment_1.train --config configs/experiment_1/experiment_1.yaml
-python -m experiments.experiment_1.train_imp_samp --config configs/experiment_1/experiment_1_imp_samp.yaml
-python -m experiments.experiment_1.train_relobralo --config configs/experiment_1/experiment_1_relobralo.yaml
+# Example: experiment 1 ablation (see scripts/run_exp1_A*.sh)
+bash scripts/run_exp1_A0.sh                    # A0 — dimensional MSE baseline
+SEED=42 bash scripts/run_exp1_A3.sh            # A3 — L2 + eps, override seed
+
+# Legacy experiment 1 variants (configs in configs/experiment_1/other/)
+python -m experiments.experiment_1.train --config configs/experiment_1/other/experiment_1.yaml
+python -m experiments.experiment_1.train_imp_samp --config configs/experiment_1/other/experiment_1_imp_samp.yaml
+python -m experiments.experiment_1.train_relobralo --config configs/experiment_1/other/experiment_1_relobralo.yaml
 
 # HPO-optimised configs live in configs/train/
 python -m experiments.experiment_2.train --config configs/train/experiment_2_fourier_final.yaml

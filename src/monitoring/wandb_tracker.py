@@ -121,7 +121,7 @@ class WandbTracker:
             entity = wandb_cfg.get('entity', self._ENTITY)
 
             scenario = config.get('scenario', '')
-            group = scenario if scenario else None
+            group = os.environ.get("WANDB_RUN_GROUP") or (scenario if scenario else None)
 
             # Build tags
             arch_name = config.get('model', {}).get('name', '')
@@ -138,6 +138,11 @@ class WandbTracker:
             if phase:
                 tags.append(f"phase_{phase}")
             tags = [t for t in tags if t]
+
+            # Merge env-var tags (set by run scripts for ablation tracking)
+            env_tags = os.environ.get("WANDB_TAGS", "")
+            if env_tags:
+                tags.extend(t.strip() for t in env_tags.split(",") if t.strip())
 
             # Resolve JAX backend
             try:

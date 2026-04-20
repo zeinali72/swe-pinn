@@ -5,7 +5,7 @@
 # the effect of non-dimensionalization alone.
 training:
   seed: 42
-  epochs: 2000
+  epochs: 20000
   learning_rate: 1.0e-4
   batch_size: 256
   reduce_on_plateau:
@@ -50,7 +50,7 @@ plotting:
   plot_resolution: 150
 device:
   dtype: float32
-  early_stop_min_epochs: 4000
+  early_stop_min_epochs: 25000
   early_stop_patience: 3000
 numerics:
   eps: 1.0e-6

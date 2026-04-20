@@ -1,6 +1,7 @@
 # src/config.py
 import os
 import yaml
+import jax
 import jax.numpy as jnp
 
 def _convert_str_floats(obj):
@@ -29,7 +30,10 @@ def load_config(config_path: str):
     config['CONFIG_PATH'] = config_path
 
     global DTYPE, EPS
-    DTYPE = getattr(jnp, config["device"]["dtype"])
+    dtype_str = config["device"]["dtype"]
+    if dtype_str == "float64":
+        jax.config.update("jax_enable_x64", True)
+    DTYPE = getattr(jnp, dtype_str)
     EPS = config["numerics"]["eps"]
 
     return config
