@@ -2,6 +2,20 @@
 
 SWE-PINN: Physics-Informed Neural Network framework for urban flood prediction, solving 2D Shallow Water Equations with JAX/Flax. See @docs/experimental_programme_reference.md for the authoritative experiment spec.
 
+## Reporting Requirement (applies to every task)
+
+IMPORTANT: After finishing ANY task — implementation, refactor, bugfix, config change, experiment run, doc edit — always end with a **Full Implementation Report** containing:
+
+1. **Summary** — one-paragraph description of what the task accomplished.
+2. **Files changed** — every file created, modified, or deleted, with a one-line reason per file.
+3. **Key code changes** — function/class-level description of the substantive edits (not a re-print of the diff).
+4. **Configuration / hyperparameter changes** — any YAML, CLI flag, or environment variable change, with old → new values.
+5. **Commands run** — shell commands executed (training, tests, installs), their exit status, and where their outputs live.
+6. **Verification** — tests run, manual checks performed, W&B run URLs if a training job was launched, and the observed result.
+7. **Open items / follow-ups** — anything left unfinished, deferred, or that needs user review.
+
+This rule is global across all branches and overrides any default "be concise" behaviour for end-of-task summaries. Brevity is still preferred *during* the task; the full report is only at the end.
+
 ## Key Commands
 
 ```bash

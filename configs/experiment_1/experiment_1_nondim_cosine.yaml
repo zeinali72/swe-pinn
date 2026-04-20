@@ -1,0 +1,60 @@
+training:
+  seed: 42
+  epochs: 2000
+  learning_rate: 1.0e-4
+  batch_size: 256
+  cosine:
+    alpha: 1.0e-3          # final LR = learning_rate * alpha  (1e-4 * 1e-3 = 1e-7)
+    warmup_epochs: 0       # > 0 prepends linear warmup from 0
+  reduce_on_plateau:       # ignored by train_nondim_cosine.py; left for schema parity
+    factor: 0.5
+    patience: 50
+    rtol: 1.0e-3
+    atol: 0.0
+    cooldown: 5
+    accumulation_factor: 2
+    min_scale: 1.0e-3
+model:
+  name: MLP
+  output_dim: 3
+  width: 512
+  depth: 4
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+physics:
+  u_const: 0.29
+  n_manning: 0.03
+  inflow: null
+  g: 9.81
+scaling:
+  enabled: true
+  H0: 1.0
+data_free: true
+train_grid:
+  n_gauges: 1
+  dt_data: 10.0
+loss_weights:
+  pde_weight: 1.0
+  ic_weight: 1.0
+  bc_weight: 10.0
+  neg_h_weight: 1.0
+  data_weight: 0.0
+plotting:
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 0
+  plot_resolution: 150
+device:
+  dtype: float32
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+numerics:
+  eps: 1.0e-6
+validation_grid:
+  n_points_val: 20000
+sampling:
+  n_points_pde: 10000
+  n_points_ic: 10000
+  n_points_bc_domain: 10000
