@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Ablation A0 — baseline: input-normalized only, MSE, no output non-dim.
-# Uses train_nondim.py with scaling.enabled=false (identity-mode fallback) so
-# A0 differs from A1 by exactly one variable: non-dimensionalization.
+# Ablation A0 — baseline: dimensional MSE, no non-dimensionalization.
+# Uses train.py (the original dimensional training script). Config matches
+# §4.1 common hyperparameters so A0 → A1 isolates the non-dim effect only.
 # Override seed via: SEED=123 bash scripts/run_exp1_A0.sh
 set -euo pipefail
 
@@ -11,5 +11,5 @@ source "$HERE/_exp1_ablation_common.sh"
 
 run_ablation_row \
     "A0" \
-    "experiments.experiment_1.train_nondim" \
+    "experiments.experiment_1.train" \
     "configs/experiment_1/experiment_1_A0.yaml"
