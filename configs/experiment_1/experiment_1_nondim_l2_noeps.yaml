@@ -1,9 +1,13 @@
+# Ablation A2 — L2 loss without the Charbonnier epsilon stabilizer.
+# Copy of experiment_1_nondim_l2.yaml with training.l2_eps: 0.0.
+# Tests whether the ε term is numerically load-bearing (H3b first half) —
+# expect gradient spikes / NaNs late in training when a term approaches zero.
 training:
   seed: 42
   epochs: 5000
   learning_rate: 1.0e-4
   batch_size: 256
-  l2_eps: 1.0e-12
+  l2_eps: 0.0
   reduce_on_plateau:
     factor: 0.5
     patience: 50

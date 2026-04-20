@@ -1,9 +1,13 @@
+# Ablation A0 — baseline: input-normalized only, MSE loss, no output non-dim.
+# Differs from experiment_1_nondim.yaml (A1) by exactly ONE variable:
+# scaling.enabled: false. Every other hyperparameter matches §4.1 of
+# docs/experiment_1_ablation_design.md so the A0 → A1 comparison isolates
+# the effect of non-dimensionalization alone.
 training:
   seed: 42
-  epochs: 5000
+  epochs: 2000
   learning_rate: 1.0e-4
   batch_size: 256
-  l2_eps: 1.0e-12
   reduce_on_plateau:
     factor: 0.5
     patience: 50
@@ -27,7 +31,7 @@ physics:
   inflow: null
   g: 9.81
 scaling:
-  enabled: true
+  enabled: false
   H0: 1.0
 data_free: true
 train_grid:

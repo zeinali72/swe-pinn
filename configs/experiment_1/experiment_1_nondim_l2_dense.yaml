@@ -1,3 +1,6 @@
+# Ablation A4 — L2 loss + epsilon + dense (100k) collocation sampling.
+# Copy of experiment_1_nondim_l2.yaml with n_points_pde bumped to 100000.
+# Headline row: expected ~0.98 NSE empirically. H4 joint effect (L2 × density).
 training:
   seed: 42
   epochs: 5000
@@ -53,6 +56,6 @@ numerics:
 validation_grid:
   n_points_val: 20000
 sampling:
-  n_points_pde: 10000
+  n_points_pde: 100000
   n_points_ic: 10000
   n_points_bc_domain: 10000

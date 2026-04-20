@@ -205,6 +205,7 @@ class WandbTracker:
         epoch_time: float,
         elapsed_time: float,
         neg_depth: Optional[dict] = None,
+        grad_norm: Optional[float] = None,
     ):
         """Log per-epoch metrics.
 
@@ -236,6 +237,12 @@ class WandbTracker:
 
             # Learning rate
             metrics["train/lr"] = _safe_float(lr)
+
+            # Global gradient norm (per-epoch mean across micro-batches)
+            if grad_norm is not None:
+                gn_f = _safe_float(grad_norm)
+                if not math.isnan(gn_f) and not math.isinf(gn_f):
+                    metrics["train/grad_norm"] = gn_f
 
             # Validation metrics (skip NaN — e.g. hv in 1D experiments)
             for key, val in val_metrics.items():

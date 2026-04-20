@@ -134,6 +134,12 @@ def run_training_loop(
             avg_losses_unweighted = {k: float(v) / num_batches for k, v in epoch_losses_sum.items()}
             avg_total_weighted_loss = float(epoch_total_sum) / num_batches
 
+            # Separate grad-norm diagnostic from training losses (it enters via
+            # train_step under the reserved key "_grad_norm"). Logged to W&B
+            # and training_history.json under train/grad_norm but never
+            # contributes to the total loss.
+            avg_grad_norm = avg_losses_unweighted.pop("_grad_norm", None)
+
             current_lr = extract_lr(opt_state, cfg["training"]["learning_rate"], epoch)
 
             # Validation
@@ -230,7 +236,7 @@ def run_training_loop(
                 )
 
             elapsed_now = time.time() - start_time
-            epoch_history.append({
+            epoch_record = {
                 'epoch': int(epoch),
                 'total_loss': float(avg_total_weighted_loss),
                 'losses': {k: float(v) for k, v in avg_losses_unweighted.items()},
@@ -238,7 +244,10 @@ def run_training_loop(
                 'lr': float(current_lr),
                 'epoch_time_s': float(epoch_time),
                 'elapsed_time_s': float(elapsed_now),
-            })
+            }
+            if avg_grad_norm is not None:
+                epoch_record['grad_norm'] = float(avg_grad_norm)
+            epoch_history.append(epoch_record)
 
             tracker.log_epoch(
                 epoch=epoch, step=global_step,
@@ -246,6 +255,7 @@ def run_training_loop(
                 val_metrics=val_metrics, lr=current_lr,
                 epoch_time=epoch_time, elapsed_time=elapsed_now,
                 neg_depth=neg_depth if (epoch + 1) % freq == 0 else None,
+                grad_norm=avg_grad_norm,
             )
 
             # Early stopping
