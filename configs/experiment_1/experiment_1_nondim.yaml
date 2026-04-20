@@ -1,3 +1,6 @@
+# Ablation A1 — non-dimensionalized MSE baseline.
+# Uses train_nondim.py with SWEScaler. A0 → A1 isolates output scaling;
+# A1 → A2 isolates the switch from MSE to L2-norm loss.
 training:
   seed: 42
   epochs: 20000

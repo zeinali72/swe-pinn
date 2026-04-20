@@ -1,3 +1,6 @@
+# Ablation A3 — L2-norm loss with Charbonnier epsilon stabilizer.
+# Uses train_nondim_l2.py. A2 → A3 isolates the effect of eps on gradient
+# stability near zero; A3 → A4 isolates sampling density (10k → 100k).
 training:
   seed: 42
   epochs: 20000
