@@ -97,9 +97,9 @@ logs/
 # --- Project-specific ---
 
 # Large data, models, results (generated artifacts)
-data/
-models/
-results/
+/data/
+/models/
+/results/
 notes/
 
 # Experiment tracking

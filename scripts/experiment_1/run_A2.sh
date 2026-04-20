@@ -3,8 +3,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE/.."
-source "$HERE/_exp1_ablation_common.sh"
+cd "$HERE/../.."
+source "$HERE/_common.sh"
 
 run_ablation_row \
     "A2" \

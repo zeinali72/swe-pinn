@@ -78,8 +78,8 @@ Fixed across every ablation row:
 - Architecture: MLP, width 512, depth 4.
 - Optimizer: Adam, `lr = 1e-4`, `clip_norm = 1.0`, reduce-on-plateau
   schedule (factor 0.5, patience 50, rtol 1e-3).
-- Training: 2000 epochs, batch size 256, seed 42, early-stop disabled
-  (`min_epochs = 4000 > epochs`).
+- Training: 20000 epochs, batch size 256, early-stop disabled
+  (`min_epochs = 25000 > epochs`).
 - Loss weights: `pde=1, ic=1, bc=10, neg_h=1`; data-free.
 - Validation: 20,000-point analytical grid, NSE on water depth `h` as
   primary selection metric.
@@ -92,7 +92,7 @@ variable at a time. Variables that change are bolded.
 
 | ID | Config (target)                                       | Loss  | ε  | n_pde | dtype   | Motivation                                              |
 |----|--------------------------------------------------------|-------|-----|-------|---------|---------------------------------------------------------|
-| A0 | `experiment_1_A0.yaml` *(new)*                         | MSE   | —   | 10k   | float32 | Baseline: input-normalized only (`scaling.enabled: false`). Differs from A1 by exactly one variable. |
+| A0 | `experiment_1_A0.yaml` *(new)*                         | MSE   | —   | 10k   | float32 | Baseline: dimensional (uses `train.py`, no SWEScaler). Differs from A1 by exactly one variable. |
 | A1 | `experiment_1_nondim.yaml`                             | MSE   | —   | 10k   | float32 | **+ output non-dim** → RQ1. Expected to reveal plateau. |
 | A2 | `experiment_1_nondim_l2_noeps.yaml` *(new)*            | **L2**| **0**| 10k  | float32 | **MSE → L2, no ε** → RQ3a (does L2 help?) and RQ3b first half (does pure sqrt have numerical issues?). |
 | A3 | `experiment_1_nondim_l2.yaml`                           | L2    | **1e-12** | 10k | float32 | **+ ε stabilization** → RQ3b second half. Expected: same accuracy as A2, strictly smoother gradients. |
@@ -112,13 +112,17 @@ run in this design.
 
 **Replication protocol (revised).** The seed is treated as a nuisance variable to pin down once, not a source of variance to characterise per-row.
 
-**Seed test on A0 (prerequisite).** Before the ablation chain starts, row A0 is run with 3 seeds: 42, 123, 2024. The **median-NSE seed** is adopted as the canonical seed for all subsequent rows (A1–A6). The best and worst seeds are disclosed as a footnote.
+**Step 0 — Sanity check (prerequisite).** Run A0 and A1 once (seed=42) on GPU to confirm the pipeline produces expected NSE ranges (A0 ~0.5–0.76, A1 ~0.76). This catches config or code errors before committing to the full 3-seed test. Script: `scripts/experiment_1/run_sanity_check.sh`.
+
+**Step 1 — Seed test on A1 (prerequisite).** Row A1 (nondim MSE baseline) is run with 3 seeds: 42, 123, 2024. The **median-NSE seed** is adopted as the canonical seed for all rows (A0–A6). The best and worst seeds are disclosed as a footnote.
+
+Why A1 (not A0)? A1 is the branching point for the entire nondim chain (A2→A3→A4→A6 and A5). A seed that's "median" for A1's loss landscape is more representative for the downstream rows that reach 0.98 NSE. Testing on A0 (which plateaus at ~0.5–0.76 regardless) tells less about initialization quality for the configurations that matter.
 
 Rationale for picking the median rather than the best: picking the best seed is cherry-picking and would not survive review; picking the median gives a representative trajectory without inflating results.
 
-**Single-seed protocol for A1–A6.** Each of A1, A2, A3, A4, A5, A6 is run once, on the canonical seed fixed from A0. The A4 sensitivity spot-check from the prior version of this document is **dropped** — seed variance is not the question this ablation is trying to answer.
+**Step 2 — Single-seed ablation chain.** Each of A0, A1, A2, A3, A4, A5, A6 is run once, on the canonical seed fixed from the A1 seed test. Script: `SEED=<N> bash scripts/experiment_1/run_A<row>.sh`.
 
-**Total runs: 9** (3 seed-test runs on A0 + 6 rows A1–A6 = 9 training runs).
+**Total runs: 12** (2 sanity-check + 3 seed-test on A1 + 7 ablation rows = 12 training runs).
 
 ### 4.4 Metrics
 
@@ -157,7 +161,7 @@ Empirical observations to date (informal, pre-ablation):
 - A1 ≈ 0.55 (plateau at epoch ~270).
 - A3 ≈ 0.76 (at 10k points, with ε).
 - A4 ≈ 0.98 (at 100k points, with ε).
-- Seed: the A1–A6 rows all use the canonical seed picked from the A0 seed test. A4 is no longer replicated across multiple seeds.
+- Seed: all rows (A0–A6) use the canonical seed picked from the A1 seed test (median-NSE of seeds 42, 123, 2024).
 
 These numbers must be **re-run under the protocol above** before they
 enter the manuscript. They are recorded here only to set expectation
@@ -201,14 +205,14 @@ The chapter follows the discovery narrative, not the ablation row order:
 
 ### 7.1 Code artifacts (in scope)
 
-- [ ] Config `configs/experiment_1/experiment_1_A0.yaml` (A0) — dedicated baseline; mirrors `experiment_1_nondim.yaml` but with `scaling.enabled: false`. Runs under `train_nondim.py` in identity-mode so only one variable (non-dim on/off) distinguishes A0 from A1.
+- [ ] Config `configs/experiment_1/experiment_1_A0.yaml` (A0) — dedicated baseline; uses `train.py` (dimensional script). No scaling block. Only one variable (non-dim on/off) distinguishes A0 from A1.
 - [ ] Config `configs/experiment_1/experiment_1_nondim_l2_noeps.yaml` (A2) — copy of `experiment_1_nondim_l2.yaml` with `training.l2_eps: 0.0`.
 - [ ] Config `configs/experiment_1/experiment_1_nondim_l2_dense.yaml` (A4) — copy with `sampling.n_points_pde: 100000` (and IC/BC counts matched).
 - [ ] Config `configs/experiment_1/experiment_1_nondim_mse_dense.yaml` (A5) — copy of `experiment_1_nondim.yaml` (MSE path) with the same dense-sampling settings as A4. Decoupling run.
 - [ ] Config `configs/experiment_1/experiment_1_nondim_l2_f64.yaml` (A6) — copy of A4 with `device.dtype: float64`.
 - [ ] Refactor `experiments/experiment_1/train_nondim_l2.py` so the sqrt epsilon reads from `training.l2_eps` (default 1e-12) — A2 and A3 share one script, differing by config only.
 - [ ] Per-epoch global ‖∇θ L‖ logging added to the shared training step → W&B (`train/grad_norm`) and `training_history.json`. Primary diagnostic for H2 and H3b.
-- [ ] One shell script per ablation row under `scripts/`: `run_exp1_A0.sh` … `run_exp1_A6.sh`, plus `run_exp1_A0_seedtest.sh` that runs A0 with seeds 42, 123, 2024.
+- [ ] One shell script per ablation row under `scripts/experiment_1/`: `run_A0.sh` … `run_A6.sh`, plus `run_sanity_check.sh` (A0+A1 quick validation) and `run_A1_seedtest.sh` (A1 with seeds 42, 123, 2024).
 
 ### 7.2 Out of scope (deferred)
 
@@ -228,7 +232,7 @@ The chapter follows the discovery narrative, not the ablation row order:
   A3 and A4, additionally report NSE under uniform `{1,1,1,1}` weights
   as a robustness check. If L2 is insensitive to weight choice, that is
   itself a finding.
-- **Single seed for A1–A6.** Seed variance is not characterised per-row. Mitigation: the A0 seed test bounds the variance at the baseline, and the canonical seed is the median of that test (not the best). If seed-to-seed differences on A0 are large (std > 0.05 NSE), this is explicitly disclosed in the write-up as a threat.
+- **Single seed for A0–A6.** Seed variance is not characterised per-row. Mitigation: the A1 seed test bounds the variance at the nondim baseline, and the canonical seed is the median of that test (not the best). If seed-to-seed differences on A1 are large (std > 0.05 NSE), this is explicitly disclosed in the write-up as a threat.
 - **Gradient-norm interpretation.** A collapsing global gradient is
   consistent with both "loss is near zero" (good) and "loss is stuck on
   a plateau" (bad). Mitigation: always plot gradient norm **alongside**

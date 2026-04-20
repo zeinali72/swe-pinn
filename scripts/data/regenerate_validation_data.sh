@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 echo "=== Regenerating validation data with hu/hv columns ==="
 echo "  val_samples=$VAL_SAMPLES  train_samples=$TRAIN_SAMPLES  max_time=$MAX_TIME  seed=$SEED"

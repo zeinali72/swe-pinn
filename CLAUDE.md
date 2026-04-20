@@ -22,9 +22,11 @@ This rule is global across all branches and overrides any default "be concise" b
 # Training (all experiments follow this pattern)
 python -m experiments.experiment_<N>.train --config configs/<config>.yaml
 
-# Example: experiment 1 ablation (see scripts/run_exp1_A*.sh)
-bash scripts/run_exp1_A0.sh                    # A0 — dimensional MSE baseline
-SEED=42 bash scripts/run_exp1_A3.sh            # A3 — L2 + eps, override seed
+# Experiment 1 ablation workflow (see docs/experiment_1_ablation_design.md §4.3)
+bash scripts/experiment_1/run_sanity_check.sh  # Step 0: A0+A1 quick validation
+bash scripts/experiment_1/run_A1_seedtest.sh   # Step 1: 3 seeds on A1, pick median
+SEED=<N> bash scripts/experiment_1/run_A0.sh   # Step 2: full chain with chosen seed
+SEED=<N> bash scripts/experiment_1/run_A3.sh   # ... repeat for each row A0–A6
 
 # Legacy experiment 1 variants (configs in configs/experiment_1/other/)
 python -m experiments.experiment_1.train --config configs/experiment_1/other/experiment_1.yaml

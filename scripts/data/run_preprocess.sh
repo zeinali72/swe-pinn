@@ -27,7 +27,7 @@ set -e  # Exit immediately if a command exits with a non-zero status
 # =============================================================================
 
 # 1. Define where the C++ source code now lives
-CPP_SOURCE_DIR="$(dirname "$0")/cpp"
+CPP_SOURCE_DIR="$(dirname "$0")/../cpp"
 BUILD_DIR="${CPP_SOURCE_DIR}/build"
 
 echo "--- Building C++ Preprocessor ---"
