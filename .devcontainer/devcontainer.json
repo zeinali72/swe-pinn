@@ -37,7 +37,7 @@
     }
   ],
 
-  "postCreateCommand": "mkdir -p /root/.claude && [ -f /root/.claude/.claude.json ] || echo '{\"hasCompletedOnboarding\":true,\"installMethod\":\"native\"}' > /root/.claude/.claude.json && ln -sf /root/.claude/.claude.json /root/.claude.json && curl -fsSL https://claude.ai/install.sh | bash && ln -sf /root/.local/bin/claude /usr/local/bin/claude && rtk init -g --auto-patch || true && WANDB_KEY=$(python3 -c \"import json; c=json.load(open('/root/.claude/.claude.json')); print(c.get('mcpServers',{}).get('wandb',{}).get('headers',{}).get('Authorization','').replace('Bearer ',''))\" 2>/dev/null) && [ -n \"$WANDB_KEY\" ] && echo \"export WANDB_API_KEY=$WANDB_KEY\" >> /root/.bashrc || true",
+  "postCreateCommand": "mkdir -p /root/.claude && [ -f /root/.claude/.claude.json ] || echo '{\"hasCompletedOnboarding\":true,\"installMethod\":\"native\"}' > /root/.claude/.claude.json && ln -sf /root/.claude/.claude.json /root/.claude.json && curl -fsSL https://claude.ai/install.sh | bash && ln -sf /root/.local/bin/claude /usr/local/bin/claude && pip3 install --break-system-packages pylatexenc || true && rtk init -g --auto-patch || true && WANDB_KEY=$(python3 -c \"import json; c=json.load(open('/root/.claude/.claude.json')); print(c.get('mcpServers',{}).get('wandb',{}).get('headers',{}).get('Authorization','').replace('Bearer ',''))\" 2>/dev/null) && [ -n \"$WANDB_KEY\" ] && echo \"export WANDB_API_KEY=$WANDB_KEY\" >> /root/.bashrc || true",
   "postAttachCommand": "cp /root/.claude/.credentials.json /root/.claude/.credentials.json.bak 2>/dev/null || true",
 
   "workspaceFolder": "/workspace",
