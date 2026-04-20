@@ -15,6 +15,8 @@ where $h$ is water depth and $hu, hv$ are specific discharges.
 
 Training combines physics residuals from the 2D Shallow Water Equations (SWE), initial and boundary conditions, and optional data loss from numerical simulations.
 
+**Developer guide** (subsystem reference, extension recipes, config schema): [`docs/developer_guide.md`](docs/developer_guide.md)
+
 ## Table of Contents
 
 - [Overview](#overview)
