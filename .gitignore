@@ -112,6 +112,8 @@ mlruns/
 hyperopt/trial_configs
 hyperopt/*.db
 optimisation_logs/
+optimisation/results/
+optimisation/legacy/results/
 
 # Database files
 *.sqlite3
@@ -129,4 +131,5 @@ jobs/
 # Sensitive / local-only
 ovh_token.md
 .claude/settings.local.json
+.claude/worktrees/
 .mcp.json
