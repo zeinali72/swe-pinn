@@ -1,0 +1,60 @@
+training:
+  seed: 42
+  epochs: 5000
+  learning_rate: 1.0e-4
+  batch_size: 256
+  reduce_on_plateau:
+    factor: 0.5
+    patience: 50
+    rtol: 1.0e-3
+    atol: 0.0
+    cooldown: 5
+    accumulation_factor: 2
+    min_scale: 1.0e-3
+model:
+  name: MLP
+  output_dim: 3
+  width: 512
+  depth: 4
+domain:
+  lx: 1200.0
+  ly: 100.0
+  t_final: 3600.0
+physics:
+  u_const: 0.29
+  n_manning: 0.03
+  inflow: null
+  g: 9.81
+scaling:
+  enabled: true
+  H0: 1.0
+data_free: true
+train_grid:
+  n_gauges: 1
+  dt_data: 10.0
+loss_weights:
+  # PDE-only: IC / left-BC / walls are hard-constrained in the model ansatz.
+  # Set bc_weight > 0 to re-enable the soft Neumann right-wall outflow loss.
+  # Set neg_h_weight > 0 to re-enable the negative-depth penalty.
+  pde_weight: 1.0
+  ic_weight: 0.0        # hard-constrained
+  bc_weight: 0.0        # right-wall Neumann only; 0 = PDE-only test
+  neg_h_weight: 0.0     # ansatz keeps h >= 0 at init; enable if drift seen
+  data_weight: 0.0
+plotting:
+  nx_val: 101
+  t_const_val: 1800.0
+  y_const_plot: 0
+  plot_resolution: 150
+device:
+  dtype: float32
+  early_stop_min_epochs: 4000
+  early_stop_patience: 3000
+numerics:
+  eps: 1.0e-6
+validation_grid:
+  n_points_val: 20000
+sampling:
+  n_points_pde: 100000
+  n_points_ic: 10000
+  n_points_bc_domain: 10000
