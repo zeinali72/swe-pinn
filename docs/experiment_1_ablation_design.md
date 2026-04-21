@@ -163,6 +163,14 @@ Empirical observations to date (informal, pre-ablation):
 - A4 ≈ 0.98 (at 100k points, with ε).
 - Seed: all rows (A0–A6) use the canonical seed picked from the A1 seed test (median-NSE of seeds 42, 123, 2024).
 
+> **Current empirical values (post seed-test, 2026-04-21):** see
+> `docs/experiment_1/a0_a1_seedtest_analysis.md`. Canonical seed is **123**.
+> A0 observed at NSE(h) ≈ −0.1-to-−1.4 (not the earlier "0.5–0.76" sanity-check
+> note). A1 observed at NSE(h) ∈ [0.54, 0.66] across seeds; only seed=42 matches
+> the "plateau at epoch ~270" pattern. The values in the bullet list above are
+> stale informal pre-ablation estimates and will be replaced by the headline
+> results table once the A0–A6 chain completes.
+
 These numbers must be **re-run under the protocol above** before they
 enter the manuscript. They are recorded here only to set expectation
 scale and to flag that A5 — currently missing — is the critical
